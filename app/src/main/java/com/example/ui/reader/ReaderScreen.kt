@@ -1,0 +1,487 @@
+package com.example.ui.reader
+
+import android.app.Activity
+import android.content.Intent
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.local.HighlightNoteEntity
+import com.example.data.model.DocumentFormat
+import com.example.data.model.ExportFormatOption
+import com.example.data.model.ReaderMenuStyle
+import com.example.engine.MergedDocumentExporter
+import com.example.ui.components.AnnotationsAndBookmarksSheet
+import com.example.ui.components.AppSettingsSheet
+import com.example.ui.components.AppearanceSettingsSheet
+import com.example.ui.components.BookmarkDockOverlay
+import com.example.ui.components.ContextualDictionaryPopover
+import com.example.ui.components.DrawingFloatingToolbar
+import com.example.ui.components.InBookSearchSheet
+import com.example.ui.components.MergedExportDialog
+import com.example.ui.components.NoteEditorDialog
+import com.example.ui.components.TactileButton
+import com.example.ui.components.TocBottomSheet
+import com.example.ui.theme.LocalFolioPalette
+import kotlin.math.max
+import kotlin.math.roundToInt
+
+@Composable
+fun ReaderScreen(
+    viewModel: ReaderViewModel,
+    onBackToLibrary: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val context = LocalContext.current
+
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val prefs by viewModel.preferences.collectAsStateWithLifecycle()
+    val highlights by viewModel.highlights.collectAsStateWithLifecycle()
+    val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
+    val drawingsByLocation by viewModel.drawingsByLocation.collectAsStateWithLifecycle()
+    val ocrByPage by viewModel.ocrByPage.collectAsStateWithLifecycle()
+    val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
+
+    var showAppearanceSheet by remember { mutableStateOf(false) }
+    var showTocSheet by remember { mutableStateOf(false) }
+    var showAnnotationsSheet by remember { mutableStateOf(false) }
+    var showSearchSheet by remember { mutableStateOf(false) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
+    var settingsInitialTab by remember { mutableIntStateOf(0) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    var showNewNoteDialog by remember { mutableStateOf(false) }
+    var editingHighlight by remember { mutableStateOf<HighlightNoteEntity?>(null) }
+    var pendingExportOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
+    var showTempProgressOverlay by remember { mutableStateOf(false) }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Apply direct screen brightness inside the reader & restore system auto-brightness on exit
+    LaunchedEffect(prefs.readerBrightness) {
+        val window = (context as? Activity)?.window ?: return@LaunchedEffect
+        val lp = window.attributes
+        lp.screenBrightness = if (prefs.readerBrightness < 0f) -1f else prefs.readerBrightness.coerceIn(0.05f, 1f)
+        window.attributes = lp
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            val window = (context as? Activity)?.window ?: return@onDispose
+            val lp = window.attributes
+            lp.screenBrightness = -1f
+            window.attributes = lp
+        }
+    }
+
+    LaunchedEffect(state.toastMessage) {
+        state.toastMessage?.let { msg ->
+            snackbarHostState.showSnackbar(msg)
+            viewModel.clearToast()
+        }
+    }
+
+    // SAF CreateDocument launcher for merged export (Zero storage permissions)
+    val exportSaveLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportMergedToUri(uri, pendingExportOption) {
+                showExportDialog = false
+            }
+        }
+    }
+
+    // Hardware/gesture back handling
+    BackHandler {
+        when {
+            state.selectedWord != null -> viewModel.dismissWordPopover()
+            state.isDockExpanded -> viewModel.toggleDock(false)
+            state.isDrawingMode -> viewModel.toggleDrawingMode(false)
+            else -> onBackToLibrary()
+        }
+    }
+
+    val handleTapCenter: () -> Unit = {
+        if (prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR) {
+            viewModel.toggleDock()
+        } else {
+            showTempProgressOverlay = !showTempProgressOverlay
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.background)
+            .testTag("reader_screen_root")
+    ) {
+        when {
+            state.isLoading -> {
+                Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(color = palette.accent)
+                    Text(
+                        text = "Preparando documento…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.inkMuted
+                    )
+                }
+            }
+
+            state.error != null || state.parsed == null || state.document == null -> {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = state.error ?: "Error al cargar el documento",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.ink
+                    )
+                    TactileButton(onClick = onBackToLibrary) {
+                        Text("Volver a Biblioteca")
+                    }
+                }
+            }
+
+            else -> {
+                val doc = state.document!!
+                val parsed = state.parsed!!
+                val isPdf = parsed.format == DocumentFormat.PDF
+                val totalUnits = (if (isPdf) parsed.pdfPageCount else state.totalSheetCount).coerceAtLeast(1)
+                val currentDisplayIndex = if (isPdf) state.currentUnitIndex else state.currentSheetIndex
+                val progress = ((currentDisplayIndex + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
+                val remainingWords = (parsed.totalWords * (1f - progress)).roundToInt().coerceAtLeast(0)
+                val minsLeft = max(1, remainingWords / 210)
+                val progressSummary = "${(progress * 100).roundToInt()}% · ~$minsLeft min restantes"
+                val currentLocKey = viewModel.currentLocationKey()
+                val isBookmarkedHere = bookmarks.any { it.locationKey == currentLocKey }
+
+                // 1. Distraction-Free Reading Surface (Fluid Sheets or PDF/Manhwa)
+                if (isPdf) {
+                    PdfManhwaReader(
+                        filePath = doc.filePath,
+                        pageCount = parsed.pdfPageCount,
+                        currentPageIndex = state.currentUnitIndex,
+                        prefs = prefs,
+                        drawingsByLocation = drawingsByLocation,
+                        ocrByPage = ocrByPage,
+                        showTranslatedOverlay = state.showTranslatedManhwaOverlay,
+                        isProcessingOcrOrTranslation = state.isProcessingOcrOrTranslation,
+                        processingMessage = state.ocrTranslationStatus,
+                        isDockExpanded = state.isDockExpanded,
+                        isDrawingMode = state.isDrawingMode,
+                        activeTool = state.activeTool,
+                        activeColorArgb = state.activeColorArgb,
+                        activeWidthNorm = state.activeWidthNorm,
+                        onPageChanged = { idx -> viewModel.onUnitChanged(idx) },
+                        onPageBitmapReady = viewModel::onPdfPageBitmapReady,
+                        onWordSelected = viewModel::onWordSelected,
+                        onStrokeCompleted = viewModel::addStroke,
+                        onEraseStrokes = viewModel::eraseStrokes,
+                        onToggleTranslateOverlay = viewModel::toggleOrRunManhwaPageTranslation,
+                        onTapPageCenter = handleTapCenter,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    FluidBookReader(
+                        chapters = parsed.chapters,
+                        currentChapterIndex = state.currentUnitIndex,
+                        jumpToChapterTrigger = state.jumpToChapterTrigger,
+                        prefs = prefs,
+                        highlights = highlights,
+                        drawingsByLocation = drawingsByLocation,
+                        isDrawingMode = state.isDrawingMode,
+                        activeTool = state.activeTool,
+                        activeColorArgb = state.activeColorArgb,
+                        activeWidthNorm = state.activeWidthNorm,
+                        onActiveSheetChanged = viewModel::onFluidSheetChanged,
+                        onWordSelected = viewModel::onWordSelected,
+                        onStrokeCompleted = viewModel::addStroke,
+                        onEraseStrokes = viewModel::eraseStrokes,
+                        onTapPageCenter = handleTapCenter,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // 2. Ultra-minimalist discrete reading progress footer (only if enabled or tapped)
+                AnimatedVisibility(
+                    visible = (prefs.showMinimalFooter || showTempProgressOverlay) && !state.isDrawingMode &&
+                        !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded),
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isPdf) {
+                                "Pág. ${currentDisplayIndex + 1} / $totalUnits"
+                            } else {
+                                "Hoja ${currentDisplayIndex + 1} / $totalUnits"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.inkMuted.copy(alpha = 0.72f)
+                        )
+                        Text(
+                            text = progressSummary,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.inkMuted.copy(alpha = 0.72f)
+                        )
+                    }
+                }
+
+                // 3. Configurable Reader Menu (Draggable Bookmark / Apple Dynamic Island / Classic Kindle Bar)
+                BookmarkDockOverlay(
+                    menuStyle = prefs.menuStyle,
+                    side = prefs.dockSide,
+                    dockYFraction = prefs.dockYFraction,
+                    dockScale = prefs.dockScale,
+                    brightnessValue = prefs.readerBrightness,
+                    isExpanded = state.isDockExpanded,
+                    isBookmarkedHere = isBookmarkedHere,
+                    isDrawingMode = state.isDrawingMode,
+                    isPdfDocument = isPdf,
+                    isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
+                    isProcessingStatus = state.isProcessingOcrOrTranslation,
+                    processingStatusText = state.ocrTranslationStatus,
+                    bookTitle = parsed.title,
+                    progressLabel = progressSummary,
+                    onToggleExpanded = { viewModel.toggleDock() },
+                    onDismiss = { viewModel.toggleDock(false) },
+                    onDockRepositioned = { newSide, newY ->
+                        viewModel.updatePreferences { it.copy(dockSide = newSide, dockYFraction = newY) }
+                    },
+                    onBrightnessChanged = { b ->
+                        viewModel.updatePreferences { it.copy(readerBrightness = b) }
+                    },
+                    onToggleBookmarkHere = viewModel::toggleBookmarkCurrentPage,
+                    onOpenAppearance = { showAppearanceSheet = true },
+                    onOpenToc = { showTocSheet = true },
+                    onToggleDrawing = { viewModel.toggleDrawingMode() },
+                    onTriggerOcrTranslate = viewModel::toggleOrRunManhwaPageTranslation,
+                    onOpenAnnotations = { showAnnotationsSheet = true },
+                    onOpenSearch = { showSearchSheet = true },
+                    onOpenSettings = {
+                        settingsInitialTab = 0
+                        showSettingsSheet = true
+                    },
+                    onOpenExport = { showExportDialog = true },
+                    onBackToLibrary = onBackToLibrary
+                )
+
+                // 4. Floating Drawing Toolbar (only when drawing mode is active)
+                if (state.isDrawingMode) {
+                    DrawingFloatingToolbar(
+                        activeTool = state.activeTool,
+                        activeColorArgb = state.activeColorArgb,
+                        activeWidthNorm = state.activeWidthNorm,
+                        canUndo = state.canUndo,
+                        canRedo = state.canRedo,
+                        onSelectTool = viewModel::setDrawingTool,
+                        onSelectColor = viewModel::setDrawingColor,
+                        onWidthChange = viewModel::setDrawingWidth,
+                        onUndo = viewModel::undoDrawing,
+                        onRedo = viewModel::redoDrawing,
+                        onClearPage = viewModel::clearCurrentPageDrawings,
+                        onDone = { viewModel.toggleDrawingMode(false) },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+
+                // 5. Dynamic Contextual Dictionary & EN->ES Translation Popover
+                state.selectedWord?.let { selection ->
+                    ContextualDictionaryPopover(
+                        selection = selection,
+                        sources = dictSources,
+                        instantTranslation = state.instantTranslation,
+                        isTranslatingWord = state.isTranslatingWord,
+                        translationStatusText = state.wordTranslationStatus,
+                        wikiSummary = state.wikiSummary,
+                        wikiError = state.wikiError,
+                        isWikiLoading = state.isWikiLoading,
+                        onHighlight = { colorArgb -> viewModel.addHighlightFromSelection(colorArgb) },
+                        onAddNote = { showNewNoteDialog = true },
+                        onOpenDictionarySettings = {
+                            settingsInitialTab = 1
+                            showSettingsSheet = true
+                        },
+                        onDismiss = viewModel::dismissWordPopover
+                    )
+                }
+
+                // 6. Modal Bottom Sheets & Dialogs
+                if (showAppearanceSheet) {
+                    AppearanceSettingsSheet(
+                        prefs = prefs,
+                        isPdf = isPdf,
+                        onUpdatePrefs = viewModel::updatePreferences,
+                        onDismiss = { showAppearanceSheet = false }
+                    )
+                }
+
+                if (showTocSheet) {
+                    TocBottomSheet(
+                        toc = parsed.toc,
+                        currentIndex = state.currentUnitIndex,
+                        onSelectEntry = { idx -> viewModel.onUnitChanged(idx, isExplicitJump = true) },
+                        onDismiss = { showTocSheet = false }
+                    )
+                }
+
+                if (showSearchSheet) {
+                    InBookSearchSheet(
+                        query = state.searchQuery,
+                        matches = state.searchMatches,
+                        onQueryChange = viewModel::updateSearchQuery,
+                        onSelectMatch = { match -> viewModel.onUnitChanged(match.targetIndex, isExplicitJump = true) },
+                        onDismiss = { showSearchSheet = false }
+                    )
+                }
+
+                if (showAnnotationsSheet) {
+                    AnnotationsAndBookmarksSheet(
+                        highlights = highlights,
+                        bookmarks = bookmarks,
+                        onNavigateToUnit = { idx -> viewModel.onUnitChanged(idx, isExplicitJump = true) },
+                        onDeleteHighlight = viewModel::deleteHighlight,
+                        onEditHighlightNote = { hl -> editingHighlight = hl },
+                        onDeleteBookmark = viewModel::deleteBookmark,
+                        onDismiss = { showAnnotationsSheet = false }
+                    )
+                }
+
+                if (showSettingsSheet) {
+                    AppSettingsSheet(
+                        prefs = prefs,
+                        sources = dictSources,
+                        initialTab = settingsInitialTab,
+                        onUpdatePrefs = viewModel::updatePreferences,
+                        onAddSource = viewModel::addDictionarySource,
+                        onToggleSource = viewModel::toggleDictionarySource,
+                        onDeleteSource = viewModel::deleteDictionarySource,
+                        onDismiss = { showSettingsSheet = false }
+                    )
+                }
+
+                if (showNewNoteDialog && state.selectedWord != null) {
+                    NoteEditorDialog(
+                        quotedText = state.selectedWord!!.word,
+                        initialNote = "",
+                        initialColorArgb = 0xFFF6C445L,
+                        onSave = { noteText, colorArgb ->
+                            viewModel.addHighlightFromSelection(colorArgb, noteText)
+                            showNewNoteDialog = false
+                        },
+                        onDismiss = { showNewNoteDialog = false }
+                    )
+                }
+
+                editingHighlight?.let { hl ->
+                    NoteEditorDialog(
+                        quotedText = hl.quotedText,
+                        initialNote = hl.noteText,
+                        initialColorArgb = hl.colorArgb,
+                        onSave = { noteText, colorArgb ->
+                            viewModel.updateHighlightNote(hl.id, noteText, colorArgb)
+                            editingHighlight = null
+                        },
+                        onDismiss = { editingHighlight = null }
+                    )
+                }
+
+                if (showExportDialog) {
+                    MergedExportDialog(
+                        document = doc,
+                        drawingStrokeCount = drawingsByLocation.values.sumOf { it.size },
+                        highlightCount = highlights.size,
+                        ocrPageCount = ocrByPage.size,
+                        isExporting = state.isExporting,
+                        onExportSaveAs = { option ->
+                            pendingExportOption = option
+                            val ext = MergedDocumentExporter.resolveOutputExtension(doc, option)
+                            val safe = doc.title.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(36)
+                            exportSaveLauncher.launch("${safe}_anotado.$ext")
+                        },
+                        onExportShare = { option ->
+                            viewModel.exportMergedForShare(option) { file, mime ->
+                                showExportDialog = false
+                                val uri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    file
+                                )
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = mime
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                runCatching {
+                                    context.startActivity(Intent.createChooser(intent, "Compartir libro fusionado"))
+                                }
+                            }
+                        },
+                        onDismiss = { showExportDialog = false }
+                    )
+                }
+            }
+        }
+
+        // Snackbar for concise feedback
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = if (state.isDrawingMode) 140.dp else 28.dp)
+        )
+    }
+}
