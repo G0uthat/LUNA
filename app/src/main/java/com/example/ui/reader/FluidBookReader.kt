@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -58,11 +60,13 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
@@ -80,6 +84,7 @@ import com.example.data.model.DrawingStroke
 import com.example.data.model.DrawingTool
 import com.example.data.model.PageAnimationMode
 import com.example.data.model.ParsedChapter
+import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.SelectedWordContext
 import com.example.data.model.TextAlignOption
@@ -87,6 +92,7 @@ import com.example.engine.FluidPaginator
 import com.example.engine.FluidSheet
 import com.example.engine.FluidSheetBlock
 import com.example.ui.components.DrawingCanvasOverlay
+import com.example.ui.components.extractSentenceRange
 import com.example.ui.theme.LocalFolioPalette
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -113,6 +119,7 @@ fun FluidBookReader(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeSelection: SelectedWordContext? = null,
     onActiveSheetChanged: (sheetIndex: Int, totalSheets: Int, locationKey: String, chapterIndex: Int) -> Unit,
     onWordSelected: (SelectedWordContext) -> Unit,
     onStrokeCompleted: (String, DrawingStroke) -> Unit,
@@ -130,10 +137,24 @@ fun FluidBookReader(
     val latestZoom by rememberUpdatedState(zoomScale)
     val latestPan by rememberUpdatedState(panOffset)
 
-    BoxWithConstraints(
+    val hasDynamicIsland = prefs.menuStyle == ReaderMenuStyle.DYNAMIC_ISLAND
+    val islandClearanceDp = if (hasDynamicIsland) (46.dp * prefs.dockScale.coerceIn(0.88f, 1.25f)) else 0.dp
+
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(palette.background)
+    ) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (hasDynamicIsland) {
+                    Modifier.statusBarsPadding().padding(top = islandClearanceDp)
+                } else {
+                    Modifier
+                }
+            )
             .pointerInput(isDrawingMode) {
                 if (isDrawingMode) return@pointerInput
                 awaitEachGesture {
@@ -249,7 +270,12 @@ fun FluidBookReader(
                 LazyColumn(
                     state = listState,
                     userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
-                    contentPadding = PaddingValues(top = 44.dp, bottom = 84.dp, start = 10.dp, end = 10.dp),
+                    contentPadding = PaddingValues(
+                        top = if (hasDynamicIsland) 12.dp else 44.dp,
+                        bottom = 84.dp,
+                        start = 10.dp,
+                        end = 10.dp
+                    ),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
@@ -277,6 +303,7 @@ fun FluidBookReader(
                             activeTool = activeTool,
                             activeColorArgb = activeColorArgb,
                             activeWidthNorm = activeWidthNorm,
+                            activeSelection = activeSelection,
                             isVerticalScrollCard = true,
                             minSheetHeightDp = (sheetMinHeightDp - 96.dp).coerceAtLeast(360.dp),
                             onWordSelected = onWordSelected,
@@ -291,7 +318,21 @@ fun FluidBookReader(
                                     onEraseStrokes(sheet.cfiPrefix, ids)
                                 }
                             },
-                            onTapAtXFraction = { onTapPageCenter() },
+                            onTapAtXFraction = { xFrac ->
+                                if (prefs.tapZonesEnabled && zoomScale <= 1.05f) {
+                                    when {
+                                        xFrac < 0.28f && index > 0 -> {
+                                            coroutineScope.launch { listState.animateScrollToItem(index - 1) }
+                                        }
+                                        xFrac > 0.72f && index < sheets.lastIndex -> {
+                                            coroutineScope.launch { listState.animateScrollToItem(index + 1) }
+                                        }
+                                        else -> onTapPageCenter()
+                                    }
+                                } else {
+                                    onTapPageCenter()
+                                }
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .widthIn(max = 760.dp)
@@ -334,11 +375,11 @@ fun FluidBookReader(
                 }
 
                 val handlePagedTap: (Float) -> Unit = { xFraction ->
-                    if (zoomScale > 1.05f) {
+                    if (zoomScale > 1.05f || !prefs.tapZonesEnabled) {
                         onTapPageCenter()
                     } else {
                         when {
-                            xFraction < 0.22f && pagerState.currentPage > 0 -> {
+                            xFraction < 0.28f && pagerState.currentPage > 0 -> {
                                 val prev = pagerState.currentPage - 1
                                 coroutineScope.launch {
                                     if (prefs.pageAnimation == PageAnimationMode.E_INK) {
@@ -348,7 +389,7 @@ fun FluidBookReader(
                                     }
                                 }
                             }
-                            xFraction > 0.78f && pagerState.currentPage < sheets.lastIndex -> {
+                            xFraction > 0.72f && pagerState.currentPage < sheets.lastIndex -> {
                                 val next = pagerState.currentPage + 1
                                 coroutineScope.launch {
                                     if (prefs.pageAnimation == PageAnimationMode.E_INK) {
@@ -452,6 +493,7 @@ fun FluidBookReader(
                             activeTool = activeTool,
                             activeColorArgb = activeColorArgb,
                             activeWidthNorm = activeWidthNorm,
+                            activeSelection = activeSelection,
                             isVerticalScrollCard = false,
                             minSheetHeightDp = sheetMinHeightDp,
                             onWordSelected = onWordSelected,
@@ -513,6 +555,7 @@ fun FluidBookReader(
             }
         }
     }
+    }
 }
 
 /**
@@ -532,6 +575,7 @@ private fun FluidSheetSurface(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeSelection: SelectedWordContext?,
     isVerticalScrollCard: Boolean,
     minSheetHeightDp: Dp,
     onWordSelected: (SelectedWordContext) -> Unit,
@@ -583,12 +627,19 @@ private fun FluidSheetSurface(
                         coords.size.height.toFloat().coerceAtLeast(1f)
                 }
         ) {
+            val topSheetPad = when {
+                isVerticalScrollCard -> 24.dp
+                prefs.menuStyle == ReaderMenuStyle.DYNAMIC_ISLAND -> 14.dp
+                else -> 54.dp
+            }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(
-                        horizontal = prefs.horizontalMarginDp.dp,
-                        vertical = if (isVerticalScrollCard) 28.dp else 54.dp
+                        start = prefs.horizontalMarginDp.dp,
+                        end = prefs.horizontalMarginDp.dp,
+                        top = topSheetPad,
+                        bottom = if (isVerticalScrollCard) 28.dp else 48.dp
                     ),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
@@ -605,11 +656,20 @@ private fun FluidSheetSurface(
                             )
                         }
 
+                    val activeBlockRange: Pair<Int, Int>? = activeSelection?.takeIf {
+                        it.locationKey == sheet.locationKey && it.blockIndex == rawBlock.index
+                    }?.let { sel ->
+                        val s = (sel.startChar - sliceStart).coerceIn(0, rawBlock.text.length)
+                        val e = (sel.endChar - sliceStart).coerceIn(s, rawBlock.text.length)
+                        if (e > s) s to e else null
+                    }
+
                     SelectableTextBlock(
                         sheetBlock = sheetBlock,
                         sheet = sheet,
                         prefs = prefs,
                         highlights = blockHighlights,
+                        activeSelectionRange = activeBlockRange,
                         isDrawingMode = isDrawingMode,
                         containerSizePx = sheetRootSizePx,
                         onWordSelected = onWordSelected,
@@ -652,6 +712,7 @@ private fun SelectableTextBlock(
     sheet: FluidSheet,
     prefs: ReaderPreferences,
     highlights: List<HighlightNoteEntity>,
+    activeSelectionRange: Pair<Int, Int>?,
     isDrawingMode: Boolean,
     containerSizePx: Pair<Float, Float>,
     onWordSelected: (SelectedWordContext) -> Unit,
@@ -659,9 +720,20 @@ private fun SelectableTextBlock(
 ) {
     val block = sheetBlock.block
     val palette = LocalFolioPalette.current
+    val haptic = LocalHapticFeedback.current
     val fontFamily = if (prefs.useSystemFont) FontFamily.Default else prefs.font.toFontFamily()
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var blockCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var liveDragRange by remember(block.text, sheet.locationKey) { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    val latestLayout by rememberUpdatedState(textLayoutResult)
+    val latestCoords by rememberUpdatedState(blockCoords)
+    val latestContainerSize by rememberUpdatedState(containerSizePx)
+    val latestOnWordSelected by rememberUpdatedState(onWordSelected)
+    val latestOnTap by rememberUpdatedState(onTapAtXFraction)
+
+    val prefix = if (block.type == BlockType.LIST_ITEM) "•  " else ""
+    val prefixLen = prefix.length
 
     val baseFontSize = when (block.type) {
         BlockType.HEADING_1 -> (prefs.fontSizeSp * 1.42f).sp
@@ -688,7 +760,9 @@ private fun SelectableTextBlock(
         }
     )
 
-    val annotated = remember(block.text, highlights) {
+    val previewRange = liveDragRange ?: activeSelectionRange
+
+    val annotated = remember(block.text, highlights, previewRange, palette.accent) {
         buildAnnotatedString {
             append(block.text)
             for (hl in highlights) {
@@ -704,40 +778,113 @@ private fun SelectableTextBlock(
                     )
                 }
             }
+            if (previewRange != null) {
+                val pStart = previewRange.first.coerceIn(0, block.text.length)
+                val pEnd = previewRange.second.coerceIn(pStart, block.text.length)
+                if (pEnd > pStart) {
+                    addStyle(
+                        style = SpanStyle(
+                            background = palette.accent.copy(alpha = 0.28f)
+                        ),
+                        start = pStart,
+                        end = pEnd
+                    )
+                }
+            }
         }
     }
 
     val gestureMod = if (!isDrawingMode) {
-        Modifier.pointerInput(block.text, sheet.locationKey, containerSizePx) {
-            detectTapGestures(
-                onTap = { offset: Offset ->
-                    val rootPos = blockCoords?.positionInRoot() ?: Offset.Zero
-                    val xFrac = ((rootPos.x + offset.x) / containerSizePx.first).coerceIn(0f, 1f)
-                    onTapAtXFraction(xFrac)
-                },
-                onLongPress = { offset: Offset ->
-                    val layout = textLayoutResult ?: return@detectTapGestures
-                    val charIndex = layout.getOffsetForPosition(offset)
-                    val (word, start, end) = extractWordAt(block.text, charIndex)
-                    if (word.isNotBlank()) {
-                        val rootPos = blockCoords?.positionInRoot() ?: Offset.Zero
-                        val screenX = ((rootPos.x + offset.x) / containerSizePx.first).coerceIn(0.08f, 0.92f)
-                        val screenY = ((rootPos.y + offset.y) / containerSizePx.second).coerceIn(0.10f, 0.90f)
-                        onWordSelected(
+        Modifier.pointerInput(block.text, sheet.locationKey, prefixLen) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val downPos = down.position
+                val longPress = awaitLongPressOrCancellation(down.id)
+                if (longPress != null) {
+                    longPress.consume()
+                    val layout = latestLayout ?: return@awaitEachGesture
+                    val anchorIdx = (layout.getOffsetForPosition(longPress.position) - prefixLen)
+                        .coerceIn(0, block.text.lastIndex.coerceAtLeast(0))
+                    val (_, anchorStart, anchorEnd) = extractWordAt(block.text, anchorIdx)
+                    if (anchorEnd <= anchorStart) return@awaitEachGesture
+
+                    var selStart = anchorStart
+                    var selEnd = anchorEnd
+                    var lastPos = longPress.position
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    liveDragRange = selStart to selEnd
+
+                    var pointerId = longPress.id
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == pointerId }
+                            ?: event.changes.firstOrNull()
+                        if (change == null || !change.pressed) {
+                            change?.consume()
+                            break
+                        }
+                        pointerId = change.id
+                        if (change.positionChanged()) {
+                            change.consume()
+                            lastPos = change.position
+                            val curIdx = (layout.getOffsetForPosition(lastPos) - prefixLen)
+                                .coerceIn(0, block.text.lastIndex.coerceAtLeast(0))
+                            val (_, curStart, curEnd) = extractWordAt(block.text, curIdx)
+                            if (curEnd > curStart) {
+                                selStart = minOf(anchorStart, curStart)
+                                selEnd = maxOf(anchorEnd, curEnd)
+                                liveDragRange = selStart to selEnd
+                            }
+                        }
+                    }
+
+                    liveDragRange = null
+                    val safeStart = selStart.coerceIn(0, block.text.length)
+                    val safeEnd = selEnd.coerceIn(safeStart, block.text.length)
+                    val selectedText = block.text.substring(safeStart, safeEnd).trim()
+                    if (selectedText.isNotBlank()) {
+                        val rootPos = latestCoords?.positionInRoot() ?: Offset.Zero
+                        val containerW = latestContainerSize.first.coerceAtLeast(1f)
+                        val containerH = latestContainerSize.second.coerceAtLeast(1f)
+                        val screenX = ((rootPos.x + lastPos.x) / containerW).coerceIn(0.08f, 0.92f)
+                        val screenY = ((rootPos.y + lastPos.y) / containerH).coerceIn(0.10f, 0.90f)
+                        val (sentStart, sentEnd) = extractSentenceRange(block.text, anchorIdx)
+                        val sentenceSnippet = if (sentEnd > sentStart) {
+                            block.text.substring(sentStart, sentEnd).trim()
+                        } else {
+                            block.text.take(220)
+                        }
+                        latestOnWordSelected(
                             SelectedWordContext(
-                                word = word,
-                                snippet = block.text.take(200),
+                                word = selectedText,
+                                snippet = sentenceSnippet,
                                 locationKey = sheet.locationKey,
                                 blockIndex = block.index,
-                                startChar = start + sheetBlock.charOffsetInBlock,
-                                endChar = end + sheetBlock.charOffsetInBlock,
+                                startChar = safeStart + sheetBlock.charOffsetInBlock,
+                                endChar = safeEnd + sheetBlock.charOffsetInBlock,
                                 anchorXFraction = screenX,
-                                anchorYFraction = screenY
+                                anchorYFraction = screenY,
+                                fullBlockText = block.text,
+                                blockCharOffset = sheetBlock.charOffsetInBlock,
+                                wordStartChar = anchorStart + sheetBlock.charOffsetInBlock,
+                                wordEndChar = anchorEnd + sheetBlock.charOffsetInBlock
                             )
                         )
                     }
+                } else {
+                    val upChange = currentEvent.changes.firstOrNull { it.id == down.id }
+                    if (upChange != null && !upChange.pressed && !upChange.isConsumed) {
+                        val moved = (upChange.position - downPos).getDistance()
+                        if (moved < viewConfiguration.touchSlop) {
+                            upChange.consume()
+                            val rootPos = latestCoords?.positionInRoot() ?: Offset.Zero
+                            val containerW = latestContainerSize.first.coerceAtLeast(1f)
+                            val xFrac = ((rootPos.x + upChange.position.x) / containerW).coerceIn(0f, 1f)
+                            latestOnTap(xFrac)
+                        }
+                    }
                 }
-            )
+            }
         }
     } else {
         Modifier
@@ -813,15 +960,32 @@ private fun SelectableTextBlock(
     }
 }
 
+private fun isWordChar(c: Char): Boolean = c.isLetterOrDigit() || c == '-' || c == '\'' || c == '’'
+
 private fun extractWordAt(text: String, index: Int): Triple<String, Int, Int> {
     if (text.isEmpty()) return Triple("", 0, 0)
-    val safe = index.coerceIn(0, text.lastIndex)
+    var safe = index.coerceIn(0, text.lastIndex)
+    // If finger lands on whitespace or punctuation, snap to nearest adjacent word char
+    if (!isWordChar(text[safe])) {
+        var offset = 1
+        while (offset <= 3) {
+            if (safe + offset < text.length && isWordChar(text[safe + offset])) {
+                safe += offset
+                break
+            }
+            if (safe - offset >= 0 && isWordChar(text[safe - offset])) {
+                safe -= offset
+                break
+            }
+            offset++
+        }
+    }
     var start = safe
     var end = safe
-    while (start > 0 && (text[start - 1].isLetterOrDigit() || text[start - 1] == '-' || text[start - 1] == '\'')) {
+    while (start > 0 && isWordChar(text[start - 1])) {
         start--
     }
-    while (end < text.length && (text[end].isLetterOrDigit() || text[end] == '-' || text[end] == '\'')) {
+    while (end < text.length && isWordChar(text[end])) {
         end++
     }
     return Triple(text.substring(start, end), start, end)

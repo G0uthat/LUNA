@@ -22,8 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,6 +44,8 @@ import com.example.data.model.DocumentFormat
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.ReaderMenuStyle
 import com.example.engine.MergedDocumentExporter
+import com.example.engine.SocialRepository
+import com.example.engine.SystemMediaController
 import com.example.ui.components.AnnotationsAndBookmarksSheet
 import com.example.ui.components.AppSettingsSheet
 import com.example.ui.components.AppearanceSettingsSheet
@@ -53,6 +53,7 @@ import com.example.ui.components.BookmarkDockOverlay
 import com.example.ui.components.ContextualDictionaryPopover
 import com.example.ui.components.DrawingFloatingToolbar
 import com.example.ui.components.InBookSearchSheet
+import com.example.ui.components.LumaActionFeedbackOverlay
 import com.example.ui.components.MergedExportDialog
 import com.example.ui.components.NoteEditorDialog
 import com.example.ui.components.TactileButton
@@ -76,6 +77,8 @@ fun ReaderScreen(
     val drawingsByLocation by viewModel.drawingsByLocation.collectAsStateWithLifecycle()
     val ocrByPage by viewModel.ocrByPage.collectAsStateWithLifecycle()
     val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
+    val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
+    val socialRepo = remember(context) { SocialRepository.getInstance(context) }
 
     var showAppearanceSheet by remember { mutableStateOf(false) }
     var showTocSheet by remember { mutableStateOf(false) }
@@ -89,8 +92,6 @@ fun ReaderScreen(
     var pendingExportOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
     var showTempProgressOverlay by remember { mutableStateOf(false) }
 
-    val snackbarHostState = remember { SnackbarHostState() }
-
     // Apply direct screen brightness inside the reader & restore system auto-brightness on exit
     LaunchedEffect(prefs.readerBrightness) {
         val window = (context as? Activity)?.window ?: return@LaunchedEffect
@@ -100,17 +101,11 @@ fun ReaderScreen(
     }
     DisposableEffect(Unit) {
         onDispose {
+            socialRepo.clearReadingPresence()
             val window = (context as? Activity)?.window ?: return@onDispose
             val lp = window.attributes
             lp.screenBrightness = -1f
             window.attributes = lp
-        }
-    }
-
-    LaunchedEffect(state.toastMessage) {
-        state.toastMessage?.let { msg ->
-            snackbarHostState.showSnackbar(msg)
-            viewModel.clearToast()
         }
     }
 
@@ -197,6 +192,12 @@ fun ReaderScreen(
                 val currentLocKey = viewModel.currentLocationKey()
                 val isBookmarkedHere = bookmarks.any { it.locationKey == currentLocKey }
 
+                // Share live reading status with connected P2P friends (respects privacy toggles)
+                val progressPctInt = (progress * 100).roundToInt()
+                LaunchedEffect(parsed.title, progressPctInt) {
+                    socialRepo.updateReadingPresence(parsed.title, progressPctInt)
+                }
+
                 // 1. Distraction-Free Reading Surface (Fluid Sheets or PDF/Manhwa)
                 if (isPdf) {
                     PdfManhwaReader(
@@ -235,6 +236,7 @@ fun ReaderScreen(
                         activeTool = state.activeTool,
                         activeColorArgb = state.activeColorArgb,
                         activeWidthNorm = state.activeWidthNorm,
+                        activeSelection = state.selectedWord,
                         onActiveSheetChanged = viewModel::onFluidSheetChanged,
                         onWordSelected = viewModel::onWordSelected,
                         onStrokeCompleted = viewModel::addStroke,
@@ -293,6 +295,7 @@ fun ReaderScreen(
                     isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
                     isProcessingStatus = state.isProcessingOcrOrTranslation,
                     processingStatusText = state.ocrTranslationStatus,
+                    mediaInfo = mediaInfo,
                     bookTitle = parsed.title,
                     progressLabel = progressSummary,
                     onToggleExpanded = { viewModel.toggleDock() },
@@ -315,7 +318,12 @@ fun ReaderScreen(
                         showSettingsSheet = true
                     },
                     onOpenExport = { showExportDialog = true },
-                    onBackToLibrary = onBackToLibrary
+                    onBackToLibrary = onBackToLibrary,
+                    onMediaPlayPause = { SystemMediaController.togglePlayPause(context) },
+                    onMediaNext = { SystemMediaController.skipToNext(context) },
+                    onMediaPrevious = { SystemMediaController.skipToPrevious(context) },
+                    onMediaSeek = { posMs -> SystemMediaController.seekTo(posMs) },
+                    onOpenNotificationAccess = { SystemMediaController.openNotificationAccessSettings(context) }
                 )
 
                 // 4. Floating Drawing Toolbar (only when drawing mode is active)
@@ -350,6 +358,7 @@ fun ReaderScreen(
                         isWikiLoading = state.isWikiLoading,
                         onHighlight = { colorArgb -> viewModel.addHighlightFromSelection(colorArgb) },
                         onAddNote = { showNewNoteDialog = true },
+                        onUpdateSelection = viewModel::updateSelection,
                         onOpenDictionarySettings = {
                             settingsInitialTab = 1
                             showSettingsSheet = true
@@ -475,13 +484,10 @@ fun ReaderScreen(
             }
         }
 
-        // Snackbar for concise feedback
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = if (state.isDrawingMode) 140.dp else 28.dp)
+        // Silk bookmark ribbon drop & tactile micro-icon animations (replaces Material Snackbars)
+        LumaActionFeedbackOverlay(
+            event = state.feedbackEvent,
+            onConsumed = viewModel::clearFeedbackEvent
         )
     }
 }

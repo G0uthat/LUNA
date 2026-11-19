@@ -2,11 +2,15 @@ package com.example.ui.library
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -62,13 +66,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -76,13 +78,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -93,11 +100,18 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.DocumentEntity
 import com.example.data.local.PlaylistEntity
+import com.example.engine.SocialRepository
+import com.example.ui.components.AccountProfileDialog
 import com.example.ui.components.AppSettingsSheet
+import com.example.ui.components.FriendsChatDialog
+import com.example.ui.components.LumaActionFeedbackOverlay
+import com.example.ui.components.LumaWideWordmark
+import com.example.ui.components.ProfileDropdownCapsuleOverlay
+import com.example.ui.components.QuickProfileSetupDialog
 import com.example.ui.components.TactileButton
 import com.example.ui.components.TactileCard
-import com.example.ui.components.TactileIconButton
 import com.example.ui.components.TactileProgressBar
+import com.example.ui.components.UserAvatarCircle
 import com.example.ui.theme.LocalFolioPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -125,13 +139,19 @@ fun LibraryScreen(
     onOpenDocument: (Long) -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val context = LocalContext.current
+    val socialRepo = remember(context) { SocialRepository.getInstance(context) }
+    val userProfile by socialRepo.profile.collectAsStateWithLifecycle()
+    val friendsList by socialRepo.friends.collectAsStateWithLifecycle()
+    val totalUnreadMessages = remember(friendsList) { friendsList.sumOf { it.unreadCount } }
+
     val documents by viewModel.documents.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val playlistRefs by viewModel.playlistRefs.collectAsStateWithLifecycle()
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
     val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
     val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
-    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
+    val feedbackEvent by viewModel.feedbackEvent.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf(LibraryViewTab.BOOKS) }
     var selectedFilter by remember { mutableStateOf("Todos") }
@@ -139,8 +159,15 @@ fun LibraryScreen(
     var openedSeriesId by remember { mutableStateOf<Long?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
+    var showProfileMenu by remember { mutableStateOf(false) }
+    var showAccountDialog by remember { mutableStateOf(false) }
+    var showFriendsDialog by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+
+    // Measured Y coordinates so the floating profile capsule aligns pixel-exact with the profile sphere
+    var rootTopWindowPx by remember { mutableFloatStateOf(0f) }
+    var profileSphereTopInRootPx by remember { mutableFloatStateOf(0f) }
 
     // Long-press floating book menu & sub-modals
     var optionsBook by remember { mutableStateOf<DocumentEntity?>(null) }
@@ -148,17 +175,20 @@ fun LibraryScreen(
     var bookForMetadataModal by remember { mutableStateOf<DocumentEntity?>(null) }
     var pendingCoverBook by remember { mutableStateOf<DocumentEntity?>(null) }
 
-    val snackbarHostState = remember { SnackbarHostState() }
+    // Soft 18% frosted blur on library content when the profile menu opens
+    val backgroundBlurRadius by animateDpAsState(
+        targetValue = if (showProfileMenu) 6.dp else 0.dp,
+        animationSpec = tween(200),
+        label = "library_menu_blur"
+    )
 
-    LaunchedEffect(statusMessage) {
-        statusMessage?.let {
-            snackbarHostState.showSnackbar(it)
-            viewModel.clearStatusMessage()
-        }
+    // Back handler when floating profile dropdown capsule is open
+    BackHandler(enabled = showProfileMenu) {
+        showProfileMenu = false
     }
 
     // Back handler when inside a specific Series detail view
-    BackHandler(enabled = activeTab == LibraryViewTab.SERIES && openedSeriesId != null) {
+    BackHandler(enabled = !showProfileMenu && activeTab == LibraryViewTab.SERIES && openedSeriesId != null) {
         openedSeriesId = null
     }
 
@@ -180,6 +210,15 @@ fun LibraryScreen(
             viewModel.updateBookCoverFromUri(target, uri)
         }
         pendingCoverBook = null
+    }
+
+    // Zero-permission Android Photo Picker for first-launch quick profile photo
+    val quickAvatarPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            socialRepo.updateAvatarFromUri(uri)
+        }
     }
 
     val launchImport = {
@@ -235,118 +274,78 @@ fun LibraryScreen(
     val continueDoc = remember(documents) { documents.firstOrNull() }
 
     Scaffold(
-        containerColor = palette.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) }
+        containerColor = palette.background
     ) { innerPadding ->
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 148.dp),
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .navigationBarsPadding(),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 32.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .onGloballyPositioned { coords ->
+                    rootTopWindowPx = coords.positionInWindow().y
+                }
         ) {
-            // 1. Minimalist Luma Header + Subtle "Importar" pill + Settings Gear
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .padding(top = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 148.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .blur(radius = backgroundBlurRadius),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 32.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // 1. Minimalist Full-Span "LUMA" Wordmark + Interactive Profile Sphere
+                item(key = "lib_header", span = { GridItemSpan(maxLineSpan) }, contentType = "header") {
+                    Row(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    colors = listOf(palette.accent, palette.accentShadow)
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(top = 4.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.AutoStories,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
+                        LumaWideWordmark(
+                            bookCount = documents.size,
+                            seriesCount = playlists.size,
+                            modifier = Modifier.weight(1f)
                         )
-                    }
-                    Spacer(Modifier.width(11.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Luma",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = palette.ink
-                        )
-                        Text(
-                            text = "${documents.size} libros · ${playlists.size} series",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.inkMuted
-                        )
-                    }
 
-                    // Subtle "Importar" pill with tiny format caption underneath
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Row(
+                        Spacer(Modifier.width(12.dp))
+
+                        // Profile Sphere: measured in root coords so the dropdown capsule aligns pixel-exact!
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(palette.accent)
-                                .clickable(enabled = !isImporting, onClick = launchImport)
-                                .padding(horizontal = 14.dp, vertical = 9.dp)
-                                .testTag("import_document_button"),
-                            verticalAlignment = Alignment.CenterVertically
+                                .size(48.dp)
+                                .onGloballyPositioned { coords ->
+                                    profileSphereTopInRootPx = (coords.positionInWindow().y - rootTopWindowPx)
+                                        .coerceAtLeast(0f)
+                                }
+                                .clip(CircleShape)
+                                .clickable { showProfileMenu = !showProfileMenu }
+                                .testTag("library_account_button"),
+                            contentAlignment = Alignment.Center
                         ) {
+                            UserAvatarCircle(
+                                displayName = userProfile.username.ifBlank { "C" },
+                                avatarPath = userProfile.avatarPath,
+                                avatarBase64 = "",
+                                size = 44.dp,
+                                showOnlineDot = userProfile.privacy.showOnlineStatus,
+                                unreadBadge = totalUnreadMessages
+                            )
                             if (isImporting) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = palette.onAccent
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = null,
-                                    tint = palette.onAccent,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(48.dp),
+                                    strokeWidth = 2.4.dp,
+                                    color = palette.accent
                                 )
                             }
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                text = "Importar",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.onAccent
-                            )
                         }
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = "EPUB · PDF · DOCX · TXT",
-                            fontSize = 8.5.sp,
-                            letterSpacing = 0.3.sp,
-                            color = palette.inkMuted.copy(alpha = 0.72f)
-                        )
                     }
-
-                    Spacer(Modifier.width(8.dp))
-
-                    TactileIconButton(
-                        icon = Icons.Rounded.Settings,
-                        contentDescription = "Configuración y temas",
-                        onClick = { showSettingsSheet = true },
-                        size = 42.dp,
-                        modifier = Modifier.testTag("library_settings_button")
-                    )
                 }
-            }
 
             // 2. Soft Continue Reading Banner — stays fixed across Libros/Series switches so the layout never jumps!
             if (continueDoc != null) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
+                item(key = "lib_continue_reading", span = { GridItemSpan(maxLineSpan) }, contentType = "continue") {
                     ContinueReadingSoftBanner(
                         doc = continueDoc,
                         onClick = { onOpenDocument(continueDoc.id) }
@@ -355,9 +354,9 @@ fun LibraryScreen(
             }
 
             // 3. Slim Two-Rectangle Switcher ("Libros" | "Series") ABOVE Search Bar + Square Filter Button
-            item(span = { GridItemSpan(maxLineSpan) }) {
+            item(key = "lib_tabs_and_search", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // Two slim rounded rectangles switching between all Books vs Book Series
+                    // Two slim rounded rectangles switching cleanly in lockstep between Books and Series
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -370,23 +369,15 @@ fun LibraryScreen(
                     ) {
                         for (tab in LibraryViewTab.entries) {
                             val selected = activeTab == tab
-                            val bgColor by animateColorAsState(
-                                targetValue = if (selected) palette.accent else Color.Transparent,
-                                label = "tab_bg"
-                            )
-                            val fgColor by animateColorAsState(
-                                targetValue = if (selected) palette.onAccent else palette.inkMuted,
-                                label = "tab_fg"
-                            )
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(34.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(bgColor)
+                                    .background(if (selected) palette.accent else Color.Transparent)
                                     .clickable {
                                         activeTab = tab
-                                        if (tab == LibraryViewTab.BOOKS) openedSeriesId = null
+                                        openedSeriesId = null
                                     }
                                     .testTag("library_tab_${tab.name}"),
                                 contentAlignment = Alignment.Center
@@ -395,7 +386,7 @@ fun LibraryScreen(
                                     text = tab.label,
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = fgColor
+                                    color = if (selected) palette.onAccent else palette.inkMuted
                                 )
                             }
                         }
@@ -543,7 +534,7 @@ fun LibraryScreen(
             if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
                 // Series / Playlists Overview Grid
                 if (filteredSeries.isEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(key = "lib_series_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_series") {
                         TactileCard(modifier = Modifier.fillMaxWidth()) {
                             Column(
                                 modifier = Modifier
@@ -582,22 +573,37 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    items(filteredSeries, key = { "series_${it.id}" }) { series ->
+                    items(
+                        items = filteredSeries,
+                        key = { "series_${it.id}" },
+                        contentType = { "series_card" }
+                    ) { series ->
                         val memberDocs = remember(documents, playlistRefs, series.id) {
                             val ids = playlistRefs.filter { it.playlistId == series.id }.map { it.documentId }.toSet()
                             documents.filter { it.id in ids }
                         }
-                        SeriesSteamCard(
-                            series = series,
-                            memberDocs = memberDocs,
-                            onClick = { openedSeriesId = series.id }
-                        )
+                        Box(
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = tween(220),
+                                fadeOutSpec = tween(190),
+                                placementSpec = spring(
+                                    dampingRatio = 0.82f,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                        ) {
+                            SeriesSteamCard(
+                                series = series,
+                                memberDocs = memberDocs,
+                                onClick = { openedSeriesId = series.id }
+                            )
+                        }
                     }
                 }
             } else {
                 // If inside a specific Series, show compact back/manage header
                 if (activeTab == LibraryViewTab.SERIES && activeSeries != null) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(key = "lib_series_detail_header", span = { GridItemSpan(maxLineSpan) }, contentType = "series_header") {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -660,7 +666,7 @@ fun LibraryScreen(
 
                 // Steam-Style Book Cover Grid
                 if (filteredDocs.isEmpty()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(key = "lib_books_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_books") {
                         TactileCard(modifier = Modifier.fillMaxWidth()) {
                             Column(
                                 modifier = Modifier
@@ -694,15 +700,51 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    items(filteredDocs, key = { it.id }) { doc ->
-                        SteamCoverBookTile(
-                            doc = doc,
-                            onOpen = { onOpenDocument(doc.id) },
-                            onLongPress = { optionsBook = doc }
-                        )
+                    items(
+                        items = filteredDocs,
+                        key = { "book_${it.id}" },
+                        contentType = { "book_card" }
+                    ) { doc ->
+                        Box(
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = tween(220),
+                                fadeOutSpec = tween(190),
+                                placementSpec = spring(
+                                    dampingRatio = 0.82f,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                        ) {
+                            SteamCoverBookTile(
+                                doc = doc,
+                                onOpen = { onOpenDocument(doc.id) },
+                                onLongPress = { optionsBook = doc }
+                            )
+                        }
+                    }
                     }
                 }
             }
+
+            // Floating Vertical Profile Capsule Menu aligned pixel-exact with the profile sphere
+            ProfileDropdownCapsuleOverlay(
+                visible = showProfileMenu,
+                anchorTopPx = profileSphereTopInRootPx,
+                userProfile = userProfile,
+                unreadMessages = totalUnreadMessages,
+                isImporting = isImporting,
+                onDismiss = { showProfileMenu = false },
+                onOpenAccount = { showAccountDialog = true },
+                onOpenFriends = { showFriendsDialog = true },
+                onOpenSettings = { showSettingsSheet = true },
+                onImportDocument = launchImport
+            )
+
+            // Tactile micro-animations replacing clunky Android Snackbars
+            LumaActionFeedbackOverlay(
+                event = feedbackEvent,
+                onConsumed = viewModel::clearFeedbackEvent
+            )
         }
     }
 
@@ -749,18 +791,50 @@ fun LibraryScreen(
         )
     }
 
-    // Centralized Settings Sheet (Prominent 7 Themes Grid, System Font, Menu Style, Dock Scale, Auto-Covers, Dictionary & AI API)
+    // 1. Standalone Account Configuration Dialog (ONLY Profile, Avatar, Peer Code & Privacy)
+    if (showAccountDialog) {
+        AccountProfileDialog(
+            socialRepo = socialRepo,
+            currentOrRecentBookTitle = continueDoc?.title.orEmpty(),
+            currentOrRecentBookProgressPct = ((continueDoc?.progressPercent ?: 0f) * 100f).roundToInt(),
+            onDismiss = { showAccountDialog = false }
+        )
+    }
+
+    // 2. Standalone Friends & Simple P2P Chat Dialog (ONLY Friends & Chat)
+    if (showFriendsDialog) {
+        FriendsChatDialog(
+            socialRepo = socialRepo,
+            currentOrRecentBookTitle = continueDoc?.title.orEmpty(),
+            onDismiss = { showFriendsDialog = false }
+        )
+    }
+
+    // 3. Standalone App Settings Sheet (ONLY Themes, Typography, Reader & Sources)
     if (showSettingsSheet) {
         AppSettingsSheet(
             prefs = prefs,
             sources = dictSources,
-            initialTab = 0,
             onUpdatePrefs = viewModel::updatePreferences,
             onAddSource = viewModel::addDictionarySource,
             onToggleSource = viewModel::toggleDictionarySource,
             onDeleteSource = viewModel::deleteDictionarySource,
             onRegenerateCovers = viewModel::regenerateMissingCovers,
             onDismiss = { showSettingsSheet = false }
+        )
+    }
+
+    // Optional first-launch local profile setup (asks ONLY for name & photo — zero accounts/database)
+    if (!userProfile.profileConfigured && !showAccountDialog && !showFriendsDialog && !showSettingsSheet) {
+        QuickProfileSetupDialog(
+            profile = userProfile,
+            onPickAvatar = {
+                quickAvatarPickerLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
+            onSave = { chosenName -> socialRepo.updateProfileName(chosenName) },
+            onSkip = { socialRepo.markProfilePromptDismissed() }
         )
     }
 
@@ -794,16 +868,43 @@ fun LibraryScreen(
     }
 }
 
+private object CoverBitmapCache {
+    private val cache = object : LruCache<String, Bitmap>(24 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    }
+
+    fun get(path: String?): Bitmap? {
+        if (path.isNullOrBlank()) return null
+        val bmp = cache.get(path)
+        return if (bmp != null && !bmp.isRecycled) bmp else null
+    }
+
+    fun put(path: String, bitmap: Bitmap) {
+        cache.put(path, bitmap)
+    }
+}
+
 @Composable
 private fun rememberDecodedCoverBitmap(coverPath: String?): Bitmap? {
-    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = coverPath) {
+    val cached = remember(coverPath) { CoverBitmapCache.get(coverPath) }
+    val bitmap by produceState<Bitmap?>(initialValue = cached, key1 = coverPath) {
+        if (cached != null) {
+            value = cached
+            return@produceState
+        }
         value = if (coverPath.isNullOrBlank()) {
             null
         } else {
             withContext(Dispatchers.IO) {
                 runCatching {
                     val file = File(coverPath)
-                    if (file.exists()) BitmapFactory.decodeFile(file.absolutePath) else null
+                    if (file.exists()) {
+                        BitmapFactory.decodeFile(file.absolutePath)?.also { decoded ->
+                            CoverBitmapCache.put(coverPath, decoded)
+                        }
+                    } else {
+                        null
+                    }
                 }.getOrNull()
             }
         }
@@ -825,6 +926,7 @@ private fun SteamCoverBookTile(
     val palette = LocalFolioPalette.current
     val coverBitmap = rememberDecodedCoverBitmap(doc.coverImagePath)
     val coverColor = Color(doc.coverColorHex.toInt())
+    val coverColorDeep = lerp(coverColor, Color.Black, 0.36f)
 
     Column(
         modifier = Modifier
@@ -845,7 +947,7 @@ private fun SteamCoverBookTile(
                 .clip(posterShape)
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(coverColor, coverColor.copy(alpha = 0.65f))
+                        colors = listOf(coverColor, coverColorDeep)
                     )
                 )
                 .border(1.dp, palette.border.copy(alpha = 0.7f), posterShape)
@@ -965,6 +1067,7 @@ private fun SeriesSteamCard(
 ) {
     val palette = LocalFolioPalette.current
     val accent = Color(series.accentColorHex.toInt())
+    val accentDeep = lerp(accent, Color.Black, 0.42f)
     val leadCover = rememberDecodedCoverBitmap(memberDocs.firstOrNull()?.coverImagePath)
     val shape = RoundedCornerShape(20.dp)
 
@@ -982,7 +1085,7 @@ private fun SeriesSteamCard(
                 .clip(shape)
                 .background(
                     Brush.linearGradient(
-                        colors = listOf(accent, accent.copy(alpha = 0.62f))
+                        colors = listOf(accent, accentDeep)
                     )
                 )
                 .border(1.dp, palette.border.copy(alpha = 0.65f), shape)

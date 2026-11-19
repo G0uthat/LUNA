@@ -36,6 +36,18 @@ val JetBrainsMonoFamily = FontFamily(
     Font(R.font.jetbrains_mono, FontWeight.Bold)
 )
 
+val LumaBrandFontFamily = FontFamily(
+    Font(R.font.outfit, FontWeight.Normal),
+    Font(R.font.outfit, FontWeight.Medium),
+    Font(R.font.outfit, FontWeight.SemiBold),
+    Font(R.font.outfit, FontWeight.Bold),
+    Font(R.font.outfit, FontWeight.ExtraBold)
+)
+
+val LumaLetteringFontFamily = FontFamily(
+    Font(R.font.kaushan_script, FontWeight.Normal)
+)
+
 fun buildFolioTypography(useSystemFont: Boolean): Typography {
     val uiFamily = if (useSystemFont) FontFamily.Default else PlusJakartaSansFamily
     return Typography(

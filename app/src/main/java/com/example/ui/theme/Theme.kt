@@ -158,6 +158,20 @@ fun paletteFor(theme: ReadingTheme): FolioPalette = when (theme) {
         border = NavyMidBorder,
         borderShadow = NavyMidBorderShadow
     )
+    ReadingTheme.MIDNIGHT -> FolioPalette(
+        theme = theme,
+        isDark = true,
+        background = MidnightBg,
+        surface = MidnightSurface,
+        surfaceAlt = MidnightSurfaceAlt,
+        ink = MidnightInk,
+        inkMuted = MidnightInkMuted,
+        accent = MidnightAccent,
+        accentShadow = MidnightAccentShadow,
+        accentSoft = Color(0xFF1A2B4D),
+        border = MidnightBorder,
+        borderShadow = MidnightBorderShadow
+    )
     ReadingTheme.DARK -> FolioPalette(
         theme = theme,
         isDark = true,

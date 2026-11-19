@@ -42,6 +42,8 @@ class PreferencesRepository(private val context: Context) {
         val TARGET_FPS = stringPreferencesKey("target_fps")
         val SHOW_FPS_COUNTER = booleanPreferencesKey("show_fps_counter")
         val SHOW_FOOTER = booleanPreferencesKey("show_footer")
+        val TAP_ZONES_ENABLED = booleanPreferencesKey("tap_zones_enabled")
+        val PDF_NIGHT_FILTER = booleanPreferencesKey("pdf_night_filter")
         val AUTO_OCR_PDF = booleanPreferencesKey("auto_ocr_pdf")
         val TRANSLATION_ENGINE = stringPreferencesKey("translation_engine")
         val AI_PROVIDER = stringPreferencesKey("ai_provider")
@@ -69,6 +71,8 @@ class PreferencesRepository(private val context: Context) {
             targetFps = enumOrDefault(prefs[Keys.TARGET_FPS], TargetFpsOption.AUTO),
             showFpsCounter = prefs[Keys.SHOW_FPS_COUNTER] ?: false,
             showMinimalFooter = prefs[Keys.SHOW_FOOTER] ?: true,
+            tapZonesEnabled = prefs[Keys.TAP_ZONES_ENABLED] ?: true,
+            pdfNightFilter = prefs[Keys.PDF_NIGHT_FILTER] ?: false,
             autoOcrPdf = prefs[Keys.AUTO_OCR_PDF] ?: true,
             translationEngine = enumOrDefault(prefs[Keys.TRANSLATION_ENGINE], TranslationEngine.GOOGLE_TRANSLATE),
             aiProvider = provider,
@@ -98,6 +102,8 @@ class PreferencesRepository(private val context: Context) {
                 targetFps = enumOrDefault(prefs[Keys.TARGET_FPS], TargetFpsOption.AUTO),
                 showFpsCounter = prefs[Keys.SHOW_FPS_COUNTER] ?: false,
                 showMinimalFooter = prefs[Keys.SHOW_FOOTER] ?: true,
+                tapZonesEnabled = prefs[Keys.TAP_ZONES_ENABLED] ?: true,
+                pdfNightFilter = prefs[Keys.PDF_NIGHT_FILTER] ?: false,
                 autoOcrPdf = prefs[Keys.AUTO_OCR_PDF] ?: true,
                 translationEngine = enumOrDefault(prefs[Keys.TRANSLATION_ENGINE], TranslationEngine.GOOGLE_TRANSLATE),
                 aiProvider = provider,
@@ -122,6 +128,8 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.TARGET_FPS] = updated.targetFps.name
             prefs[Keys.SHOW_FPS_COUNTER] = updated.showFpsCounter
             prefs[Keys.SHOW_FOOTER] = updated.showMinimalFooter
+            prefs[Keys.TAP_ZONES_ENABLED] = updated.tapZonesEnabled
+            prefs[Keys.PDF_NIGHT_FILTER] = updated.pdfNightFilter
             prefs[Keys.AUTO_OCR_PDF] = updated.autoOcrPdf
             prefs[Keys.TRANSLATION_ENGINE] = updated.translationEngine.name
             prefs[Keys.AI_PROVIDER] = updated.aiProvider.name

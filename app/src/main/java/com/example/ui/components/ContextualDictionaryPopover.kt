@@ -110,6 +110,7 @@ fun ContextualDictionaryPopover(
     isWikiLoading: Boolean,
     onHighlight: (Long) -> Unit,
     onAddNote: () -> Unit,
+    onUpdateSelection: (SelectedWordContext) -> Unit,
     onOpenDictionarySettings: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -118,7 +119,12 @@ fun ContextualDictionaryPopover(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val enabledSources = remember(sources) { sources.filter { it.isEnabled } }
-    var selectedTabIndex by remember(selection.word) { mutableIntStateOf(0) }
+    var selectedTabIndex by remember(selection.locationKey, selection.blockIndex, selection.wordStartChar) {
+        mutableIntStateOf(0)
+    }
+    val initialOcrWord = remember(selection.locationKey, selection.blockIndex, selection.anchorXFraction, selection.anchorYFraction) {
+        selection.word
+    }
 
     BoxWithConstraints(
         modifier = modifier
@@ -133,9 +139,9 @@ fun ContextualDictionaryPopover(
         val maxH = constraints.maxHeight
         val density = androidx.compose.ui.platform.LocalDensity.current
 
-        val maxPopWidthDp = if (maxWidth > 620.dp) 440.dp else 356.dp
+        val maxPopWidthDp = if (maxWidth > 620.dp) 440.dp else 360.dp
         val popW = with(density) { minOf(maxPopWidthDp.toPx(), maxW - 24.dp.toPx()).roundToInt() }
-        val popH = with(density) { minOf(368.dp.toPx(), maxH * 0.56f).roundToInt() }
+        val popH = with(density) { minOf(404.dp.toPx(), maxH * 0.60f).roundToInt() }
         val marginPx = with(density) { 12.dp.toPx().roundToInt() }
         val clearancePx = with(density) { 36.dp.toPx().roundToInt() }
 
@@ -182,14 +188,20 @@ fun ContextualDictionaryPopover(
                     .padding(12.dp)
                     .testTag("contextual_dictionary_popover")
             ) {
-                // Header: Selected word + Highlight Swatches + Note + Copy + Discreet Settings + Close
+                // Header: Selected word/phrase + Highlight Swatches + Note + Copy + Discreet Settings + Close
+                val isMultiWord = selection.word.trim().contains(' ')
+                val headerLabel = if (isMultiWord) {
+                    selection.word.trim()
+                } else {
+                    TranslationService.cleanWord(selection.word).ifEmpty { selection.word.trim() }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = TranslationService.cleanWord(selection.word).ifEmpty { selection.word },
-                        style = MaterialTheme.typography.titleMedium,
+                        text = headerLabel,
+                        style = if (isMultiWord) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
                         color = palette.ink,
                         maxLines = 1,
@@ -289,6 +301,118 @@ fun ContextualDictionaryPopover(
                     }
                 }
 
+                // Selection Scope Switcher: Palabra | Oración | Párrafo (1-tap sentence/paragraph highlighting!)
+                if (selection.fullBlockText.isNotBlank()) {
+                    val fullText = selection.fullBlockText
+                    val wordRelStart = (selection.wordStartChar - selection.blockCharOffset).coerceIn(0, fullText.length)
+                    val wordRelEnd = (selection.wordEndChar - selection.blockCharOffset).coerceIn(wordRelStart, fullText.length)
+                    val (sentStart, sentEnd) = remember(fullText, wordRelStart) {
+                        extractSentenceRange(fullText, wordRelStart)
+                    }
+                    val paraStart = remember(fullText) { fullText.indexOfFirst { !it.isWhitespace() }.coerceAtLeast(0) }
+                    val paraEnd = remember(fullText) {
+                        val last = fullText.indexOfLast { !it.isWhitespace() }
+                        if (last >= 0) last + 1 else fullText.length
+                    }
+                    val curRelStart = (selection.startChar - selection.blockCharOffset).coerceIn(0, fullText.length)
+                    val curRelEnd = (selection.endChar - selection.blockCharOffset).coerceIn(curRelStart, fullText.length)
+
+                    val isWordMode = curRelStart == wordRelStart && curRelEnd == wordRelEnd
+                    val isSentenceMode = !isWordMode && curRelStart == sentStart && curRelEnd == sentEnd
+                    val isParagraphMode = !isWordMode && !isSentenceMode && curRelStart == paraStart && curRelEnd == paraEnd
+                    val selectedWordCount = remember(selection.word) {
+                        selection.word.trim().split(Regex("\\s+")).count { it.isNotBlank() }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ScopePill(
+                            label = "Palabra",
+                            selected = isWordMode,
+                            onClick = {
+                                val text = fullText.substring(wordRelStart, wordRelEnd).trim()
+                                if (text.isNotBlank()) {
+                                    onUpdateSelection(
+                                        selection.copy(
+                                            word = text,
+                                            startChar = wordRelStart + selection.blockCharOffset,
+                                            endChar = wordRelEnd + selection.blockCharOffset
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.testTag("popover_scope_word")
+                        )
+                        ScopePill(
+                            label = "Oración",
+                            selected = isSentenceMode,
+                            onClick = {
+                                val text = fullText.substring(sentStart, sentEnd).trim()
+                                if (text.isNotBlank()) {
+                                    onUpdateSelection(
+                                        selection.copy(
+                                            word = text,
+                                            startChar = sentStart + selection.blockCharOffset,
+                                            endChar = sentEnd + selection.blockCharOffset
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.testTag("popover_scope_sentence")
+                        )
+                        ScopePill(
+                            label = "Párrafo",
+                            selected = isParagraphMode,
+                            onClick = {
+                                val text = fullText.substring(paraStart, paraEnd).trim()
+                                if (text.isNotBlank()) {
+                                    onUpdateSelection(
+                                        selection.copy(
+                                            word = text,
+                                            startChar = paraStart + selection.blockCharOffset,
+                                            endChar = paraEnd + selection.blockCharOffset
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.testTag("popover_scope_paragraph")
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (selectedWordCount > 1) {
+                            Text(
+                                text = "$selectedWordCount pal.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                    }
+                } else if (selection.snippet.isNotBlank() && selection.snippet.trim() != initialOcrWord.trim()) {
+                    val isSentenceMode = selection.word.trim() == selection.snippet.trim()
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ScopePill(
+                            label = "Palabra",
+                            selected = !isSentenceMode,
+                            onClick = { onUpdateSelection(selection.copy(word = initialOcrWord)) },
+                            modifier = Modifier.testTag("popover_scope_word")
+                        )
+                        ScopePill(
+                            label = "Oración",
+                            selected = isSentenceMode,
+                            onClick = { onUpdateSelection(selection.copy(word = selection.snippet.trim())) },
+                            modifier = Modifier.testTag("popover_scope_sentence")
+                        )
+                    }
+                }
+
                 Spacer(Modifier.height(8.dp))
 
                 // Instant EN / Auto -> ES Translation Pill
@@ -329,7 +453,7 @@ fun ContextualDictionaryPopover(
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                             color = palette.ink,
-                            maxLines = 2,
+                            maxLines = if (isMultiWord) 4 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -645,4 +769,86 @@ private fun EmbeddedDictionaryWebView(
             }
         }
     }
+}
+
+@Composable
+private fun ScopePill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalFolioPalette.current
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) palette.accentSoft else palette.surfaceAlt)
+            .border(
+                width = 1.dp,
+                color = if (selected) palette.accent.copy(alpha = 0.65f) else palette.border.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(10.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            color = if (selected) palette.accent else palette.inkMuted
+        )
+    }
+}
+
+/**
+ * Extracts the complete sentence bounds [start, end) surrounding [anchorIndex] inside [text].
+ * Respects Spanish/English punctuation (., !, ?, …, \n) and preserves opening/closing quotes.
+ */
+internal fun extractSentenceRange(text: String, anchorIndex: Int): Pair<Int, Int> {
+    if (text.isBlank()) return 0 to 0
+    val safe = anchorIndex.coerceIn(0, text.lastIndex)
+
+    fun isSentenceEndChar(c: Char): Boolean = c == '.' || c == '!' || c == '?' || c == '…' || c == '\n'
+    fun isClosingQuoteOrParen(c: Char): Boolean = c == '»' || c == '"' || c == '”' || c == '\'' || c == '’' || c == ')' || c == ']'
+
+    // Scan backwards to find the start of the current sentence
+    var start = safe
+    while (start > 0) {
+        val prev = text[start - 1]
+        if (prev == '\n') break
+        if (isSentenceEndChar(prev)) {
+            // Confirm it's a real sentence break (followed by whitespace, quote+whitespace, or end)
+            var after = start
+            while (after < text.length && isClosingQuoteOrParen(text[after])) after++
+            if (after >= text.length || text[after].isWhitespace()) {
+                start = after
+                break
+            }
+        }
+        start--
+    }
+    while (start < text.length && text[start].isWhitespace()) {
+        start++
+    }
+
+    // Scan forwards to find the end of the current sentence
+    var end = safe
+    while (end < text.length) {
+        val c = text[end]
+        if (c == '\n') break
+        if (isSentenceEndChar(c)) {
+            end++
+            while (end < text.length && (isSentenceEndChar(text[end]) || isClosingQuoteOrParen(text[end]))) {
+                if (text[end] == '\n') break
+                end++
+            }
+            break
+        }
+        end++
+    }
+    while (end > start && text[end - 1].isWhitespace()) {
+        end--
+    }
+    return if (end > start) start to end else 0 to text.length
 }

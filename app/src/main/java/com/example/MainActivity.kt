@@ -39,6 +39,8 @@ import com.example.data.local.PreferencesRepository
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
+import com.example.engine.SocialRepository
+import com.example.engine.SystemMediaController
 import com.example.ui.library.LibraryScreen
 import com.example.ui.library.LibraryViewModel
 import com.example.ui.reader.ReaderScreen
@@ -60,6 +62,8 @@ class MainActivity : ComponentActivity() {
         val db = FolioDatabase.getInstance(applicationContext)
         val repository = FolioRepository(db.folioDao())
         val preferencesRepository = PreferencesRepository(applicationContext)
+        SystemMediaController.start(applicationContext)
+        SocialRepository.getInstance(applicationContext)
 
         setContent {
             val prefs by preferencesRepository.preferencesFlow.collectAsStateWithLifecycle(
@@ -138,6 +142,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)
+        SystemMediaController.refreshPermissionStatus(applicationContext)
     }
 }
 

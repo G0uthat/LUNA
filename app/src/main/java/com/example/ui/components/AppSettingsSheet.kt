@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.MenuBook
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
@@ -42,16 +43,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.DictionarySourceEntity
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.ReadingTheme
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
+import com.example.engine.SystemMediaController
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.paletteFor
 import kotlin.math.roundToInt
@@ -95,21 +99,56 @@ fun AppSettingsSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SheetHeader(title = "Configuración", onDismiss = onDismiss)
+            AppSettingsContent(
+                prefs = prefs,
+                sources = sources,
+                activeTab = activeTab,
+                onTabChange = { activeTab = it },
+                onUpdatePrefs = onUpdatePrefs,
+                onAddSource = onAddSource,
+                onToggleSource = onToggleSource,
+                onDeleteSource = onDeleteSource,
+                onRegenerateCovers = onRegenerateCovers
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
 
+@Composable
+fun AppSettingsContent(
+    prefs: ReaderPreferences,
+    sources: List<DictionarySourceEntity>,
+    activeTab: Int,
+    onTabChange: (Int) -> Unit,
+    onUpdatePrefs: ((ReaderPreferences) -> ReaderPreferences) -> Unit,
+    onAddSource: (name: String, urlTemplate: String) -> Unit,
+    onToggleSource: (DictionarySourceEntity) -> Unit,
+    onDeleteSource: (Long) -> Unit,
+    onRegenerateCovers: (() -> Unit)? = null
+) {
+    val palette = LocalFolioPalette.current
+    val context = LocalContext.current
+    val mediaState by SystemMediaController.mediaState.collectAsStateWithLifecycle()
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
             // Segmented Tabs
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TactileChip(
                     label = "Diseño y Menú",
                     icon = Icons.Rounded.Palette,
                     selected = activeTab == 0,
-                    onClick = { activeTab = 0 },
+                    onClick = { onTabChange(0) },
                     modifier = Modifier.testTag("settings_tab_general")
                 )
                 TactileChip(
                     label = "Diccionario e IA",
                     icon = Icons.Rounded.MenuBook,
                     selected = activeTab == 1,
-                    onClick = { activeTab = 1 },
+                    onClick = { onTabChange(1) },
                     modifier = Modifier.testTag("settings_tab_dict_ai")
                 )
             }
@@ -201,7 +240,6 @@ fun AppSettingsSheet(
                 }
 
                 // 2. FPS / High Refresh Rate Unlock (60, 90, 120, 144, 240 FPS + Máx)
-                val context = LocalContext.current
                 val displayInfo = remember(context, prefs.targetFps) {
                     (context as? Activity)?.let { DisplayRefreshRateController.getDisplayInfo(it) }
                 }
@@ -433,7 +471,114 @@ fun AppSettingsSheet(
                     )
                 }
 
-                // 5. Auto-covers helper
+                // 5. Effortless Tap-to-Turn-Page + Night PDF Filter + Media Player Access
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(palette.surfaceAlt.copy(alpha = 0.65f))
+                        .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Cambio rápido con toque lateral",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = palette.ink
+                            )
+                            Text(
+                                text = "Un clic en el borde izquierdo o derecho pasa o retrocede página en libros y PDFs",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(
+                            checked = prefs.tapZonesEnabled,
+                            onCheckedChange = { enabled -> onUpdatePrefs { it.copy(tapZonesEnabled = enabled) } },
+                            colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+                            modifier = Modifier.testTag("tap_zones_enabled_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Filtro nocturno suave en PDF",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = palette.ink
+                            )
+                            Text(
+                                text = "Atenúa el blanco intenso de los PDFs cuando lees con temas oscuros o Medianoche",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Switch(
+                            checked = prefs.pdfNightFilter,
+                            onCheckedChange = { enabled -> onUpdatePrefs { it.copy(pdfNightFilter = enabled) } },
+                            colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+                            modifier = Modifier.testTag("pdf_night_filter_switch")
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(palette.surface)
+                            .border(1.dp, palette.border, RoundedCornerShape(14.dp))
+                            .clickable { SystemMediaController.openNotificationAccessSettings(context) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .testTag("media_listener_settings_row"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.MusicNote,
+                            contentDescription = null,
+                            tint = if (mediaState.isNotificationAccessGranted) Color(0xFF1DB954) else palette.accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Reproductor en Isla Dinámica",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = palette.ink
+                            )
+                            Text(
+                                text = if (mediaState.isNotificationAccessGranted) {
+                                    "Conectado con Spotify, YouTube y reproductores"
+                                } else {
+                                    "Activa acceso a notificaciones para ver carátula y canción"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (mediaState.isNotificationAccessGranted) "Activo" else "Activar",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (mediaState.isNotificationAccessGranted) Color(0xFF1DB954) else palette.accent
+                        )
+                    }
+                }
+
+                // 6. Auto-covers helper
                 if (onRegenerateCovers != null) {
                     TactileButton(
                         onClick = onRegenerateCovers,
@@ -461,8 +606,5 @@ fun AppSettingsSheet(
                     onDeleteSource = onDeleteSource
                 )
             }
-
-            Spacer(Modifier.height(16.dp))
-        }
     }
 }

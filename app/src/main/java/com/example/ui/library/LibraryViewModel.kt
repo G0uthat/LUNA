@@ -17,6 +17,8 @@ import com.example.data.model.ReaderPreferences
 import com.example.engine.CoverManager
 import com.example.engine.DocumentParser
 import com.example.engine.SampleLibraryGenerator
+import com.example.ui.components.LumaActionAnimType
+import com.example.ui.components.LumaFeedbackEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -67,8 +69,8 @@ class LibraryViewModel(
     private val _isImporting = MutableStateFlow(false)
     val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
 
-    private val _statusMessage = MutableStateFlow<String?>(null)
-    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+    private val _feedbackEvent = MutableStateFlow<LumaFeedbackEvent?>(null)
+    val feedbackEvent: StateFlow<LumaFeedbackEvent?> = _feedbackEvent.asStateFlow()
 
     private val coverColors = listOf(
         0xFF3E6AE1L,
@@ -87,8 +89,12 @@ class LibraryViewModel(
         }
     }
 
-    fun clearStatusMessage() {
-        _statusMessage.value = null
+    fun clearFeedbackEvent() {
+        _feedbackEvent.value = null
+    }
+
+    private fun emitFeedback(type: LumaActionAnimType, errorDetail: String? = null) {
+        _feedbackEvent.value = LumaFeedbackEvent(type = type, errorDetail = errorDetail)
     }
 
     fun updatePreferences(transform: (ReaderPreferences) -> ReaderPreferences) {
@@ -103,14 +109,14 @@ class LibraryViewModel(
         if (cleanName.isEmpty()) return
         viewModelScope.launch {
             repository.createPlaylist(cleanName, description.trim(), accentColorHex)
-            _statusMessage.value = "Playlist \"$cleanName\" creada"
+            emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
     fun deletePlaylist(playlist: PlaylistEntity) {
         viewModelScope.launch {
             repository.deletePlaylist(playlist.id)
-            _statusMessage.value = "Playlist \"${playlist.name}\" eliminada"
+            emitFeedback(LumaActionAnimType.DELETED)
         }
     }
 
@@ -154,11 +160,7 @@ class LibraryViewModel(
             }
         }
         if (!silent) {
-            _statusMessage.value = if (updatedCount > 0) {
-                "Se completaron $updatedCount carátulas automáticamente"
-            } else {
-                "Todos tus libros ya tienen carátula"
-            }
+            emitFeedback(LumaActionAnimType.UPDATED)
         }
     }
 
@@ -188,7 +190,7 @@ class LibraryViewModel(
                 synopsis = cleanSynopsis,
                 badgeTag = cleanBadge
             )
-            _statusMessage.value = "Metadatos guardados"
+            emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
@@ -201,9 +203,9 @@ class LibraryViewModel(
                 if (oldPath.isNotBlank() && oldPath != savedPath) {
                     withContext(Dispatchers.IO) { runCatching { File(oldPath).delete() } }
                 }
-                _statusMessage.value = "Carátula actualizada"
+                emitFeedback(LumaActionAnimType.UPDATED)
             } else {
-                _statusMessage.value = "No se pudo cargar la imagen seleccionada"
+                emitFeedback(LumaActionAnimType.ERROR, "No se pudo cargar la imagen")
             }
         }
     }
@@ -223,14 +225,14 @@ class LibraryViewModel(
             if (oldPath.isNotBlank() && oldPath != newPath) {
                 withContext(Dispatchers.IO) { runCatching { File(oldPath).delete() } }
             }
-            _statusMessage.value = "Carátula regenerada"
+            emitFeedback(LumaActionAnimType.UPDATED)
         }
     }
 
     fun addDictionarySource(name: String, urlTemplate: String) {
         viewModelScope.launch {
             repository.addDictionarySource(name, urlTemplate)
-            _statusMessage.value = "Fuente \"$name\" añadida al diccionario"
+            emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
@@ -239,7 +241,10 @@ class LibraryViewModel(
     }
 
     fun deleteDictionarySource(id: Long) {
-        viewModelScope.launch { repository.deleteDictionarySource(id) }
+        viewModelScope.launch {
+            repository.deleteDictionarySource(id)
+            emitFeedback(LumaActionAnimType.DELETED)
+        }
     }
 
     fun deleteDocument(doc: DocumentEntity) {
@@ -247,7 +252,7 @@ class LibraryViewModel(
             runCatching { File(doc.filePath).delete() }
             doc.coverImagePath?.let { path -> runCatching { File(path).delete() } }
             repository.deleteDocument(doc.id)
-            _statusMessage.value = "\"${doc.title}\" eliminado de la biblioteca"
+            emitFeedback(LumaActionAnimType.DELETED)
         }
     }
 
@@ -259,7 +264,7 @@ class LibraryViewModel(
                 val displayName = resolveDisplayName(uri) ?: "documento_${System.currentTimeMillis()}.epub"
                 val format = detectFormat(displayName, context.contentResolver.getType(uri))
                 if (format == null) {
-                    _statusMessage.value = "Formato no soportado. Usa EPUB, PDF, DOCX, TXT o FB2."
+                    emitFeedback(LumaActionAnimType.ERROR, "Usa EPUB, PDF, DOCX, TXT o FB2")
                     return@launch
                 }
 
@@ -305,10 +310,10 @@ class LibraryViewModel(
                         badgeTag = if (isImagePdf) "Manhwa OCR" else format.label
                     )
                 )
-                _statusMessage.value = "Importado: ${parsed.title}"
+                emitFeedback(LumaActionAnimType.IMPORTED)
                 onImportedOpen(newId)
             } catch (e: Exception) {
-                _statusMessage.value = "Error al importar: ${e.localizedMessage ?: "archivo inválido"}"
+                emitFeedback(LumaActionAnimType.ERROR, e.localizedMessage ?: "Archivo inválido")
             } finally {
                 _isImporting.value = false
             }

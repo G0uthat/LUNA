@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -71,6 +72,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -162,6 +165,15 @@ fun PdfManhwaReader(
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
 
+    val hasDynamicIsland = prefs.menuStyle == ReaderMenuStyle.DYNAMIC_ISLAND
+    val islandClearanceDp = if (hasDynamicIsland) (46.dp * prefs.dockScale.coerceIn(0.88f, 1.25f)) else 0.dp
+    val pdfViewportMod = if (hasDynamicIsland) {
+        Modifier.fillMaxSize().statusBarsPadding().padding(top = islandClearanceDp)
+    } else {
+        Modifier.fillMaxSize()
+    }
+    val applyPdfNightFilter = prefs.pdfNightFilter && palette.isDark
+
     Box(modifier = modifier.fillMaxSize().background(palette.background)) {
         if (prefs.pageAnimation == PageAnimationMode.VERTICAL_SCROLL) {
             val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeIndex)
@@ -176,7 +188,7 @@ fun PdfManhwaReader(
             LazyColumn(
                 state = listState,
                 userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
-                modifier = Modifier.fillMaxSize(),
+                modifier = pdfViewportMod,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(safePageCount) { pageIdx ->
@@ -186,6 +198,7 @@ fun PdfManhwaReader(
                         renderMutex = renderMutex,
                         ocrResult = ocrByPage[pageIdx],
                         showTranslatedOverlay = showTranslatedOverlay,
+                        applyNightFilter = applyPdfNightFilter,
                         strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
                         zoomScale = zoomScale,
                         panOffset = panOffset,
@@ -198,7 +211,21 @@ fun PdfManhwaReader(
                         onWordSelected = onWordSelected,
                         onStrokeCompleted = { onStrokeCompleted("pdf-page-$pageIdx", it) },
                         onEraseStrokes = { onEraseStrokes("pdf-page-$pageIdx", it) },
-                        onTapAtXFraction = { onTapPageCenter() },
+                        onTapAtXFraction = { xFrac ->
+                            if (prefs.tapZonesEnabled && zoomScale <= 1.05f) {
+                                when {
+                                    xFrac < 0.28f && pageIdx > 0 -> {
+                                        coroutineScope.launch { listState.animateScrollToItem(pageIdx - 1) }
+                                    }
+                                    xFrac > 0.72f && pageIdx < safePageCount - 1 -> {
+                                        coroutineScope.launch { listState.animateScrollToItem(pageIdx + 1) }
+                                    }
+                                    else -> onTapPageCenter()
+                                }
+                            } else {
+                                onTapPageCenter()
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -230,11 +257,11 @@ fun PdfManhwaReader(
             }
 
             val handlePdfTap: (Float) -> Unit = { xFraction ->
-                if (zoomScale > 1.05f) {
+                if (zoomScale > 1.05f || !prefs.tapZonesEnabled) {
                     onTapPageCenter()
                 } else {
                     when {
-                        xFraction < 0.20f && pagerState.currentPage > 0 -> {
+                        xFraction < 0.28f && pagerState.currentPage > 0 -> {
                             val prev = pagerState.currentPage - 1
                             coroutineScope.launch {
                                 if (prefs.pageAnimation == PageAnimationMode.E_INK) {
@@ -244,7 +271,7 @@ fun PdfManhwaReader(
                                 }
                             }
                         }
-                        xFraction > 0.80f && pagerState.currentPage < safePageCount - 1 -> {
+                        xFraction > 0.72f && pagerState.currentPage < safePageCount - 1 -> {
                             val next = pagerState.currentPage + 1
                             coroutineScope.launch {
                                 if (prefs.pageAnimation == PageAnimationMode.E_INK) {
@@ -259,7 +286,7 @@ fun PdfManhwaReader(
                 }
             }
 
-            Box(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = pdfViewportMod) {
                 HorizontalPager(
                     state = pagerState,
                     userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
@@ -320,7 +347,21 @@ fun PdfManhwaReader(
                     }
 
                     Box(
-                        modifier = Modifier.fillMaxSize().then(animMod),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(animMod)
+                            .then(
+                                if (!isDrawingMode) {
+                                    Modifier.pointerInput(pageIdx, prefs.tapZonesEnabled) {
+                                        detectTapGestures { offset ->
+                                            val frac = (offset.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                            handlePdfTap(frac)
+                                        }
+                                    }
+                                } else {
+                                    Modifier
+                                }
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
                         PdfInteractivePage(
@@ -329,6 +370,7 @@ fun PdfManhwaReader(
                             renderMutex = renderMutex,
                             ocrResult = ocrByPage[pageIdx],
                             showTranslatedOverlay = showTranslatedOverlay,
+                            applyNightFilter = applyPdfNightFilter,
                             strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
                             zoomScale = zoomScale,
                             panOffset = panOffset,
@@ -490,6 +532,7 @@ private fun PdfInteractivePage(
     renderMutex: Mutex,
     ocrResult: OcrPageResult?,
     showTranslatedOverlay: Boolean,
+    applyNightFilter: Boolean,
     strokes: List<DrawingStroke>,
     zoomScale: Float,
     panOffset: Offset,
@@ -678,11 +721,25 @@ private fun PdfInteractivePage(
         val pageHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
         val density = LocalDensity.current
 
-        // 1. Crisp rendered PDF / Manhwa page image
+        // 1. Crisp rendered PDF / Manhwa page image (with optional low-glare midnight filter)
+        val nightColorFilter = remember(applyNightFilter) {
+            if (!applyNightFilter) null
+            else ColorFilter.colorMatrix(
+                ColorMatrix(
+                    floatArrayOf(
+                        0.82f, 0f, 0f, 0f, 0f,
+                        0f, 0.80f, 0f, 0f, 0f,
+                        0f, 0f, 0.76f, 0f, 0f,
+                        0f, 0f, 0f, 1f, 0f
+                    )
+                )
+            )
+        }
         Image(
             bitmap = bmp.asImageBitmap(),
             contentDescription = "Página PDF ${pageIndex + 1}",
             contentScale = ContentScale.FillBounds,
+            colorFilter = nightColorFilter,
             modifier = Modifier.fillMaxSize()
         )
 

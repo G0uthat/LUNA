@@ -94,11 +94,20 @@ object TranslationService {
         if (prefs.translationEngine == TranslationEngine.AI_CUSTOM_API && prefs.aiApiKey.isNotBlank()) {
             onStatus("Consultando IA (${prefs.aiProvider.displayName})…")
             val aiResult = runCatching {
-                translateWithCustomAi(
-                    prompt = """
+                val isPhrase = cleaned.contains(' ')
+                val promptText = if (isPhrase) {
+                    """
+                        Traduce al español de forma natural, fiel y fluida el siguiente fragmento: "$cleaned".
+                        Devuelve únicamente la traducción limpia, sin comillas ni markdown.
+                    """.trimIndent()
+                } else {
+                    """
                         Traduce al español de forma concisa y natural el término "$cleaned" (contexto: "${contextSnippet.take(180)}").
                         Devuelve primero la traducción directa y, si ayuda, una breve aclaración de 1 línea. Solo texto limpio, sin markdown.
-                    """.trimIndent(),
+                    """.trimIndent()
+                }
+                translateWithCustomAi(
+                    prompt = promptText,
                     prefs = prefs,
                     pageBitmap = null
                 )

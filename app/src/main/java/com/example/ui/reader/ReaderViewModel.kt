@@ -26,6 +26,8 @@ import com.example.engine.DocumentParser
 import com.example.engine.MergedDocumentExporter
 import com.example.engine.OcrEngine
 import com.example.engine.TranslationService
+import com.example.ui.components.LumaActionAnimType
+import com.example.ui.components.LumaFeedbackEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,7 +68,7 @@ data class ReaderUiState(
     val isProcessingOcrOrTranslation: Boolean = false,
     val ocrTranslationStatus: String = "",
     val isExporting: Boolean = false,
-    val toastMessage: String? = null,
+    val feedbackEvent: LumaFeedbackEvent? = null,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false
 )
@@ -324,7 +326,7 @@ class ReaderViewModel(
         viewModelScope.launch {
             if (existing != null) {
                 repository.deleteBookmarkByLocation(documentId, loc)
-                showToast("Marcapáginas eliminado")
+                emitFeedback(LumaActionAnimType.BOOKMARK_REMOVED)
             } else {
                 val parsed = _uiState.value.parsed
                 val unit = _uiState.value.currentUnitIndex
@@ -341,13 +343,16 @@ class ReaderViewModel(
                         label = label
                     )
                 )
-                showToast("Página marcada: $label")
+                emitFeedback(LumaActionAnimType.BOOKMARK_ADDED)
             }
         }
     }
 
     fun deleteBookmark(id: Long) {
-        viewModelScope.launch { repository.deleteBookmark(id) }
+        viewModelScope.launch {
+            repository.deleteBookmark(id)
+            emitFeedback(LumaActionAnimType.DELETED)
+        }
     }
 
     // Highlights & Notes
@@ -369,24 +374,30 @@ class ReaderViewModel(
                 )
             )
             _uiState.update { it.copy(selectedWord = null) }
-            showToast(if (noteText.isBlank()) "Fragmento subrayado" else "Nota guardada")
+            if (noteText.isNotBlank()) {
+                emitFeedback(LumaActionAnimType.SAVED)
+            }
         }
     }
 
     fun updateHighlightNote(id: Long, noteText: String, colorArgb: Long) {
         viewModelScope.launch {
             repository.updateHighlightNote(id, noteText, colorArgb)
-            showToast("Nota actualizada")
+            emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
     fun deleteHighlight(id: Long) {
-        viewModelScope.launch { repository.deleteHighlight(id) }
+        viewModelScope.launch {
+            repository.deleteHighlight(id)
+            emitFeedback(LumaActionAnimType.DELETED)
+        }
     }
 
-    // Word Selection -> Instant EN/Auto -> ES Translation + Wikipedia ES REST Summary
+    // Word / Phrase / Sentence Selection -> Instant EN/Auto -> ES Translation + Wikipedia ES REST Summary
     fun onWordSelected(context: SelectedWordContext) {
         wordLookupJob?.cancel()
+        val wikiTerm = resolveWikiLookupTerm(context)
         _uiState.update {
             it.copy(
                 selectedWord = context,
@@ -396,7 +407,7 @@ class ReaderViewModel(
                 wordTranslationStatus = "Traduciendo al español…",
                 wikiSummary = null,
                 wikiError = null,
-                isWikiLoading = true
+                isWikiLoading = wikiTerm.isNotBlank()
             )
         }
 
@@ -422,17 +433,72 @@ class ReaderViewModel(
                 }
             }
 
-            launch {
-                val wikiRes = TranslationService.fetchWikipediaSummary(context.word)
-                _uiState.update {
-                    it.copy(
-                        isWikiLoading = false,
-                        wikiSummary = wikiRes.getOrNull(),
-                        wikiError = wikiRes.exceptionOrNull()?.localizedMessage
-                    )
+            if (wikiTerm.isNotBlank()) {
+                launch {
+                    val wikiRes = TranslationService.fetchWikipediaSummary(wikiTerm)
+                    _uiState.update {
+                        it.copy(
+                            isWikiLoading = false,
+                            wikiSummary = wikiRes.getOrNull(),
+                            wikiError = wikiRes.exceptionOrNull()?.localizedMessage
+                        )
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Expands or shrinks the active text selection (e.g., Palabra <-> Oración <-> Párrafo)
+     * without closing the popover, updating live page highlight and translating the new span.
+     */
+    fun updateSelection(updated: SelectedWordContext) {
+        val prev = _uiState.value.selectedWord
+        if (prev != null && prev.startChar == updated.startChar && prev.endChar == updated.endChar && prev.word == updated.word) {
+            return
+        }
+        wordLookupJob?.cancel()
+        _uiState.update {
+            it.copy(
+                selectedWord = updated,
+                instantTranslation = null,
+                isTranslatingWord = true,
+                wordTranslationStatus = "Traduciendo selección…"
+            )
+        }
+        wordLookupJob = viewModelScope.launch {
+            val prefs = preferences.value
+            val transRes = TranslationService.translateWordToSpanish(
+                word = updated.word,
+                contextSnippet = updated.snippet,
+                prefs = prefs,
+                onStatus = { status ->
+                    _uiState.update { it.copy(wordTranslationStatus = status) }
+                }
+            )
+            _uiState.update {
+                it.copy(
+                    isTranslatingWord = false,
+                    instantTranslation = transRes.getOrElse { err ->
+                        "No se pudo traducir (${err.localizedMessage ?: "sin conexión"})"
+                    }
+                )
+            }
+        }
+    }
+
+    private fun resolveWikiLookupTerm(context: SelectedWordContext): String {
+        val trimmed = context.word.trim()
+        val words = trimmed.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.size <= 3) return trimmed
+        // For full sentences, look up the originally tapped anchor word if available
+        if (context.fullBlockText.isNotBlank()) {
+            val relStart = (context.wordStartChar - context.blockCharOffset).coerceIn(0, context.fullBlockText.length)
+            val relEnd = (context.wordEndChar - context.blockCharOffset).coerceIn(relStart, context.fullBlockText.length)
+            val anchorWord = context.fullBlockText.substring(relStart, relEnd).trim()
+            if (anchorWord.isNotBlank()) return anchorWord
+        }
+        return words.firstOrNull().orEmpty()
     }
 
     fun dismissWordPopover() {
@@ -464,7 +530,7 @@ class ReaderViewModel(
                 repository.saveOcrPage(documentId, ocrResult)
             } catch (e: Exception) {
                 if (!silent) {
-                    showToast("Error en OCR: ${e.localizedMessage ?: "no disponible"}")
+                    emitFeedback(LumaActionAnimType.ERROR, "Error OCR: ${e.localizedMessage ?: "no disponible"}")
                 }
             } finally {
                 ocrRunningPages.remove(pageIndex)
@@ -487,7 +553,7 @@ class ReaderViewModel(
 
         val bitmap = pageBitmaps[pageIndex]
         if (bitmap == null) {
-            showToast("Espera un instante a que cargue la página PDF.")
+            emitFeedback(LumaActionAnimType.ERROR, "Espera a que cargue la página PDF")
             return
         }
 
@@ -503,7 +569,7 @@ class ReaderViewModel(
                     repository.saveOcrPage(documentId, it)
                 }
                 if (ocr.blocks.isEmpty()) {
-                    showToast("No se detectó texto en esta página.")
+                    emitFeedback(LumaActionAnimType.ERROR, "Sin texto detectado en esta página")
                     return@launch
                 }
 
@@ -520,9 +586,9 @@ class ReaderViewModel(
                 val updatedOcr = ocr.copy(blocks = translatedBlocks, isTranslated = true)
                 repository.saveOcrPage(documentId, updatedOcr)
                 _uiState.update { it.copy(showTranslatedManhwaOverlay = true) }
-                showToast("Página traducida (${translatedBlocks.size} bloques)")
+                emitFeedback(LumaActionAnimType.TRANSLATED)
             } catch (e: Exception) {
-                showToast("Error al traducir: ${e.localizedMessage ?: "revisa tu conexión o API key"}")
+                emitFeedback(LumaActionAnimType.ERROR, e.localizedMessage ?: "Revisa tu conexión")
             } finally {
                 _uiState.update { it.copy(isProcessingOcrOrTranslation = false) }
             }
@@ -608,10 +674,10 @@ class ReaderViewModel(
                     destinationUri = uri
                 )
                 if (res.isSuccess) {
-                    showToast("Exportado con dibujos fusionados y texto seleccionable")
+                    emitFeedback(LumaActionAnimType.EXPORTED)
                     onFinished()
                 } else {
-                    showToast("Error al exportar: ${res.exceptionOrNull()?.localizedMessage}")
+                    emitFeedback(LumaActionAnimType.ERROR, res.exceptionOrNull()?.localizedMessage ?: "Error al exportar")
                 }
             } finally {
                 _uiState.update { it.copy(isExporting = false) }
@@ -640,9 +706,10 @@ class ReaderViewModel(
                 val file = res.getOrNull()
                 if (file != null) {
                     val mime = MergedDocumentExporter.resolveOutputMimeType(doc, option)
+                    emitFeedback(LumaActionAnimType.EXPORTED)
                     onFileReady(file, mime)
                 } else {
-                    showToast("Error al preparar exportación: ${res.exceptionOrNull()?.localizedMessage}")
+                    emitFeedback(LumaActionAnimType.ERROR, res.exceptionOrNull()?.localizedMessage ?: "Error al exportar")
                 }
             } finally {
                 _uiState.update { it.copy(isExporting = false) }
@@ -657,7 +724,7 @@ class ReaderViewModel(
     fun addDictionarySource(name: String, urlTemplate: String) {
         viewModelScope.launch {
             repository.addDictionarySource(name, urlTemplate)
-            showToast("Fuente \"$name\" añadida")
+            emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
@@ -666,15 +733,18 @@ class ReaderViewModel(
     }
 
     fun deleteDictionarySource(id: Long) {
-        viewModelScope.launch { repository.deleteDictionarySource(id) }
+        viewModelScope.launch {
+            repository.deleteDictionarySource(id)
+            emitFeedback(LumaActionAnimType.DELETED)
+        }
     }
 
-    fun clearToast() {
-        _uiState.update { it.copy(toastMessage = null) }
+    fun clearFeedbackEvent() {
+        _uiState.update { it.copy(feedbackEvent = null) }
     }
 
-    private fun showToast(message: String) {
-        _uiState.update { it.copy(toastMessage = message) }
+    private fun emitFeedback(type: LumaActionAnimType, errorDetail: String? = null) {
+        _uiState.update { it.copy(feedbackEvent = LumaFeedbackEvent(type = type, errorDetail = errorDetail)) }
     }
 
     class Factory(

@@ -34,6 +34,7 @@ enum class ReadingTheme(val displayName: String) {
     ROSE("Rosa"),
     LEMON("Limón"),
     NAVY_MID("Azul marino"),
+    MIDNIGHT("Medianoche"),
     DARK("Grafito"),
     AMOLED("AMOLED")
 }
@@ -115,6 +116,8 @@ data class ReaderPreferences(
     val targetFps: TargetFpsOption = TargetFpsOption.AUTO,
     val showFpsCounter: Boolean = false,
     val showMinimalFooter: Boolean = true,
+    val tapZonesEnabled: Boolean = true,
+    val pdfNightFilter: Boolean = false,
     val autoOcrPdf: Boolean = true,
     val translationEngine: TranslationEngine = TranslationEngine.GOOGLE_TRANSLATE,
     val aiProvider: AiProviderType = AiProviderType.GEMINI,
@@ -225,7 +228,11 @@ data class SelectedWordContext(
     val startChar: Int,
     val endChar: Int,
     val anchorXFraction: Float,
-    val anchorYFraction: Float
+    val anchorYFraction: Float,
+    val fullBlockText: String = "",
+    val blockCharOffset: Int = 0,
+    val wordStartChar: Int = startChar,
+    val wordEndChar: Int = endChar
 )
 
 data class WikipediaSummary(
