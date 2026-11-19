@@ -83,6 +83,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -104,7 +105,10 @@ import com.example.engine.SocialRepository
 import com.example.ui.components.AccountProfileDialog
 import com.example.ui.components.AppSettingsSheet
 import com.example.ui.components.FriendsChatDialog
+import com.example.ui.components.LibraryFilterDropdownOverlay
 import com.example.ui.components.LumaActionFeedbackOverlay
+import com.example.ui.components.LumaCapsuleOptionRow
+import com.example.ui.components.LumaFloatingDropdownDialog
 import com.example.ui.components.LumaWideWordmark
 import com.example.ui.components.ProfileDropdownCapsuleOverlay
 import com.example.ui.components.QuickProfileSetupDialog
@@ -165,9 +169,10 @@ fun LibraryScreen(
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
 
-    // Measured Y coordinates so the floating profile capsule aligns pixel-exact with the profile sphere
+    // Measured Y coordinates so floating capsule menus align seamlessly to their anchor buttons
     var rootTopWindowPx by remember { mutableFloatStateOf(0f) }
     var profileSphereTopInRootPx by remember { mutableFloatStateOf(0f) }
+    var filterButtonBottomInRootPx by remember { mutableFloatStateOf(0f) }
 
     // Long-press floating book menu & sub-modals
     var optionsBook by remember { mutableStateOf<DocumentEntity?>(null) }
@@ -175,20 +180,23 @@ fun LibraryScreen(
     var bookForMetadataModal by remember { mutableStateOf<DocumentEntity?>(null) }
     var pendingCoverBook by remember { mutableStateOf<DocumentEntity?>(null) }
 
-    // Soft 18% frosted blur on library content when the profile menu opens
+    // Soft 18% frosted blur on library content whenever ANY floating dropdown menu is open
+    val anyFloatingMenuOpen = showProfileMenu || filterMenuExpanded ||
+        showAccountDialog || showFriendsDialog || showSettingsSheet || optionsBook != null
     val backgroundBlurRadius by animateDpAsState(
-        targetValue = if (showProfileMenu) 6.dp else 0.dp,
+        targetValue = if (anyFloatingMenuOpen) 6.dp else 0.dp,
         animationSpec = tween(200),
         label = "library_menu_blur"
     )
 
-    // Back handler when floating profile dropdown capsule is open
-    BackHandler(enabled = showProfileMenu) {
+    // Back handler when floating profile or filter dropdown capsule is open
+    BackHandler(enabled = showProfileMenu || filterMenuExpanded) {
         showProfileMenu = false
+        filterMenuExpanded = false
     }
 
     // Back handler when inside a specific Series detail view
-    BackHandler(enabled = !showProfileMenu && activeTab == LibraryViewTab.SERIES && openedSeriesId != null) {
+    BackHandler(enabled = !showProfileMenu && !filterMenuExpanded && activeTab == LibraryViewTab.SERIES && openedSeriesId != null) {
         openedSeriesId = null
     }
 
@@ -459,71 +467,32 @@ fun LibraryScreen(
                                 )
                             }
                         } else {
-                            Box {
-                                val filterActive = selectedFilter != "Todos"
-                                Box(
-                                    modifier = Modifier
-                                        .size(52.dp)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(if (filterActive) palette.accent else palette.surface)
-                                        .border(
-                                            width = 1.dp,
-                                            color = if (filterActive) palette.accent else palette.border,
-                                            shape = RoundedCornerShape(16.dp)
-                                        )
-                                        .clickable { filterMenuExpanded = true }
-                                        .testTag("library_filter_square_button"),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Tune,
-                                        contentDescription = "Filtrar por formato",
-                                        tint = if (filterActive) palette.onAccent else palette.ink,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-
-                                DropdownMenu(
-                                    expanded = filterMenuExpanded,
-                                    onDismissRequest = { filterMenuExpanded = false },
-                                    containerColor = palette.surface,
-                                    shape = RoundedCornerShape(18.dp)
-                                ) {
-                                    val filterOptions = listOf(
-                                        "Todos" to "Todos los formatos",
-                                        "EPUB" to "Libros EPUB",
-                                        "PDF" to "PDF y Manhwa",
-                                        "DOCX" to "Documentos DOCX",
-                                        "Otros" to "TXT y FB2"
-                                    )
-                                    for ((key, label) in filterOptions) {
-                                        val isChosen = selectedFilter == key
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    text = label,
-                                                    fontWeight = if (isChosen) FontWeight.Bold else FontWeight.Normal,
-                                                    color = if (isChosen) palette.accent else palette.ink
-                                                )
-                                            },
-                                            trailingIcon = if (isChosen) {
-                                                {
-                                                    Icon(
-                                                        Icons.Rounded.Check,
-                                                        contentDescription = null,
-                                                        tint = palette.accent,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                            } else null,
-                                            onClick = {
-                                                selectedFilter = key
-                                                filterMenuExpanded = false
-                                            },
-                                            modifier = Modifier.testTag("filter_option_$key")
-                                        )
+                            val filterActive = selectedFilter != "Todos"
+                            Box(
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .onGloballyPositioned { coords ->
+                                        filterButtonBottomInRootPx =
+                                            (coords.positionInWindow().y + coords.size.height - rootTopWindowPx)
+                                                .coerceAtLeast(0f)
                                     }
-                                }
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (filterActive) palette.accent else palette.surface)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (filterActive) palette.accent else palette.border,
+                                        shape = RoundedCornerShape(16.dp)
+                                    )
+                                    .clickable { filterMenuExpanded = !filterMenuExpanded }
+                                    .testTag("library_filter_square_button"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Tune,
+                                    contentDescription = "Filtrar por formato",
+                                    tint = if (filterActive) palette.onAccent else palette.ink,
+                                    modifier = Modifier.size(22.dp)
+                                )
                             }
                         }
                     }
@@ -738,6 +707,15 @@ fun LibraryScreen(
                 onOpenFriends = { showFriendsDialog = true },
                 onOpenSettings = { showSettingsSheet = true },
                 onImportDocument = launchImport
+            )
+
+            // Floating Vertical Filter Capsule Menu matching the exact profile dropdown aesthetic & animation
+            LibraryFilterDropdownOverlay(
+                visible = filterMenuExpanded,
+                anchorBottomPx = filterButtonBottomInRootPx,
+                selectedFilter = selectedFilter,
+                onSelectFilter = { selectedFilter = it },
+                onDismiss = { filterMenuExpanded = false }
             )
 
             // Tactile micro-animations replacing clunky Android Snackbars
@@ -1180,31 +1158,32 @@ private fun BookOptionsFloatingDialog(
     val palette = LocalFolioPalette.current
     val coverBitmap = rememberDecodedCoverBitmap(doc.coverImagePath)
     val coverColor = Color(doc.coverColorHex.toInt())
-    val shape = RoundedCornerShape(28.dp)
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = true)
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.Center,
+        transformOrigin = TransformOrigin(0.5f, 0.2f),
+        maxWidth = 360.dp,
+        maxHeightFraction = 0.82f,
+        testTag = "book_options_floating_dialog"
+    ) { dismissAnimated ->
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .shadow(20.dp, shape)
-                .clip(shape)
-                .background(palette.surface)
-                .border(1.dp, palette.border, shape)
-                .padding(18.dp)
-                .testTag("book_options_floating_dialog"),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             // Header with miniature cover + title + metadata preview
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(width = 48.dp, height = 68.dp)
+                        .size(width = 46.dp, height = 64.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(coverColor)
                 ) {
@@ -1249,12 +1228,14 @@ private fun BookOptionsFloatingDialog(
                 }
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(36.dp)
                         .clip(CircleShape)
-                        .clickable(onClick = onDismiss),
+                        .background(palette.surfaceAlt)
+                        .border(1.dp, palette.border, CircleShape)
+                        .clickable(onClick = dismissAnimated),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Cerrar", tint = palette.inkMuted, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Rounded.Close, contentDescription = "Cerrar", tint = palette.ink, modifier = Modifier.size(18.dp))
                 }
             }
 
@@ -1267,47 +1248,56 @@ private fun BookOptionsFloatingDialog(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
                         .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                        .padding(horizontal = 10.dp, vertical = 7.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
                 )
             }
 
-            Spacer(Modifier.height(2.dp))
+            androidx.compose.material3.HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 6.dp),
+                thickness = 1.dp,
+                color = palette.border.copy(alpha = 0.6f)
+            )
 
-            FloatingOptionRow(
+            LumaCapsuleOptionRow(
                 icon = Icons.Rounded.QueueMusic,
-                title = "Poner en una serie o playlist",
+                title = "PONER EN SERIE",
                 subtitle = "Agrupar con otros libros o sagas",
+                iconOnRight = true,
                 onClick = onAddToPlaylist,
                 testTag = "book_option_playlist"
             )
-            FloatingOptionRow(
+            LumaCapsuleOptionRow(
                 icon = Icons.Rounded.Image,
-                title = "Cambiar carátula",
-                subtitle = "Elegir una imagen de tu galería",
+                title = "CAMBIAR CARÁTULA",
+                subtitle = "Elegir imagen de tu galería",
+                iconOnRight = true,
                 onClick = onChangeCoverPhoto,
                 testTag = "book_option_cover_photo"
             )
-            FloatingOptionRow(
+            LumaCapsuleOptionRow(
                 icon = Icons.Rounded.AutoFixHigh,
-                title = "Generar carátula automática",
-                subtitle = "Crear portada con título y autor actual",
+                title = "PORTADA AUTOMÁTICA",
+                subtitle = "Crear con título y autor actual",
+                iconOnRight = true,
                 onClick = onRegenerateCover,
                 testTag = "book_option_cover_auto"
             )
-            FloatingOptionRow(
+            LumaCapsuleOptionRow(
                 icon = Icons.Rounded.Edit,
-                title = "Cambiar nombre y metadatos",
-                subtitle = "Editar título, autor, género, año y sinopsis",
+                title = "EDITAR METADATOS",
+                subtitle = "Título, autor, género y sinopsis",
+                iconOnRight = true,
                 onClick = onEditMetadata,
                 testTag = "book_option_metadata"
             )
-            FloatingOptionRow(
+            LumaCapsuleOptionRow(
                 icon = Icons.Rounded.DeleteOutline,
-                title = "Eliminar libro",
+                title = "ELIMINAR LIBRO",
                 subtitle = "Quitar de tu biblioteca local",
                 isDestructive = true,
+                iconOnRight = true,
                 onClick = onDelete,
                 testTag = "book_option_delete"
             )

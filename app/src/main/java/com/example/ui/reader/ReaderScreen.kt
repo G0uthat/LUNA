@@ -6,6 +6,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,11 +36,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.HighlightNoteEntity
 import com.example.data.model.DocumentFormat
@@ -56,6 +64,7 @@ import com.example.ui.components.InBookSearchSheet
 import com.example.ui.components.LumaActionFeedbackOverlay
 import com.example.ui.components.MergedExportDialog
 import com.example.ui.components.NoteEditorDialog
+import com.example.ui.components.ReaderBatteryOnlyIndicator
 import com.example.ui.components.TactileButton
 import com.example.ui.components.TocBottomSheet
 import com.example.ui.theme.LocalFolioPalette
@@ -69,6 +78,7 @@ fun ReaderScreen(
 ) {
     val palette = LocalFolioPalette.current
     val context = LocalContext.current
+    val view = LocalView.current
 
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
@@ -78,6 +88,7 @@ fun ReaderScreen(
     val ocrByPage by viewModel.ocrByPage.collectAsStateWithLifecycle()
     val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
     val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
+    val incomingNotification by SystemMediaController.incomingNotification.collectAsStateWithLifecycle()
     val socialRepo = remember(context) { SocialRepository.getInstance(context) }
 
     var showAppearanceSheet by remember { mutableStateOf(false) }
@@ -99,13 +110,23 @@ fun ReaderScreen(
         lp.screenBrightness = if (prefs.readerBrightness < 0f) -1f else prefs.readerBrightness.coerceIn(0.05f, 1f)
         window.attributes = lp
     }
-    DisposableEffect(Unit) {
+
+    // Hide Android system status bar icons during reading (shows ONLY battery indicator + Dynamic Island alerts)
+    DisposableEffect(view) {
+        val window = (context as? Activity)?.window
+        val insetsController = window?.let { WindowCompat.getInsetsController(it, view) }
+        insetsController?.apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.statusBars())
+        }
         onDispose {
+            insetsController?.show(WindowInsetsCompat.Type.statusBars())
             socialRepo.clearReadingPresence()
-            val window = (context as? Activity)?.window ?: return@onDispose
-            val lp = window.attributes
-            lp.screenBrightness = -1f
-            window.attributes = lp
+            if (window != null) {
+                val lp = window.attributes
+                lp.screenBrightness = -1f
+                window.attributes = lp
+            }
         }
     }
 
@@ -198,6 +219,16 @@ fun ReaderScreen(
                     socialRepo.updateReadingPresence(parsed.title, progressPctInt)
                 }
 
+                // Subtle 18% frosted blur on the reading surface while any floating dropdown menu is open
+                val anyReaderMenuOpen = state.isDockExpanded || showAppearanceSheet || showTocSheet ||
+                    showAnnotationsSheet || showSearchSheet || showSettingsSheet ||
+                    showExportDialog || showNewNoteDialog || editingHighlight != null
+                val readerBlurRadius by animateDpAsState(
+                    targetValue = if (anyReaderMenuOpen) 6.dp else 0.dp,
+                    animationSpec = tween(200),
+                    label = "reader_menu_blur"
+                )
+
                 // 1. Distraction-Free Reading Surface (Fluid Sheets or PDF/Manhwa)
                 if (isPdf) {
                     PdfManhwaReader(
@@ -222,7 +253,9 @@ fun ReaderScreen(
                         onEraseStrokes = viewModel::eraseStrokes,
                         onToggleTranslateOverlay = viewModel::toggleOrRunManhwaPageTranslation,
                         onTapPageCenter = handleTapCenter,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .blur(radius = readerBlurRadius)
                     )
                 } else {
                     FluidBookReader(
@@ -242,7 +275,9 @@ fun ReaderScreen(
                         onStrokeCompleted = viewModel::addStroke,
                         onEraseStrokes = viewModel::eraseStrokes,
                         onTapPageCenter = handleTapCenter,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .blur(radius = readerBlurRadius)
                     )
                 }
 
@@ -281,6 +316,21 @@ fun ReaderScreen(
                     }
                 }
 
+                // 2.5 Distraction-free Battery-ONLY status indicator (system status bar & notification icons hidden)
+                AnimatedVisibility(
+                    visible = !state.isDrawingMode &&
+                        !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded) &&
+                        incomingNotification == null,
+                    enter = fadeIn(tween(180)),
+                    exit = fadeOut(tween(140)),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .displayCutoutPadding()
+                        .padding(top = 2.dp)
+                ) {
+                    ReaderBatteryOnlyIndicator()
+                }
+
                 // 3. Configurable Reader Menu (Draggable Bookmark / Apple Dynamic Island / Classic Kindle Bar)
                 BookmarkDockOverlay(
                     menuStyle = prefs.menuStyle,
@@ -296,6 +346,7 @@ fun ReaderScreen(
                     isProcessingStatus = state.isProcessingOcrOrTranslation,
                     processingStatusText = state.ocrTranslationStatus,
                     mediaInfo = mediaInfo,
+                    incomingNotification = incomingNotification,
                     bookTitle = parsed.title,
                     progressLabel = progressSummary,
                     onToggleExpanded = { viewModel.toggleDock() },
@@ -323,7 +374,9 @@ fun ReaderScreen(
                     onMediaNext = { SystemMediaController.skipToNext(context) },
                     onMediaPrevious = { SystemMediaController.skipToPrevious(context) },
                     onMediaSeek = { posMs -> SystemMediaController.seekTo(posMs) },
-                    onOpenNotificationAccess = { SystemMediaController.openNotificationAccessSettings(context) }
+                    onOpenNotificationAccess = { SystemMediaController.openNotificationAccessSettings(context) },
+                    onTapNotification = { notif -> SystemMediaController.openIncomingNotification(context, notif) },
+                    onDismissNotification = { SystemMediaController.dismissIncomingNotification() }
                 )
 
                 // 4. Floating Drawing Toolbar (only when drawing mode is active)

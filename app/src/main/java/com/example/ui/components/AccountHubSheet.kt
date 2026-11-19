@@ -78,6 +78,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -133,80 +134,75 @@ fun AccountProfileDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        val dialogShape = RoundedCornerShape(28.dp)
-        Column(
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.84f, 0.06f),
+        maxWidth = 540.dp,
+        maxHeightFraction = 0.85f,
+        testTag = "account_profile_dialog"
+    ) { dismissAnimated ->
+        Row(
             modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .widthIn(max = 560.dp)
-                .fillMaxHeight(0.86f)
-                .imePadding()
-                .shadow(22.dp, dialogShape, ambientColor = Color.Black.copy(alpha = 0.35f))
-                .clip(dialogShape)
-                .background(palette.surface)
-                .border(1.dp, palette.border, dialogShape)
-                .testTag("account_profile_dialog")
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                UserAvatarCircle(
-                    displayName = profile.username.ifBlank { "C" },
-                    avatarPath = profile.avatarPath,
-                    avatarBase64 = "",
-                    size = 42.dp,
-                    showOnlineDot = profile.privacy.showOnlineStatus
+            UserAvatarCircle(
+                displayName = profile.username.ifBlank { "C" },
+                avatarPath = profile.avatarPath,
+                avatarBase64 = "",
+                size = 42.dp,
+                showOnlineDot = profile.privacy.showOnlineStatus
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Cuenta",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Cuenta",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = palette.ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "Perfil local y privacidad",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.inkMuted,
-                        maxLines = 1
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(palette.surface)
-                        .border(1.dp, palette.border, CircleShape)
-                        .clickable(onClick = onDismiss)
-                        .testTag("account_profile_close"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "Cerrar cuenta",
-                        tint = palette.ink,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+                Text(
+                    text = "Perfil local y privacidad",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkMuted,
+                    maxLines = 1
+                )
             }
-
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(top = 6.dp)
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(palette.surfaceAlt)
+                    .border(1.dp, palette.border, CircleShape)
+                    .clickable(onClick = dismissAnimated)
+                    .testTag("account_profile_close"),
+                contentAlignment = Alignment.Center
             ) {
-                ProfileAndPrivacyTab(
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Cerrar cuenta",
+                    tint = palette.ink,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        androidx.compose.material3.HorizontalDivider(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            thickness = 1.dp,
+            color = palette.border.copy(alpha = 0.6f)
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .padding(top = 6.dp)
+        ) {
+            ProfileAndPrivacyTab(
                     profile = profile,
                     mediaInfo = mediaInfo,
                     currentBookTitle = currentOrRecentBookTitle,
@@ -236,8 +232,7 @@ fun AccountProfileDialog(
                             context.startActivity(Intent.createChooser(intent, "Compartir código de amigo"))
                         }
                     }
-                )
-            }
+            )
         }
     }
 }
@@ -261,86 +256,28 @@ fun FriendsChatDialog(
 
     var selectedChatFriendCode by remember { mutableStateOf<String?>(null) }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        val dialogShape = RoundedCornerShape(28.dp)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .widthIn(max = 560.dp)
-                .fillMaxHeight(0.86f)
-                .imePadding()
-                .shadow(22.dp, dialogShape, ambientColor = Color.Black.copy(alpha = 0.35f))
-                .clip(dialogShape)
-                .background(palette.surface)
-                .border(1.dp, palette.border, dialogShape)
-                .testTag("friends_chat_dialog")
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(palette.accentSoft)
-                        .border(1.dp, palette.accent.copy(alpha = 0.3f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Group,
-                        contentDescription = null,
-                        tint = palette.accent,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Amigos",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = palette.ink,
-                        maxLines = 1
-                    )
-                    Text(
-                        text = "Lectura compartida y chat P2P",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.inkMuted,
-                        maxLines = 1
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(palette.surface)
-                        .border(1.dp, palette.border, CircleShape)
-                        .clickable(onClick = onDismiss)
-                        .testTag("friends_chat_close"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "Cerrar amigos",
-                        tint = palette.ink,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.84f, 0.06f),
+        maxWidth = 540.dp,
+        maxHeightFraction = 0.85f,
+        testTag = "friends_chat_dialog"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Amigos",
+            subtitle = "Lectura compartida y chat P2P",
+            leadingIcon = Icons.Rounded.Group,
+            onDismiss = dismissAnimated,
+            closeTestTag = "friends_chat_close"
+        )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(top = 6.dp)
-            ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .padding(top = 6.dp)
+        ) {
                 val activeFriend = friends.firstOrNull { it.peerCode == selectedChatFriendCode }
                 if (activeFriend != null) {
                     val chatMessages = messagesByFriend[activeFriend.peerCode].orEmpty()
@@ -370,7 +307,6 @@ fun FriendsChatDialog(
                         onSyncNow = { socialRepo.syncNow() }
                     )
                 }
-            }
         }
     }
 }

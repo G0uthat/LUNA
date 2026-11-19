@@ -23,18 +23,16 @@ import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -44,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -66,7 +65,6 @@ import kotlin.math.roundToInt
  *          [Marcapáginas arrastrable / Isla dinámica / Clásico], Dock Size scale for Tablets, Auto-Covers)
  * - Tab 1: Diccionario e IA (Google Traductor vs User BYOK AI API Key + custom {palabra} sources)
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppSettingsSheet(
     prefs: ReaderPreferences,
@@ -79,26 +77,30 @@ fun AppSettingsSheet(
     onRegenerateCovers: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
-    val palette = LocalFolioPalette.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var activeTab by remember(initialTab) { mutableIntStateOf(initialTab) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = palette.surface,
-        contentColor = palette.ink
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.84f, 0.06f),
+        maxWidth = 520.dp,
+        maxHeightFraction = 0.85f,
+        testTag = "app_settings_sheet"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Ajustes",
+            subtitle = "Tema, lectura y diccionario",
+            leadingIcon = Icons.Rounded.Settings,
+            onDismiss = dismissAnimated,
+            closeTestTag = "app_settings_close"
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .testTag("app_settings_sheet"),
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            SheetHeader(title = "Configuración", onDismiss = onDismiss)
             AppSettingsContent(
                 prefs = prefs,
                 sources = sources,
@@ -110,7 +112,7 @@ fun AppSettingsSheet(
                 onDeleteSource = onDeleteSource,
                 onRegenerateCovers = onRegenerateCovers
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
@@ -553,16 +555,16 @@ fun AppSettingsContent(
                         Spacer(Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Reproductor en Isla Dinámica",
+                                text = "Isla Dinámica: Notificaciones y Música",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = palette.ink
                             )
                             Text(
                                 text = if (mediaState.isNotificationAccessGranted) {
-                                    "Conectado con Spotify, YouTube y reproductores"
+                                    "Notificaciones de apps y reproductor activos en la Isla Dinámica"
                                 } else {
-                                    "Activa acceso a notificaciones para ver carátula y canción"
+                                    "Activa acceso a notificaciones para ver avisos de apps y música en la isla"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.inkMuted

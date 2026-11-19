@@ -9,6 +9,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -41,6 +42,7 @@ import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
+import com.example.ui.components.DynamicIslandNotificationBanner
 import com.example.ui.library.LibraryScreen
 import com.example.ui.library.LibraryViewModel
 import com.example.ui.reader.ReaderScreen
@@ -98,6 +100,7 @@ class MainActivity : ComponentActivity() {
 
             FolioTheme(readingTheme = prefs.theme, useSystemFont = prefs.useSystemFont) {
                 var activeDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
+                val incomingNotification by SystemMediaController.incomingNotification.collectAsStateWithLifecycle()
 
                 val libraryViewModel: LibraryViewModel = viewModel(
                     factory = remember {
@@ -111,6 +114,19 @@ class MainActivity : ComponentActivity() {
                         LibraryScreen(
                             viewModel = libraryViewModel,
                             onOpenDocument = { id -> activeDocumentId = id }
+                        )
+                        // Allow testing the Dynamic Island notification banner directly from Library → Ajustes
+                        DynamicIslandNotificationBanner(
+                            notification = incomingNotification?.takeIf { it.isTestPreview },
+                            onTapNotification = { notif ->
+                                SystemMediaController.openIncomingNotification(this@MainActivity, notif)
+                            },
+                            onDismiss = { SystemMediaController.dismissIncomingNotification() },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .displayCutoutPadding()
+                                .statusBarsPadding()
+                                .padding(top = 6.dp, start = 12.dp, end = 12.dp)
                         )
                     } else {
                         val readerViewModel: ReaderViewModel = viewModel(

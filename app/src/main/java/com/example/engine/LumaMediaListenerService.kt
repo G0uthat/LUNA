@@ -1,10 +1,15 @@
 package com.example.engine
 
+import android.app.Notification
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
@@ -15,6 +20,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
 import android.view.KeyEvent
 import androidx.core.app.NotificationManagerCompat
 import com.example.data.model.MediaPlaybackInfo
@@ -22,10 +28,25 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class IncomingAppNotification(
+    val id: Long = System.nanoTime(),
+    val key: String,
+    val packageName: String,
+    val appName: String,
+    val title: String,
+    val text: String,
+    val appIcon: Bitmap? = null,
+    val contentIntent: PendingIntent? = null,
+    val postedAtMs: Long = System.currentTimeMillis(),
+    val isTestPreview: Boolean = false
+)
+
 /**
- * System NotificationListenerService that allows Luma to read active MediaSessions
- * (Spotify, YouTube, YouTube Music, Apple Music, VLC, etc.) for artwork, title, progress,
- * and play/pause/next/previous controls directly inside the Dynamic Island.
+ * System NotificationListenerService that allows Luma to:
+ * 1. Read active MediaSessions (Spotify, YouTube, YouTube Music, VLC, etc.) for artwork,
+ *    title, progress, and playback controls inside the Dynamic Island.
+ * 2. Route incoming app notifications (WhatsApp, Instagram, Gmail, SMS, etc.) cleanly through
+ *    the Dynamic Island while the reader hides the cluttered system status bar.
  */
 class LumaMediaListenerService : NotificationListenerService() {
 
@@ -38,19 +59,25 @@ class LumaMediaListenerService : NotificationListenerService() {
         super.onListenerDisconnected()
         SystemMediaController.refreshPermissionStatus(applicationContext)
     }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        super.onNotificationPosted(sbn)
+        if (sbn == null) return
+        SystemMediaController.onSystemNotificationPosted(applicationContext, sbn)
+    }
 }
 
 /**
- * Real-time Android MediaSession controller with graceful AudioManager media-key fallback.
- * - Reads live metadata (title, artist, album/video thumbnail, duration, position) from Spotify,
- *   YouTube, YouTube Music, and any active media player once Notification Access is granted.
- * - Controls Play/Pause, Next, Previous, and Seek directly from the Dynamic Island.
- * - Falls back to standard AudioManager media key dispatch even if Notification Access isn't enabled yet.
+ * Real-time Android MediaSession & Dynamic Island Notification controller with graceful
+ * AudioManager media-key fallback.
  */
 object SystemMediaController {
 
     private val _mediaState = MutableStateFlow(MediaPlaybackInfo())
     val mediaState: StateFlow<MediaPlaybackInfo> = _mediaState.asStateFlow()
+
+    private val _incomingNotification = MutableStateFlow<IncomingAppNotification?>(null)
+    val incomingNotification: StateFlow<IncomingAppNotification?> = _incomingNotification.asStateFlow()
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var appContext: Context? = null
@@ -58,6 +85,128 @@ object SystemMediaController {
     private var activeController: MediaController? = null
     private var sessionsListenerRegistered = false
     private var lastFallbackAudioActiveMs: Long = 0L
+
+    private var clearNotifRunnable: Runnable? = null
+
+    fun dismissIncomingNotification() {
+        clearNotifRunnable?.let { mainHandler.removeCallbacks(it) }
+        clearNotifRunnable = null
+        _incomingNotification.value = null
+    }
+
+    fun openIncomingNotification(context: Context, notif: IncomingAppNotification) {
+        dismissIncomingNotification()
+        val opened = runCatching {
+            notif.contentIntent?.send()
+            notif.contentIntent != null
+        }.getOrDefault(false)
+        if (!opened && notif.packageName.isNotBlank()) {
+            runCatching {
+                val launch = context.packageManager.getLaunchIntentForPackage(notif.packageName)
+                if (launch != null) {
+                    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(launch)
+                }
+            }
+        }
+    }
+
+    fun triggerTestNotification(context: Context, delayMs: Long = 220L) {
+        val ctx = context.applicationContext
+        val iconBitmap = extractNotificationIconBitmap(ctx, ctx.packageName)
+        val item = IncomingAppNotification(
+            key = "luma_test_${System.nanoTime()}",
+            packageName = "",
+            appName = "Mensajes · Prueba",
+            title = "Notificación en Isla Dinámica",
+            text = "Así aparecen los avisos de tus apps mientras lees sin barra de estado.",
+            appIcon = iconBitmap,
+            contentIntent = null,
+            postedAtMs = System.currentTimeMillis(),
+            isTestPreview = true
+        )
+        if (delayMs > 0L) {
+            mainHandler.postDelayed({ publishIncomingNotification(item) }, delayMs)
+        } else {
+            publishIncomingNotification(item)
+        }
+    }
+
+    private fun publishIncomingNotification(item: IncomingAppNotification) {
+        mainHandler.post {
+            _incomingNotification.value = item
+            clearNotifRunnable?.let { mainHandler.removeCallbacks(it) }
+            val clearTask = Runnable {
+                if (_incomingNotification.value?.id == item.id) {
+                    _incomingNotification.value = null
+                }
+            }
+            clearNotifRunnable = clearTask
+            mainHandler.postDelayed(clearTask, 4800L)
+        }
+    }
+
+    internal fun onSystemNotificationPosted(context: Context, sbn: StatusBarNotification) {
+        val pkg = sbn.packageName.orEmpty()
+        if (pkg.isBlank() || pkg == context.packageName) return
+
+        val notif = sbn.notification ?: return
+        // Skip persistent background/ongoing/media/progress notifications & empty summary shells
+        val flags = notif.flags
+        if ((flags and Notification.FLAG_ONGOING_EVENT) != 0 ||
+            (flags and Notification.FLAG_FOREGROUND_SERVICE) != 0 ||
+            (flags and Notification.FLAG_GROUP_SUMMARY) != 0
+        ) {
+            return
+        }
+        val category = notif.category
+        if (category == Notification.CATEGORY_TRANSPORT ||
+            category == Notification.CATEGORY_SERVICE ||
+            category == Notification.CATEGORY_PROGRESS
+        ) {
+            return
+        }
+
+        val extras = notif.extras ?: return
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
+        val shortText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+        val body = shortText.ifBlank { bigText }
+        if (title.isBlank() && body.isBlank()) return
+
+        val appName = resolveAppLabel(context, pkg)
+        val iconBitmap = extractNotificationIconBitmap(context, pkg)
+
+        val item = IncomingAppNotification(
+            key = sbn.key,
+            packageName = pkg,
+            appName = appName.ifBlank { "Notificación" },
+            title = title.ifBlank { appName },
+            text = body,
+            appIcon = iconBitmap,
+            contentIntent = notif.contentIntent,
+            postedAtMs = sbn.postTime
+        )
+        publishIncomingNotification(item)
+    }
+
+    private fun extractNotificationIconBitmap(context: Context, packageName: String): Bitmap? {
+        return runCatching {
+            val drawable = context.packageManager.getApplicationIcon(packageName)
+            drawableToSmallBitmap(drawable, 72)
+        }.getOrNull()
+    }
+
+    private fun drawableToSmallBitmap(drawable: Drawable, sizePx: Int): Bitmap {
+        if (drawable is BitmapDrawable && drawable.bitmap != null) {
+            return Bitmap.createScaledBitmap(drawable.bitmap, sizePx, sizePx, true)
+        }
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        drawable.setBounds(0, 0, sizePx, sizePx)
+        drawable.draw(canvas)
+        return bmp
+    }
 
     private val controllerCallback = object : MediaController.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackState?) {

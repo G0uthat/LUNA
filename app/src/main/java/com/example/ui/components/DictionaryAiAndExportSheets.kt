@@ -27,17 +27,13 @@ import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -66,7 +63,6 @@ import com.example.ui.theme.LocalFolioPalette
  * 1) Translation engine selection: Google Traductor (zero API key) OR AI with user's own local API key
  * 2) Custom dictionary URL template sources ({palabra}), e.g. RAE, WordReference, DeepL
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DictionaryAndAiSettingsSheet(
     prefs: ReaderPreferences,
@@ -77,25 +73,27 @@ fun DictionaryAndAiSettingsSheet(
     onDeleteSource: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val palette = LocalFolioPalette.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = palette.surface,
-        contentColor = palette.ink
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.06f),
+        maxWidth = 520.dp,
+        maxHeightFraction = 0.84f,
+        testTag = "dictionary_ai_sheet"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Diccionario y Traducción",
+            subtitle = "Motor de traducción y fuentes",
+            leadingIcon = Icons.Rounded.Translate,
+            onDismiss = dismissAnimated
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .testTag("dictionary_ai_sheet"),
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            SheetHeader(title = "Diccionario y Traducción", onDismiss = onDismiss)
             DictionaryAndAiSettingsContent(
                 prefs = prefs,
                 sources = sources,
@@ -104,7 +102,7 @@ fun DictionaryAndAiSettingsSheet(
                 onToggleSource = onToggleSource,
                 onDeleteSource = onDeleteSource
             )
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
@@ -402,113 +400,114 @@ fun MergedExportDialog(
     val docFormat = DocumentFormat.fromExtension(document.format) ?: DocumentFormat.PDF
     var selectedOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
 
-    AlertDialog(
-        onDismissRequest = { if (!isExporting) onDismiss() },
-        containerColor = palette.surface,
-        titleContentColor = palette.ink,
-        textContentColor = palette.ink,
-        shape = RoundedCornerShape(26.dp),
-        title = {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.08f),
+        maxWidth = 480.dp,
+        maxHeightFraction = 0.82f,
+        dismissOnScrimClick = !isExporting,
+        testTag = "merged_export_dialog"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Exportar fusionado",
+            subtitle = "Dibujos + texto seleccionable",
+            leadingIcon = Icons.Rounded.IosShare,
+            onDismiss = { if (!isExporting) dismissAnimated() }
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Text(
-                text = "Exportar libro fusionado",
-                fontWeight = FontWeight.ExtraBold
+                text = "Tus dibujos y subrayados se fusionarán dentro del archivo final manteniendo todo el texto 100% seleccionable y buscable.",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.inkMuted
             )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Tus dibujos y subrayados se fusionarán dentro del archivo final manteniendo todo el texto 100% seleccionable y buscable.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkMuted
-                )
 
-                // Stats pill
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(palette.accentSoft)
-                        .padding(10.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    StatBadge("Trazos", "$drawingStrokeCount")
-                    StatBadge("Subrayados", "$highlightCount")
-                    if (docFormat == DocumentFormat.PDF) {
-                        StatBadge("Págs OCR", "$ocrPageCount")
-                    }
-                }
-
-                // Format choices
-                if (docFormat != DocumentFormat.PDF) {
-                    ExportOptionCard(
-                        icon = Icons.Rounded.Description,
-                        title = "${docFormat.label} original fusionado",
-                        subtitle = if (docFormat == DocumentFormat.EPUB) {
-                            "Conserva texto XHTML seleccionable + capa SVG vectorial encima"
-                        } else {
-                            "Conserva texto editable con resaltados y notas"
-                        },
-                        selected = selectedOption == ExportFormatOption.NATIVE_MERGED,
-                        onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
-                    )
-                    ExportOptionCard(
-                        icon = Icons.Rounded.PictureAsPdf,
-                        title = "PDF universal con texto seleccionable",
-                        subtitle = "Genera PDF vectorial con texto real seleccionable + dibujos fusionados",
-                        selected = selectedOption == ExportFormatOption.UNIVERSAL_PDF,
-                        onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
-                    )
-                } else {
-                    ExportOptionCard(
-                        icon = Icons.Rounded.PictureAsPdf,
-                        title = "PDF fusionado (Dibujos + Texto/OCR seleccionable)",
-                        subtitle = "Inyecta trazos vectoriales sin aplastar el texto original y añade capa OCR invisible seleccionable para manhwas.",
-                        selected = true,
-                        onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
-                    )
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                TactileButton(
-                    onClick = { onExportSaveAs(selectedOption) },
-                    enabled = !isExporting,
-                    cornerRadius = 16.dp,
-                    lipDepth = 3.dp,
-                    modifier = Modifier.testTag("export_save_as_button")
-                ) {
-                    Icon(Icons.Rounded.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = if (isExporting) "Fusionando…" else "Guardar en dispositivo",
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                TactileButton(
-                    onClick = { onExportShare(selectedOption) },
-                    enabled = !isExporting,
-                    containerColor = palette.surfaceAlt,
-                    shadowColor = palette.borderShadow,
-                    contentColor = palette.ink,
-                    borderColor = palette.border,
-                    cornerRadius = 16.dp,
-                    lipDepth = 3.dp,
-                    modifier = Modifier.testTag("export_share_button")
-                ) {
-                    Icon(Icons.Rounded.IosShare, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Compartir archivo fusionado", fontWeight = FontWeight.Bold)
+            // Stats pill
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(palette.accentSoft)
+                    .padding(10.dp),
+                horizontalArrangement = Arrangement.SpaceAround
+            ) {
+                StatBadge("Trazos", "$drawingStrokeCount")
+                StatBadge("Subrayados", "$highlightCount")
+                if (docFormat == DocumentFormat.PDF) {
+                    StatBadge("Págs OCR", "$ocrPageCount")
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isExporting) {
-                Text("Cerrar", color = palette.inkMuted)
+
+            // Format choices
+            if (docFormat != DocumentFormat.PDF) {
+                ExportOptionCard(
+                    icon = Icons.Rounded.Description,
+                    title = "${docFormat.label} original fusionado",
+                    subtitle = if (docFormat == DocumentFormat.EPUB) {
+                        "Conserva texto XHTML seleccionable + capa SVG vectorial encima"
+                    } else {
+                        "Conserva texto editable con resaltados y notas"
+                    },
+                    selected = selectedOption == ExportFormatOption.NATIVE_MERGED,
+                    onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
+                )
+                ExportOptionCard(
+                    icon = Icons.Rounded.PictureAsPdf,
+                    title = "PDF universal con texto seleccionable",
+                    subtitle = "Genera PDF vectorial con texto real seleccionable + dibujos fusionados",
+                    selected = selectedOption == ExportFormatOption.UNIVERSAL_PDF,
+                    onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
+                )
+            } else {
+                ExportOptionCard(
+                    icon = Icons.Rounded.PictureAsPdf,
+                    title = "PDF fusionado (Dibujos + Texto/OCR seleccionable)",
+                    subtitle = "Inyecta trazos vectoriales sin aplastar el texto original y añade capa OCR invisible seleccionable para manhwas.",
+                    selected = true,
+                    onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
+                )
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            TactileButton(
+                onClick = { onExportSaveAs(selectedOption) },
+                enabled = !isExporting,
+                cornerRadius = 16.dp,
+                lipDepth = 3.dp,
+                modifier = Modifier.testTag("export_save_as_button")
+            ) {
+                Icon(Icons.Rounded.SaveAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (isExporting) "Fusionando…" else "Guardar en dispositivo",
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            TactileButton(
+                onClick = { onExportShare(selectedOption) },
+                enabled = !isExporting,
+                containerColor = palette.surfaceAlt,
+                shadowColor = palette.borderShadow,
+                contentColor = palette.ink,
+                borderColor = palette.border,
+                cornerRadius = 16.dp,
+                lipDepth = 3.dp,
+                modifier = Modifier.testTag("export_share_button")
+            ) {
+                Icon(Icons.Rounded.IosShare, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Compartir archivo fusionado", fontWeight = FontWeight.Bold)
             }
         }
-    )
+    }
 }
 
 @Composable

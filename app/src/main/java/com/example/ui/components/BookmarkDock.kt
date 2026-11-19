@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -65,6 +66,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -103,6 +105,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.BookmarkDockSide
 import com.example.data.model.MediaPlaybackInfo
 import com.example.data.model.ReaderMenuStyle
+import com.example.engine.IncomingAppNotification
 import com.example.ui.theme.LocalFolioPalette
 import kotlin.math.roundToInt
 
@@ -130,6 +133,7 @@ fun BookmarkDockOverlay(
     isProcessingStatus: Boolean = false,
     processingStatusText: String = "",
     mediaInfo: MediaPlaybackInfo = MediaPlaybackInfo(),
+    incomingNotification: IncomingAppNotification? = null,
     bookTitle: String,
     progressLabel: String,
     onToggleExpanded: () -> Unit,
@@ -151,38 +155,53 @@ fun BookmarkDockOverlay(
     onMediaPrevious: () -> Unit = {},
     onMediaSeek: (Long) -> Unit = {},
     onOpenNotificationAccess: () -> Unit = {},
+    onTapNotification: (IncomingAppNotification) -> Unit = {},
+    onDismissNotification: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (isDrawingMode) return
 
     when (menuStyle) {
-        ReaderMenuStyle.BOOKMARK_DOCK -> DraggableSoftBookmarkDock(
-            side = side,
-            dockYFraction = dockYFraction,
-            dockScale = dockScale,
-            brightnessValue = brightnessValue,
-            isExpanded = isExpanded,
-            isBookmarkedHere = isBookmarkedHere,
-            isPdfDocument = isPdfDocument,
-            isPageTranslated = isPageTranslated,
-            bookTitle = bookTitle,
-            progressLabel = progressLabel,
-            onToggleExpanded = onToggleExpanded,
-            onDismiss = onDismiss,
-            onDockRepositioned = onDockRepositioned,
-            onBrightnessChanged = onBrightnessChanged,
-            onToggleBookmarkHere = onToggleBookmarkHere,
-            onOpenAppearance = onOpenAppearance,
-            onOpenToc = onOpenToc,
-            onToggleDrawing = onToggleDrawing,
-            onTriggerOcrTranslate = onTriggerOcrTranslate,
-            onOpenAnnotations = onOpenAnnotations,
-            onOpenSearch = onOpenSearch,
-            onOpenSettings = onOpenSettings,
-            onOpenExport = onOpenExport,
-            onBackToLibrary = onBackToLibrary,
-            modifier = modifier
-        )
+        ReaderMenuStyle.BOOKMARK_DOCK -> Box(modifier = modifier.fillMaxSize()) {
+            DraggableSoftBookmarkDock(
+                side = side,
+                dockYFraction = dockYFraction,
+                dockScale = dockScale,
+                brightnessValue = brightnessValue,
+                isExpanded = isExpanded,
+                isBookmarkedHere = isBookmarkedHere,
+                isPdfDocument = isPdfDocument,
+                isPageTranslated = isPageTranslated,
+                bookTitle = bookTitle,
+                progressLabel = progressLabel,
+                onToggleExpanded = onToggleExpanded,
+                onDismiss = onDismiss,
+                onDockRepositioned = onDockRepositioned,
+                onBrightnessChanged = onBrightnessChanged,
+                onToggleBookmarkHere = onToggleBookmarkHere,
+                onOpenAppearance = onOpenAppearance,
+                onOpenToc = onOpenToc,
+                onToggleDrawing = onToggleDrawing,
+                onTriggerOcrTranslate = onTriggerOcrTranslate,
+                onOpenAnnotations = onOpenAnnotations,
+                onOpenSearch = onOpenSearch,
+                onOpenSettings = onOpenSettings,
+                onOpenExport = onOpenExport,
+                onBackToLibrary = onBackToLibrary,
+                modifier = Modifier.fillMaxSize()
+            )
+            // Route incoming app notifications cleanly via Dynamic Island even in Bookmark Dock mode
+            DynamicIslandNotificationBanner(
+                notification = if (!isExpanded) incomingNotification else null,
+                onTapNotification = onTapNotification,
+                onDismiss = onDismissNotification,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .displayCutoutPadding()
+                    .statusBarsPadding()
+                    .padding(top = 6.dp, start = 12.dp, end = 12.dp)
+            )
+        }
 
         ReaderMenuStyle.DYNAMIC_ISLAND -> DynamicIslandReaderDock(
             dockScale = dockScale,
@@ -194,6 +213,7 @@ fun BookmarkDockOverlay(
             isProcessingStatus = isProcessingStatus,
             processingStatusText = processingStatusText,
             mediaInfo = mediaInfo,
+            incomingNotification = incomingNotification,
             bookTitle = bookTitle,
             progressLabel = progressLabel,
             onToggleExpanded = onToggleExpanded,
@@ -214,32 +234,46 @@ fun BookmarkDockOverlay(
             onMediaPrevious = onMediaPrevious,
             onMediaSeek = onMediaSeek,
             onOpenNotificationAccess = onOpenNotificationAccess,
+            onTapNotification = onTapNotification,
+            onDismissNotification = onDismissNotification,
             modifier = modifier
         )
 
-        ReaderMenuStyle.CLASSIC_BAR -> ClassicKindleOverlayBars(
-            dockScale = dockScale,
-            brightnessValue = brightnessValue,
-            isExpanded = isExpanded,
-            isBookmarkedHere = isBookmarkedHere,
-            isPdfDocument = isPdfDocument,
-            isPageTranslated = isPageTranslated,
-            bookTitle = bookTitle,
-            progressLabel = progressLabel,
-            onDismiss = onDismiss,
-            onBrightnessChanged = onBrightnessChanged,
-            onToggleBookmarkHere = onToggleBookmarkHere,
-            onOpenAppearance = onOpenAppearance,
-            onOpenToc = onOpenToc,
-            onToggleDrawing = onToggleDrawing,
-            onTriggerOcrTranslate = onTriggerOcrTranslate,
-            onOpenAnnotations = onOpenAnnotations,
-            onOpenSearch = onOpenSearch,
-            onOpenSettings = onOpenSettings,
-            onOpenExport = onOpenExport,
-            onBackToLibrary = onBackToLibrary,
-            modifier = modifier
-        )
+        ReaderMenuStyle.CLASSIC_BAR -> Box(modifier = modifier.fillMaxSize()) {
+            ClassicKindleOverlayBars(
+                dockScale = dockScale,
+                brightnessValue = brightnessValue,
+                isExpanded = isExpanded,
+                isBookmarkedHere = isBookmarkedHere,
+                isPdfDocument = isPdfDocument,
+                isPageTranslated = isPageTranslated,
+                bookTitle = bookTitle,
+                progressLabel = progressLabel,
+                onDismiss = onDismiss,
+                onBrightnessChanged = onBrightnessChanged,
+                onToggleBookmarkHere = onToggleBookmarkHere,
+                onOpenAppearance = onOpenAppearance,
+                onOpenToc = onOpenToc,
+                onToggleDrawing = onToggleDrawing,
+                onTriggerOcrTranslate = onTriggerOcrTranslate,
+                onOpenAnnotations = onOpenAnnotations,
+                onOpenSearch = onOpenSearch,
+                onOpenSettings = onOpenSettings,
+                onOpenExport = onOpenExport,
+                onBackToLibrary = onBackToLibrary,
+                modifier = Modifier.fillMaxSize()
+            )
+            DynamicIslandNotificationBanner(
+                notification = if (!isExpanded) incomingNotification else null,
+                onTapNotification = onTapNotification,
+                onDismiss = onDismissNotification,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .displayCutoutPadding()
+                    .statusBarsPadding()
+                    .padding(top = 6.dp, start = 12.dp, end = 12.dp)
+            )
+        }
     }
 }
 
@@ -341,12 +375,21 @@ private fun DraggableSoftBookmarkDock(
             label = "bookmark_icon_pop"
         )
 
-        // Click-outside scrim when expanded
-        AnimatedVisibility(visible = isExpanded, enter = fadeIn(), exit = fadeOut()) {
+        val currentYFrac = ((animY.value + tabTouchH / 2f) / maxH).coerceIn(0.15f, 0.85f)
+        val pillOrigin = TransformOrigin(if (isRight) 1f else 0f, 0.5f)
+        val drawerOrigin = TransformOrigin(if (isRight) 1f else 0f, currentYFrac)
+
+        // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(140))
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.22f))
+                    .background(Color.Black.copy(alpha = 0.15f))
+                    .background(palette.background.copy(alpha = 0.08f))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -355,8 +398,20 @@ private fun DraggableSoftBookmarkDock(
             )
         }
 
-        // Soft Organic Draggable Bookmark Pill Tab (1:1 instant finger tracking on EVERY drag!)
-        if (!isExpanded) {
+        // Soft Organic Draggable Bookmark Pill Tab (1:1 instant finger tracking + Dynamic Island Zoom-In/Zoom-Out)
+        AnimatedVisibility(
+            visible = !isExpanded,
+            enter = scaleIn(
+                initialScale = 0.74f,
+                transformOrigin = pillOrigin,
+                animationSpec = tween(200, easing = FastOutSlowInEasing)
+            ) + fadeIn(tween(160)),
+            exit = scaleOut(
+                targetScale = 0.74f,
+                transformOrigin = pillOrigin,
+                animationSpec = tween(145, easing = FastOutSlowInEasing)
+            ) + fadeOut(tween(120))
+        ) {
             val pillShape = if (isDragging) {
                 RoundedCornerShape(20.dp)
             } else if (isRight) {
@@ -487,39 +542,50 @@ private fun DraggableSoftBookmarkDock(
             }
         }
 
-        // Expanded Soft Floating Drawer (Objective reading tools + Direct Brightness + Tiny discreet Gear)
-        val dockWidth = (260.dp * dockScale).coerceIn(226.dp, 360.dp)
+        // Expanded Floating Capsule Drawer — matches ProfileDropdownCapsuleOverlay (32.dp capsule, breathing margins, Zoom-In/Zoom-Out)
+        val dockWidth = (264.dp * dockScale).coerceIn(232.dp, 360.dp)
         AnimatedVisibility(
             visible = isExpanded,
-            enter = slideInHorizontally(
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow),
-                initialOffsetX = { w -> if (isRight) w else -w }
-            ) + fadeIn(),
-            exit = slideOutHorizontally(
-                animationSpec = spring(stiffness = Spring.StiffnessMedium),
-                targetOffsetX = { w -> if (isRight) w else -w }
-            ) + fadeOut(),
+            enter = scaleIn(
+                initialScale = 0.56f,
+                transformOrigin = drawerOrigin,
+                animationSpec = tween(220, easing = FastOutSlowInEasing)
+            ) + fadeIn(tween(170)),
+            exit = scaleOut(
+                targetScale = 0.56f,
+                transformOrigin = drawerOrigin,
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            ) + fadeOut(tween(135)),
             modifier = Modifier
                 .align(if (isRight) Alignment.CenterEnd else Alignment.CenterStart)
+                .displayCutoutPadding()
                 .statusBarsPadding()
-                .padding(horizontal = 14.dp, vertical = 20.dp)
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 22.dp)
         ) {
-            val dockShape = RoundedCornerShape(28.dp)
+            val dockShape = RoundedCornerShape(32.dp)
             Column(
                 modifier = Modifier
                     .width(dockWidth)
-                    .shadow(16.dp, dockShape, ambientColor = Color.Black.copy(alpha = 0.22f))
+                    .shadow(
+                        elevation = if (palette.isDark) 20.dp else 16.dp,
+                        shape = dockShape,
+                        ambientColor = Color.Black.copy(alpha = 0.28f),
+                        spotColor = Color.Black.copy(alpha = 0.24f)
+                    )
                     .clip(dockShape)
-                    .background(palette.surface.copy(alpha = 0.97f))
+                    .background(palette.surface.copy(alpha = 0.98f))
                     .border(1.dp, palette.border, dockShape)
                     .verticalScroll(rememberScrollState())
-                    .padding(14.dp)
+                    .padding(horizontal = 12.dp, vertical = 12.dp)
                     .testTag("bookmark_dock_menu"),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Soft header with title + tiny discreet Settings gear (Kindle style) + close
+                // Soft header with title + circular Settings gear + circular close
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -538,11 +604,13 @@ private fun DraggableSoftBookmarkDock(
                             maxLines = 1
                         )
                     }
-                    // Tiny discreet settings gear (non-intrusive Kindle style)
+                    Spacer(Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(34.dp)
                             .clip(CircleShape)
+                            .background(palette.surfaceAlt)
+                            .border(1.dp, palette.border, CircleShape)
                             .clickable {
                                 onDismiss()
                                 onOpenSettings()
@@ -553,59 +621,71 @@ private fun DraggableSoftBookmarkDock(
                         Icon(
                             imageVector = Icons.Rounded.Settings,
                             contentDescription = "Configuración",
-                            tint = palette.inkMuted.copy(alpha = 0.72f),
+                            tint = palette.inkMuted,
                             modifier = Modifier.size(16.dp)
                         )
                     }
-                    Spacer(Modifier.width(2.dp))
+                    Spacer(Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(34.dp)
                             .clip(CircleShape)
+                            .background(palette.surfaceAlt)
+                            .border(1.dp, palette.border, CircleShape)
                             .clickable(onClick = onDismiss),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Close,
                             contentDescription = "Cerrar menú",
-                            tint = palette.inkMuted,
-                            modifier = Modifier.size(18.dp)
+                            tint = palette.ink,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
 
-                // Direct Brightness Control directly inside the floating menu!
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                    thickness = 1.dp,
+                    color = palette.border.copy(alpha = 0.6f)
+                )
+
+                // Direct Brightness Control directly inside the floating capsule!
                 DirectBrightnessRow(
                     brightnessValue = brightnessValue,
                     onBrightnessChanged = onBrightnessChanged
                 )
 
-                // Objective Reading Tools ONLY
+                // Objective Reading Tools in Luma floating capsule style (circular icon badges aligned to thumb edge)
                 DockToolRow(
                     icon = if (isBookmarkedHere) Icons.Rounded.BookmarkAdded else Icons.Rounded.BookmarkAdd,
-                    label = if (isBookmarkedHere) "Quitar marcapáginas" else "Marcar esta página",
+                    label = if (isBookmarkedHere) "QUITAR MARCADOR" else "MARCAR PÁGINA",
                     highlighted = isBookmarkedHere,
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onToggleBookmarkHere(); onDismiss() },
                     testTag = "dock_toggle_bookmark"
                 )
                 DockToolRow(
                     icon = Icons.Rounded.TextFields,
-                    label = "Texto, Tema y Animación",
+                    label = "TEXTO Y TEMA",
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onOpenAppearance() },
                     testTag = "dock_appearance"
                 )
                 DockToolRow(
                     icon = Icons.Rounded.FormatListBulleted,
-                    label = "Índice",
+                    label = "ÍNDICE",
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onOpenToc() },
                     testTag = "dock_toc"
                 )
                 DockToolRow(
                     icon = Icons.Rounded.Draw,
-                    label = "Dibujar en la página",
+                    label = "DIBUJAR",
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onToggleDrawing() },
                     testTag = "dock_draw"
@@ -613,8 +693,9 @@ private fun DraggableSoftBookmarkDock(
                 if (isPdfDocument) {
                     DockToolRow(
                         icon = Icons.Rounded.Translate,
-                        label = if (isPageTranslated) "Ver original" else "Traducir página (OCR)",
+                        label = if (isPageTranslated) "VER ORIGINAL" else "TRADUCIR (OCR)",
                         highlighted = isPageTranslated,
+                        iconOnRight = isRight,
                         scale = dockScale,
                         onClick = { onDismiss(); onTriggerOcrTranslate() },
                         testTag = "dock_ocr_translate"
@@ -622,42 +703,44 @@ private fun DraggableSoftBookmarkDock(
                 }
                 DockToolRow(
                     icon = Icons.Rounded.Bookmarks,
-                    label = "Notas y Marcadores",
+                    label = "NOTAS",
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onOpenAnnotations() },
                     testTag = "dock_annotations"
                 )
                 DockToolRow(
                     icon = Icons.Rounded.Search,
-                    label = "Buscar texto",
+                    label = "BUSCAR",
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onOpenSearch() },
                     testTag = "dock_search"
                 )
                 DockToolRow(
                     icon = Icons.Rounded.IosShare,
-                    label = "Exportar fusionado",
+                    label = "EXPORTAR",
                     accentTint = true,
+                    iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onOpenExport() },
                     testTag = "dock_export"
                 )
 
-                Spacer(Modifier.height(2.dp))
-                TactileButton(
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    thickness = 1.dp,
+                    color = palette.border.copy(alpha = 0.6f)
+                )
+
+                DockToolRow(
+                    icon = Icons.AutoMirrored.Rounded.ArrowBack,
+                    label = "BIBLIOTECA",
+                    iconOnRight = isRight,
+                    scale = dockScale,
                     onClick = { onDismiss(); onBackToLibrary() },
-                    containerColor = palette.surfaceAlt,
-                    shadowColor = palette.borderShadow,
-                    contentColor = palette.ink,
-                    borderColor = palette.border,
-                    cornerRadius = 16.dp,
-                    lipDepth = 2.dp,
-                    modifier = Modifier.testTag("dock_back_library")
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Biblioteca", style = MaterialTheme.typography.labelLarge, color = palette.ink)
-                }
+                    testTag = "dock_back_library"
+                )
             }
         }
     }
@@ -681,6 +764,7 @@ private fun DynamicIslandReaderDock(
     isProcessingStatus: Boolean,
     processingStatusText: String,
     mediaInfo: MediaPlaybackInfo,
+    incomingNotification: IncomingAppNotification?,
     bookTitle: String,
     progressLabel: String,
     onToggleExpanded: () -> Unit,
@@ -701,6 +785,8 @@ private fun DynamicIslandReaderDock(
     onMediaPrevious: () -> Unit,
     onMediaSeek: (Long) -> Unit,
     onOpenNotificationAccess: () -> Unit,
+    onTapNotification: (IncomingAppNotification) -> Unit,
+    onDismissNotification: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
@@ -720,16 +806,17 @@ private fun DynamicIslandReaderDock(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // Click-outside scrim when expanded
+        // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(tween(180)),
-            exit = fadeOut(tween(160))
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(140))
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.22f))
+                    .background(Color.Black.copy(alpha = 0.15f))
+                    .background(palette.background.copy(alpha = 0.08f))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -742,13 +829,21 @@ private fun DynamicIslandReaderDock(
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
+                .displayCutoutPadding()
                 .statusBarsPadding()
                 .padding(top = 6.dp, start = 12.dp, end = 12.dp),
             contentAlignment = Alignment.TopCenter
         ) {
+            // 0. Incoming external app notifications routed cleanly via the Dynamic Island!
+            DynamicIslandNotificationBanner(
+                notification = if (!isExpanded) incomingNotification else null,
+                onTapNotification = onTapNotification,
+                onDismiss = onDismissNotification
+            )
+
             // 1. Compact Apple/Infinix Dynamic Island Pill (pure Zoom-In / Zoom-Out, zero bounce/square clip)
             AnimatedVisibility(
-                visible = !isExpanded,
+                visible = !isExpanded && incomingNotification == null,
                 enter = scaleIn(
                     initialScale = 0.84f,
                     transformOrigin = topOrigin,
@@ -1428,32 +1523,69 @@ private fun ClassicKindleOverlayBars(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val capsuleShape = RoundedCornerShape(28.dp)
     Box(modifier = modifier.fillMaxSize()) {
-        // Top classic bar
+        // Gentle 15% dim scrim matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter)
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(140))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.15f))
+                    .background(palette.background.copy(alpha = 0.08f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss
+                    )
+            )
+        }
+
+        // Floating Top Capsule with breathing space around edges + spring Zoom-In/Zoom-Out dropdown
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = scaleIn(
+                initialScale = 0.88f,
+                transformOrigin = TransformOrigin(0.5f, 0f),
+                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
+            ) + fadeIn(tween(150)),
+            exit = scaleOut(
+                targetScale = 0.88f,
+                transformOrigin = TransformOrigin(0.5f, 0f),
+                animationSpec = tween(140)
+            ) + fadeOut(tween(120)),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .displayCutoutPadding()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(palette.surface.copy(alpha = 0.96f))
-                    .statusBarsPadding()
+                    .widthIn(max = 640.dp)
+                    .shadow(16.dp, capsuleShape, ambientColor = Color.Black.copy(alpha = 0.25f))
+                    .clip(capsuleShape)
+                    .background(palette.surface.copy(alpha = 0.98f))
+                    .border(1.dp, palette.border, capsuleShape)
                     .padding(horizontal = 12.dp, vertical = (10.dp * dockScale.coerceIn(0.9f, 1.25f))),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
+                        .background(palette.surfaceAlt)
+                        .border(1.dp, palette.border, CircleShape)
                         .clickable { onDismiss(); onBackToLibrary() },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Biblioteca", tint = palette.ink)
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Biblioteca", tint = palette.ink, modifier = Modifier.size(19.dp))
                 }
-                Column(modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
+                Column(modifier = Modifier.weight(1f).padding(horizontal = 10.dp)) {
                     Text(
                         text = bookTitle,
                         style = MaterialTheme.typography.titleSmall,
@@ -1470,21 +1602,27 @@ private fun ClassicKindleOverlayBars(
                 }
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
+                        .background(if (isBookmarkedHere) palette.accentSoft else palette.surfaceAlt)
+                        .border(1.dp, if (isBookmarkedHere) palette.accent else palette.border, CircleShape)
                         .clickable { onToggleBookmarkHere() },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         if (isBookmarkedHere) Icons.Rounded.BookmarkAdded else Icons.Rounded.BookmarkAdd,
                         contentDescription = "Marcar página",
-                        tint = if (isBookmarkedHere) palette.accent else palette.ink
+                        tint = if (isBookmarkedHere) palette.accent else palette.ink,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
+                Spacer(Modifier.width(6.dp))
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(38.dp)
                         .clip(CircleShape)
+                        .background(palette.surfaceAlt)
+                        .border(1.dp, palette.border, CircleShape)
                         .clickable { onDismiss(); onOpenSettings() },
                     contentAlignment = Alignment.Center
                 ) {
@@ -1498,20 +1636,33 @@ private fun ClassicKindleOverlayBars(
             }
         }
 
-        // Bottom classic bar with brightness + objective tools
+        // Floating Bottom Capsule with breathing space around edges + brightness + tools
         AnimatedVisibility(
             visible = isExpanded,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter)
+            enter = scaleIn(
+                initialScale = 0.88f,
+                transformOrigin = TransformOrigin(0.5f, 1f),
+                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
+            ) + fadeIn(tween(150)),
+            exit = scaleOut(
+                targetScale = 0.88f,
+                transformOrigin = TransformOrigin(0.5f, 1f),
+                animationSpec = tween(140)
+            ) + fadeOut(tween(120)),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 14.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 680.dp)
-                    .background(palette.surface.copy(alpha = 0.97f))
-                    .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .widthIn(max = 640.dp)
+                    .shadow(16.dp, capsuleShape, ambientColor = Color.Black.copy(alpha = 0.25f))
+                    .clip(capsuleShape)
+                    .background(palette.surface.copy(alpha = 0.98f))
+                    .border(1.dp, palette.border, capsuleShape)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 DirectBrightnessRow(
@@ -1646,47 +1797,18 @@ private fun DockToolRow(
     onClick: () -> Unit,
     testTag: String,
     highlighted: Boolean = false,
-    accentTint: Boolean = false
+    accentTint: Boolean = false,
+    iconOnRight: Boolean = true
 ) {
-    val palette = LocalFolioPalette.current
-    val bg = when {
-        highlighted -> palette.accent
-        accentTint -> palette.accentSoft
-        else -> palette.surfaceAlt.copy(alpha = 0.62f)
-    }
-    val fg = when {
-        highlighted -> palette.onAccent
-        accentTint -> palette.accent
-        else -> palette.ink
-    }
-    val shape = RoundedCornerShape(16.dp)
-    val rowH = (44.dp * scale.coerceIn(0.88f, 1.25f)).coerceAtLeast(42.dp)
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(rowH)
-            .clip(shape)
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp)
-            .testTag(testTag),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = fg,
-            modifier = Modifier.size(19.dp)
-        )
-        Spacer(Modifier.width(11.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-            color = fg,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
+    val circleSize = (36.dp * scale.coerceIn(0.9f, 1.18f)).coerceIn(34.dp, 42.dp)
+    LumaCapsuleOptionRow(
+        title = label,
+        icon = icon,
+        selected = highlighted,
+        isAccentPrimary = accentTint,
+        iconOnRight = iconOnRight,
+        iconCircleSize = circleSize,
+        onClick = onClick,
+        testTag = testTag
+    )
 }

@@ -32,8 +32,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Group
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.TextSnippet
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -545,6 +550,113 @@ private fun ProfileCapsuleActionRow(
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Floating vertical capsule filter menu matching ProfileDropdownCapsuleOverlay:
+ * - Same 32.dp capsule, breathing margins, 15% dim + subtle frosted veil, circular icon badges,
+ *   and crisp spring dropdown animation anchored cleanly below the filter button.
+ */
+@Composable
+fun LibraryFilterDropdownOverlay(
+    visible: Boolean,
+    anchorBottomPx: Float,
+    selectedFilter: String,
+    onSelectFilter: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val density = LocalDensity.current
+    val scrimInteraction = remember { MutableInteractionSource() }
+    val gapPx = with(density) { 10.dp.toPx() }
+    val menuTopOffsetPx = (anchorBottomPx + gapPx).coerceAtLeast(with(density) { 80.dp.toPx() }).roundToInt()
+
+    val options = remember {
+        listOf(
+            Triple("Todos", "Todos los formatos", Icons.Rounded.FolderCopy),
+            Triple("EPUB", "Libros EPUB", Icons.Rounded.AutoStories),
+            Triple("PDF", "PDF y Manhwa", Icons.Rounded.PictureAsPdf),
+            Triple("DOCX", "Documentos DOCX", Icons.Rounded.Description),
+            Triple("Otros", "TXT y FB2", Icons.Rounded.TextSnippet)
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(animationSpec = tween(160)),
+            exit = fadeOut(animationSpec = tween(140))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.15f))
+                    .background(palette.background.copy(alpha = 0.08f))
+                    .clickable(
+                        interactionSource = scrimInteraction,
+                        indication = null,
+                        onClick = onDismiss
+                    )
+                    .testTag("filter_menu_scrim")
+            )
+        }
+
+        AnimatedVisibility(
+            visible = visible,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset { IntOffset(0, menuTopOffsetPx) }
+                .padding(end = 16.dp, start = 16.dp),
+            enter = scaleIn(
+                initialScale = 0.86f,
+                transformOrigin = TransformOrigin(0.90f, 0.05f),
+                animationSpec = spring(
+                    dampingRatio = 0.82f,
+                    stiffness = Spring.StiffnessMedium
+                )
+            ) + fadeIn(animationSpec = tween(150)),
+            exit = scaleOut(
+                targetScale = 0.88f,
+                transformOrigin = TransformOrigin(0.90f, 0.05f),
+                animationSpec = tween(140)
+            ) + fadeOut(animationSpec = tween(120))
+        ) {
+            val capsuleShape = RoundedCornerShape(32.dp)
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 216.dp, max = 256.dp)
+                    .shadow(
+                        elevation = if (palette.isDark) 20.dp else 16.dp,
+                        shape = capsuleShape,
+                        ambientColor = Color.Black.copy(alpha = 0.28f),
+                        spotColor = Color.Black.copy(alpha = 0.24f)
+                    )
+                    .clip(capsuleShape)
+                    .background(palette.surface.copy(alpha = 0.98f))
+                    .border(1.dp, palette.border, capsuleShape)
+                    .padding(horizontal = 10.dp, vertical = 10.dp)
+                    .testTag("library_filter_capsule"),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for ((key, subtitle, icon) in options) {
+                    val isChosen = selectedFilter == key
+                    LumaCapsuleOptionRow(
+                        title = key.uppercase(),
+                        subtitle = subtitle,
+                        icon = icon,
+                        selected = isChosen,
+                        iconOnRight = true,
+                        iconCircleSize = 40.dp,
+                        onClick = {
+                            onSelectFilter(key)
+                            onDismiss()
+                        },
+                        testTag = "filter_option_$key"
                     )
                 }
             }

@@ -24,15 +24,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -40,7 +40,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -52,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,7 +69,6 @@ import com.example.data.model.TocEntry
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.paletteFor
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppearanceSettingsSheet(
     prefs: ReaderPreferences,
@@ -78,24 +77,28 @@ fun AppearanceSettingsSheet(
     onDismiss: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = palette.surface,
-        contentColor = palette.ink
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.06f),
+        maxWidth = 520.dp,
+        maxHeightFraction = 0.84f,
+        testTag = "appearance_sheet"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Texto y Tema",
+            subtitle = "Apariencia y animación de lectura",
+            leadingIcon = Icons.Rounded.TextFields,
+            onDismiss = dismissAnimated
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .testTag("appearance_sheet"),
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            SheetHeader(title = "Texto, Tema y Animación", onDismiss = onDismiss)
 
             // 1. Reading Themes (7 soft themes including Azul Marino)
             SectionTitle("Tema de lectura (${ReadingTheme.entries.size} estilos)")
@@ -314,12 +317,11 @@ fun AppearanceSettingsSheet(
                 )
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TocBottomSheet(
     toc: List<TocEntry>,
@@ -328,20 +330,25 @@ fun TocBottomSheet(
     onDismiss: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = palette.surface,
-        contentColor = palette.ink
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.06f),
+        maxWidth = 480.dp,
+        maxHeightFraction = 0.80f,
+        testTag = "toc_sheet"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Índice",
+            subtitle = "${toc.size} secciones",
+            leadingIcon = Icons.Rounded.FormatListBulleted,
+            onDismiss = dismissAnimated
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .testTag("toc_sheet")
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            SheetHeader(title = "Tabla de contenidos", onDismiss = onDismiss)
-            Spacer(Modifier.height(10.dp))
             LazyColumn(
                 modifier = Modifier.heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -360,7 +367,7 @@ fun TocBottomSheet(
                             )
                             .clickable {
                                 onSelectEntry(entry.targetIndex)
-                                onDismiss()
+                                dismissAnimated()
                             }
                             .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -383,12 +390,11 @@ fun TocBottomSheet(
                     }
                 }
             }
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InBookSearchSheet(
     query: String,
@@ -398,20 +404,26 @@ fun InBookSearchSheet(
     onDismiss: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = palette.surface,
-        contentColor = palette.ink
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.06f),
+        maxWidth = 480.dp,
+        maxHeightFraction = 0.78f,
+        testTag = "search_sheet"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Buscar",
+            subtitle = "En el documento actual",
+            leadingIcon = Icons.Rounded.Search,
+            onDismiss = dismissAnimated
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .testTag("search_sheet"),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            SheetHeader(title = "Buscar en el libro", onDismiss = onDismiss)
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
@@ -442,7 +454,7 @@ fun InBookSearchSheet(
                                 .border(1.dp, palette.border, RoundedCornerShape(16.dp))
                                 .clickable {
                                     onSelectMatch(match)
-                                    onDismiss()
+                                    dismissAnimated()
                                 }
                                 .padding(14.dp)
                         ) {
@@ -464,12 +476,11 @@ fun InBookSearchSheet(
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnnotationsAndBookmarksSheet(
     highlights: List<HighlightNoteEntity>,
@@ -483,20 +494,26 @@ fun AnnotationsAndBookmarksSheet(
     val palette = LocalFolioPalette.current
     var tab by remember { mutableIntStateOf(0) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = palette.surface,
-        contentColor = palette.ink
-    ) {
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.06f),
+        maxWidth = 500.dp,
+        maxHeightFraction = 0.80f,
+        testTag = "annotations_sheet"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Notas y Marcadores",
+            subtitle = "${highlights.size} subrayados · ${bookmarks.size} marcadores",
+            leadingIcon = Icons.Rounded.Bookmarks,
+            onDismiss = dismissAnimated
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp)
-                .testTag("annotations_sheet"),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            SheetHeader(title = "Notas y Marcadores", onDismiss = onDismiss)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TactileChip(
                     label = "Subrayados (${highlights.size})",
@@ -532,7 +549,7 @@ fun AnnotationsAndBookmarksSheet(
                                     .border(1.dp, palette.border, RoundedCornerShape(16.dp))
                                     .clickable {
                                         onNavigateToUnit(hl.chapterIndex)
-                                        onDismiss()
+                                        dismissAnimated()
                                     }
                                     .padding(12.dp),
                                 verticalAlignment = Alignment.Top
@@ -619,7 +636,7 @@ fun AnnotationsAndBookmarksSheet(
                                     .border(1.dp, palette.border, RoundedCornerShape(16.dp))
                                     .clickable {
                                         onNavigateToUnit(bm.unitIndex)
-                                        onDismiss()
+                                        dismissAnimated()
                                     }
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
@@ -658,7 +675,7 @@ fun AnnotationsAndBookmarksSheet(
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(6.dp))
         }
     }
 }
@@ -675,57 +692,69 @@ fun NoteEditorDialog(
     var note by remember { mutableStateOf(initialNote) }
     var colorArgb by remember { mutableLongStateOf(initialColorArgb) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = palette.surface,
-        titleContentColor = palette.ink,
-        textContentColor = palette.ink,
-        shape = RoundedCornerShape(24.dp),
-        title = { Text("Nota de lectura", fontWeight = FontWeight.Bold) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "«${quotedText.take(120)}»",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkMuted
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    for ((color, argb) in HighlightSwatches) {
-                        Box(
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(color)
-                                .border(
-                                    width = if (colorArgb == argb) 3.dp else 1.dp,
-                                    color = if (colorArgb == argb) palette.ink else palette.border,
-                                    shape = CircleShape
-                                )
-                                .clickable { colorArgb = argb }
-                        )
-                    }
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.Center,
+        transformOrigin = TransformOrigin(0.5f, 0.25f),
+        maxWidth = 440.dp,
+        maxHeightFraction = 0.72f,
+        testTag = "note_editor_dialog"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Nota de lectura",
+            subtitle = "Color y comentario",
+            leadingIcon = Icons.Rounded.EditNote,
+            onDismiss = dismissAnimated
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "«${quotedText.take(120)}»",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.inkMuted
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                for ((color, argb) in HighlightSwatches) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(color)
+                            .border(
+                                width = if (colorArgb == argb) 3.dp else 1.dp,
+                                color = if (colorArgb == argb) palette.ink else palette.border,
+                                shape = CircleShape
+                            )
+                            .clickable { colorArgb = argb }
+                    )
                 }
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    placeholder = { Text("Escribe tu reflexión o resumen…") },
-                    minLines = 3,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth().testTag("note_editor_input")
-                )
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(note.trim(), colorArgb) }) {
-                Text("Guardar", fontWeight = FontWeight.Bold, color = palette.accent)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancelar", color = palette.inkMuted)
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                placeholder = { Text("Escribe tu reflexión o resumen…") },
+                minLines = 3,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().testTag("note_editor_input")
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = dismissAnimated) {
+                    Text("Cancelar", color = palette.inkMuted)
+                }
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = { onSave(note.trim(), colorArgb) }) {
+                    Text("Guardar", fontWeight = FontWeight.Bold, color = palette.accent)
+                }
             }
         }
-    )
+    }
 }
 
 @Composable
