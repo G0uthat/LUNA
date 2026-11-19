@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.util.LruCache
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -1394,8 +1395,18 @@ fun QuickProfileSetupDialog(
     }
 }
 
+private object AvatarBitmapCache {
+    private val cache = object : LruCache<String, Bitmap>(6 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    }
+
+    fun get(key: String): Bitmap? = cache.get(key)?.takeIf { !it.isRecycled }
+    fun put(key: String, bmp: Bitmap) { cache.put(key, bmp) }
+}
+
 /**
  * Reusable circular avatar supporting local file path, peer Base64 thumbnail, or crisp initial fallback.
+ * Uses [AvatarBitmapCache] so avatars appear instantly with zero flicker or repeated disk decoding.
  */
 @Composable
 fun UserAvatarCircle(
@@ -1408,18 +1419,38 @@ fun UserAvatarCircle(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
-    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = avatarPath, key2 = avatarBase64) {
-        value = withContext(Dispatchers.IO) {
-            when {
-                avatarPath.isNotBlank() -> runCatching {
-                    val f = File(avatarPath)
-                    if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
-                }.getOrNull()
-                avatarBase64.isNotBlank() -> runCatching {
-                    val bytes = Base64.decode(avatarBase64, Base64.DEFAULT)
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                }.getOrNull()
-                else -> null
+    val cacheKey = remember(avatarPath, avatarBase64) {
+        when {
+            avatarPath.isNotBlank() -> "path:$avatarPath"
+            avatarBase64.isNotBlank() -> "b64:${avatarBase64.hashCode()}:${avatarBase64.length}"
+            else -> ""
+        }
+    }
+    val cachedBitmap = remember(cacheKey) { if (cacheKey.isNotEmpty()) AvatarBitmapCache.get(cacheKey) else null }
+    val bitmap by produceState<Bitmap?>(initialValue = cachedBitmap, key1 = cacheKey) {
+        if (cachedBitmap != null) {
+            value = cachedBitmap
+            return@produceState
+        }
+        value = if (cacheKey.isEmpty()) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                val decoded = when {
+                    avatarPath.isNotBlank() -> runCatching {
+                        val f = File(avatarPath)
+                        if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+                    }.getOrNull()
+                    avatarBase64.isNotBlank() -> runCatching {
+                        val bytes = Base64.decode(avatarBase64, Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }.getOrNull()
+                    else -> null
+                }
+                if (decoded != null) {
+                    AvatarBitmapCache.put(cacheKey, decoded)
+                }
+                decoded
             }
         }
     }

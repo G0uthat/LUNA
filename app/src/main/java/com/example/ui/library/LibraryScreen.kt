@@ -235,6 +235,7 @@ fun LibraryScreen(
                 "application/epub+zip",
                 "application/pdf",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 "text/plain",
                 "application/x-fictionbook+xml",
                 "*/*"
@@ -292,12 +293,13 @@ fun LibraryScreen(
                     rootTopWindowPx = coords.positionInWindow().y
                 }
         ) {
+            val gridMod = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+                .let { base -> if (backgroundBlurRadius > 0.dp) base.blur(radius = backgroundBlurRadius) else base }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 148.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding()
-                    .blur(radius = backgroundBlurRadius),
+                modifier = gridMod,
                 contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 32.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)

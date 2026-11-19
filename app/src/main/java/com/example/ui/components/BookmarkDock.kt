@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -52,6 +53,7 @@ import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.BrightnessLow
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.IosShare
@@ -85,13 +87,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -129,6 +131,8 @@ fun BookmarkDockOverlay(
     isBookmarkedHere: Boolean,
     isDrawingMode: Boolean,
     isPdfDocument: Boolean,
+    isStandardPageView: Boolean = false,
+    standardPageFormatLabel: String = "Auto",
     isPageTranslated: Boolean,
     isProcessingStatus: Boolean = false,
     processingStatusText: String = "",
@@ -145,6 +149,7 @@ fun BookmarkDockOverlay(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
+    onToggleStandardPageView: () -> Unit = {},
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -172,6 +177,8 @@ fun BookmarkDockOverlay(
                 isExpanded = isExpanded,
                 isBookmarkedHere = isBookmarkedHere,
                 isPdfDocument = isPdfDocument,
+                isStandardPageView = isStandardPageView,
+                standardPageFormatLabel = standardPageFormatLabel,
                 isPageTranslated = isPageTranslated,
                 bookTitle = bookTitle,
                 progressLabel = progressLabel,
@@ -183,6 +190,7 @@ fun BookmarkDockOverlay(
                 onOpenAppearance = onOpenAppearance,
                 onOpenToc = onOpenToc,
                 onToggleDrawing = onToggleDrawing,
+                onToggleStandardPageView = onToggleStandardPageView,
                 onTriggerOcrTranslate = onTriggerOcrTranslate,
                 onOpenAnnotations = onOpenAnnotations,
                 onOpenSearch = onOpenSearch,
@@ -211,6 +219,7 @@ fun BookmarkDockOverlay(
             isExpanded = isExpanded,
             isBookmarkedHere = isBookmarkedHere,
             isPdfDocument = isPdfDocument,
+            isStandardPageView = isStandardPageView,
             isPageTranslated = isPageTranslated,
             isProcessingStatus = isProcessingStatus,
             processingStatusText = processingStatusText,
@@ -226,6 +235,7 @@ fun BookmarkDockOverlay(
             onOpenAppearance = onOpenAppearance,
             onOpenToc = onOpenToc,
             onToggleDrawing = onToggleDrawing,
+            onToggleStandardPageView = onToggleStandardPageView,
             onTriggerOcrTranslate = onTriggerOcrTranslate,
             onOpenAnnotations = onOpenAnnotations,
             onOpenSearch = onOpenSearch,
@@ -249,6 +259,7 @@ fun BookmarkDockOverlay(
                 isExpanded = isExpanded,
                 isBookmarkedHere = isBookmarkedHere,
                 isPdfDocument = isPdfDocument,
+                isStandardPageView = isStandardPageView,
                 isPageTranslated = isPageTranslated,
                 bookTitle = bookTitle,
                 progressLabel = progressLabel,
@@ -258,6 +269,7 @@ fun BookmarkDockOverlay(
                 onOpenAppearance = onOpenAppearance,
                 onOpenToc = onOpenToc,
                 onToggleDrawing = onToggleDrawing,
+                onToggleStandardPageView = onToggleStandardPageView,
                 onTriggerOcrTranslate = onTriggerOcrTranslate,
                 onOpenAnnotations = onOpenAnnotations,
                 onOpenSearch = onOpenSearch,
@@ -290,6 +302,8 @@ private fun DraggableSoftBookmarkDock(
     isExpanded: Boolean,
     isBookmarkedHere: Boolean,
     isPdfDocument: Boolean,
+    isStandardPageView: Boolean,
+    standardPageFormatLabel: String,
     isPageTranslated: Boolean,
     bookTitle: String,
     progressLabel: String,
@@ -301,6 +315,7 @@ private fun DraggableSoftBookmarkDock(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
+    onToggleStandardPageView: () -> Unit,
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -370,24 +385,26 @@ private fun DraggableSoftBookmarkDock(
         // Tactile lift scale while dragging + subtle spring pop when page bookmark state changes
         val dragLiftScale by animateFloatAsState(
             targetValue = if (isDragging) 1.12f else 1f,
-            animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
+            animationSpec = spring(dampingRatio = 0.72f, stiffness = 460f),
             label = "bookmark_drag_lift"
         )
         val bookmarkIconPop by animateFloatAsState(
             targetValue = if (isBookmarkedHere) 1.12f else 1f,
-            animationSpec = spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium),
+            animationSpec = spring(dampingRatio = 0.56f, stiffness = 460f),
             label = "bookmark_icon_pop"
         )
 
-        val currentYFrac = ((animY.value + tabTouchH / 2f) / maxH).coerceIn(0.15f, 0.85f)
+        // IMPORTANT: Do NOT read animY.value in composition scope (that forces 120Hz recompositions while dragging!).
+        // Use persisted dockYFraction for the drawer TransformOrigin so dragging causes ZERO recompositions.
+        val smoothDockEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
         val pillOrigin = TransformOrigin(if (isRight) 1f else 0f, 0.5f)
-        val drawerOrigin = TransformOrigin(if (isRight) 1f else 0f, currentYFrac)
+        val drawerOrigin = TransformOrigin(if (isRight) 1f else 0f, dockYFraction.coerceIn(0.15f, 0.85f))
 
         // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(140))
+            enter = fadeIn(tween(190, easing = smoothDockEasing)),
+            exit = fadeOut(tween(155, easing = smoothDockEasing))
         ) {
             Box(
                 modifier = Modifier
@@ -406,15 +423,15 @@ private fun DraggableSoftBookmarkDock(
         AnimatedVisibility(
             visible = !isExpanded,
             enter = scaleIn(
-                initialScale = 0.74f,
+                initialScale = 0.76f,
                 transformOrigin = pillOrigin,
-                animationSpec = tween(200, easing = FastOutSlowInEasing)
-            ) + fadeIn(tween(160)),
+                animationSpec = spring(dampingRatio = 0.84f, stiffness = 460f)
+            ) + fadeIn(tween(170, easing = smoothDockEasing)),
             exit = scaleOut(
-                targetScale = 0.74f,
+                targetScale = 0.76f,
                 transformOrigin = pillOrigin,
-                animationSpec = tween(145, easing = FastOutSlowInEasing)
-            ) + fadeOut(tween(120))
+                animationSpec = tween(155, easing = smoothDockEasing)
+            ) + fadeOut(tween(130, easing = smoothDockEasing))
         ) {
             val pillShape = if (isDragging) {
                 RoundedCornerShape(20.dp)
@@ -516,10 +533,13 @@ private fun DraggableSoftBookmarkDock(
                     Alignment.CenterStart
                 }
             ) {
-                // Soft translucent capsule bookmark handle
+                // Soft translucent capsule bookmark handle (GPU-composited scale for 0-jank 120Hz feel)
                 Box(
                     modifier = Modifier
-                        .scale(dragLiftScale)
+                        .graphicsLayer {
+                            scaleX = dragLiftScale
+                            scaleY = dragLiftScale
+                        }
                         .size(
                             width = (26.dp * dockScale.coerceIn(0.9f, 1.25f)),
                             height = (54.dp * dockScale.coerceIn(0.9f, 1.25f))
@@ -539,7 +559,10 @@ private fun DraggableSoftBookmarkDock(
                         contentDescription = "Abrir menú marcapáginas (arrastrable)",
                         tint = Color.White,
                         modifier = Modifier
-                            .scale(bookmarkIconPop)
+                            .graphicsLayer {
+                                scaleX = bookmarkIconPop
+                                scaleY = bookmarkIconPop
+                            }
                             .size((15.dp * dockScale.coerceIn(0.9f, 1.25f)))
                     )
                 }
@@ -551,15 +574,15 @@ private fun DraggableSoftBookmarkDock(
         AnimatedVisibility(
             visible = isExpanded,
             enter = scaleIn(
-                initialScale = 0.56f,
+                initialScale = 0.62f,
                 transformOrigin = drawerOrigin,
-                animationSpec = tween(220, easing = FastOutSlowInEasing)
-            ) + fadeIn(tween(170)),
+                animationSpec = spring(dampingRatio = 0.86f, stiffness = 430f)
+            ) + fadeIn(tween(175, easing = smoothDockEasing)),
             exit = scaleOut(
-                targetScale = 0.56f,
+                targetScale = 0.64f,
                 transformOrigin = drawerOrigin,
-                animationSpec = tween(180, easing = FastOutSlowInEasing)
-            ) + fadeOut(tween(135)),
+                animationSpec = tween(175, easing = smoothDockEasing)
+            ) + fadeOut(tween(140, easing = smoothDockEasing)),
             modifier = Modifier
                 .align(if (isRight) Alignment.CenterEnd else Alignment.CenterStart)
                 .displayCutoutPadding()
@@ -687,8 +710,17 @@ private fun DraggableSoftBookmarkDock(
                     testTag = "dock_toc"
                 )
                 DockToolRow(
+                    icon = Icons.Rounded.Description,
+                    label = if (isStandardPageView) "HOJA · ${standardPageFormatLabel.uppercase()}" else "HOJA ESTÁNDAR",
+                    highlighted = isStandardPageView,
+                    iconOnRight = isRight,
+                    scale = dockScale,
+                    onClick = { onToggleStandardPageView(); onDismiss() },
+                    testTag = "dock_toggle_standard_view"
+                )
+                DockToolRow(
                     icon = Icons.Rounded.Draw,
-                    label = "DIBUJAR",
+                    label = "DIBUJAR / FIRMAR",
                     iconOnRight = isRight,
                     scale = dockScale,
                     onClick = { onDismiss(); onToggleDrawing() },
@@ -764,6 +796,7 @@ private fun DynamicIslandReaderDock(
     isExpanded: Boolean,
     isBookmarkedHere: Boolean,
     isPdfDocument: Boolean,
+    isStandardPageView: Boolean,
     isPageTranslated: Boolean,
     isProcessingStatus: Boolean,
     processingStatusText: String,
@@ -779,6 +812,7 @@ private fun DynamicIslandReaderDock(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
+    onToggleStandardPageView: () -> Unit,
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -847,19 +881,20 @@ private fun DynamicIslandReaderDock(
                 onDismiss = onDismissIslandEvent
             )
 
-            // 1. Compact Apple/Infinix Dynamic Island Pill (pure Zoom-In / Zoom-Out, zero bounce/square clip)
+            // 1. Compact Apple/Infinix Dynamic Island Pill (silky GPU Zoom-In / Zoom-Out)
+            val smoothIslandCurve = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
             AnimatedVisibility(
                 visible = !isExpanded && activeIslandEvent == null,
                 enter = scaleIn(
-                    initialScale = 0.84f,
+                    initialScale = 0.86f,
                     transformOrigin = topOrigin,
-                    animationSpec = tween(210, easing = FastOutSlowInEasing)
-                ) + fadeIn(tween(170)),
+                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 460f)
+                ) + fadeIn(tween(175, easing = smoothIslandCurve)),
                 exit = scaleOut(
-                    targetScale = 0.84f,
+                    targetScale = 0.86f,
                     transformOrigin = topOrigin,
-                    animationSpec = tween(150, easing = FastOutSlowInEasing)
-                ) + fadeOut(tween(120))
+                    animationSpec = tween(155, easing = smoothIslandCurve)
+                ) + fadeOut(tween(130, easing = smoothIslandCurve))
             ) {
                 val pillShape = RoundedCornerShape(50)
                 val showCompactMedia = !isProcessingStatus && hasMediaAvailable
@@ -971,19 +1006,19 @@ private fun DynamicIslandReaderDock(
                 }
             }
 
-            // 2. Compact Expanded Dynamic Island — pure Zoom-In / Zoom-Out, ALL actions in ONE single row
+            // 2. Compact Expanded Dynamic Island — smooth spring Zoom-In / cubic-bezier Zoom-Out
             AnimatedVisibility(
                 visible = isExpanded,
                 enter = scaleIn(
-                    initialScale = 0.58f,
+                    initialScale = 0.62f,
                     transformOrigin = topOrigin,
-                    animationSpec = tween(220, easing = FastOutSlowInEasing)
-                ) + fadeIn(tween(170)),
+                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 440f)
+                ) + fadeIn(tween(175, easing = smoothIslandCurve)),
                 exit = scaleOut(
-                    targetScale = 0.58f,
+                    targetScale = 0.62f,
                     transformOrigin = topOrigin,
-                    animationSpec = tween(180, easing = FastOutSlowInEasing)
-                ) + fadeOut(tween(135))
+                    animationSpec = tween(175, easing = smoothIslandCurve)
+                ) + fadeOut(tween(140, easing = smoothIslandCurve))
             ) {
                 val expandedW = (312.dp * dockScale).coerceIn(280.dp, 400.dp)
                 val expandedShape = RoundedCornerShape(24.dp)
@@ -1149,8 +1184,14 @@ private fun DynamicIslandReaderDock(
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenToc() }
                             IslandActionTile(
+                                icon = Icons.Rounded.Description,
+                                label = "Hoja",
+                                active = isStandardPageView,
+                                modifier = Modifier.weight(1f)
+                            ) { onToggleStandardPageView(); onDismiss() }
+                            IslandActionTile(
                                 icon = Icons.Rounded.Draw,
-                                label = "Dibujo",
+                                label = "Firmar",
                                 active = false,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onToggleDrawing() }
@@ -1511,6 +1552,7 @@ private fun ClassicKindleOverlayBars(
     isExpanded: Boolean,
     isBookmarkedHere: Boolean,
     isPdfDocument: Boolean,
+    isStandardPageView: Boolean,
     isPageTranslated: Boolean,
     bookTitle: String,
     progressLabel: String,
@@ -1520,6 +1562,7 @@ private fun ClassicKindleOverlayBars(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
+    onToggleStandardPageView: () -> Unit,
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -1681,11 +1724,14 @@ private fun ClassicKindleOverlayBars(
                 ) {
                     ClassicBarAction(Icons.Rounded.FormatListBulleted, "Índice") { onDismiss(); onOpenToc() }
                     ClassicBarAction(Icons.Rounded.TextFields, "Texto") { onDismiss(); onOpenAppearance() }
-                    ClassicBarAction(Icons.Rounded.Draw, "Dibujar") { onDismiss(); onToggleDrawing() }
+                    ClassicBarAction(
+                        icon = Icons.Rounded.Description,
+                        label = if (isStandardPageView) "Adaptar" else "Hoja"
+                    ) { onToggleStandardPageView(); onDismiss() }
+                    ClassicBarAction(Icons.Rounded.Draw, "Firmar") { onDismiss(); onToggleDrawing() }
                     if (isPdfDocument) {
                         ClassicBarAction(Icons.Rounded.Translate, "Traducir") { onDismiss(); onTriggerOcrTranslate() }
                     }
-                    ClassicBarAction(Icons.Rounded.Bookmarks, "Notas") { onDismiss(); onOpenAnnotations() }
                     ClassicBarAction(Icons.Rounded.Search, "Buscar") { onDismiss(); onOpenSearch() }
                     ClassicBarAction(Icons.Rounded.IosShare, "Exportar") { onDismiss(); onOpenExport() }
                 }

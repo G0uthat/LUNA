@@ -445,7 +445,15 @@ fun MergedExportDialog(
             }
 
             // Format choices
-            if (docFormat != DocumentFormat.PDF) {
+            if (docFormat == DocumentFormat.PPTX) {
+                ExportOptionCard(
+                    icon = Icons.Rounded.PictureAsPdf,
+                    title = "PDF de diapositivas con firmas y trazos",
+                    subtitle = "Exporta cada diapositiva PowerPoint con su proporción real, imágenes, texto seleccionable y tus anotaciones o firmas encima.",
+                    selected = true,
+                    onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
+                )
+            } else if (docFormat != DocumentFormat.PDF) {
                 ExportOptionCard(
                     icon = Icons.Rounded.Description,
                     title = "${docFormat.label} original fusionado",
@@ -459,8 +467,8 @@ fun MergedExportDialog(
                 )
                 ExportOptionCard(
                     icon = Icons.Rounded.PictureAsPdf,
-                    title = "PDF universal con texto seleccionable",
-                    subtitle = "Genera PDF vectorial con texto real seleccionable + dibujos fusionados",
+                    title = "PDF en formato de hoja estándar + firmas",
+                    subtitle = "Genera PDF vectorial respetando el tamaño de hoja elegido (A4, Carta, A3, etc.) con texto seleccionable y tus firmas/dibujos.",
                     selected = selectedOption == ExportFormatOption.UNIVERSAL_PDF,
                     onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
                 )

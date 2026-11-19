@@ -1,7 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -35,15 +35,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -158,31 +157,32 @@ private fun BookmarkRibbonDropAnimation(
     val alphaAnim = remember(eventId) { Animatable(if (isAdded) 0f else 1f) }
     val burstProgress = remember(eventId) { Animatable(0f) }
 
+    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     LaunchedEffect(eventId) {
         if (isAdded) {
-            launch { alphaAnim.animateTo(1f, tween(130)) }
+            launch { alphaAnim.animateTo(1f, tween(140, easing = smoothEasing)) }
             launch {
                 slideY.animateTo(
                     targetValue = 0f,
                     animationSpec = spring(
-                        dampingRatio = 0.56f,
-                        stiffness = Spring.StiffnessMediumLow
+                        dampingRatio = 0.68f,
+                        stiffness = 380f
                     )
                 )
             }
             launch {
-                delay(90)
-                burstProgress.animateTo(1f, tween(480, easing = FastOutSlowInEasing))
+                delay(80)
+                burstProgress.animateTo(1f, tween(480, easing = smoothEasing))
             }
-            delay(820)
-            launch { slideY.animateTo(-72f, tween(240, easing = FastOutSlowInEasing)) }
-            alphaAnim.animateTo(0f, tween(220))
+            delay(800)
+            launch { slideY.animateTo(-72f, tween(240, easing = smoothEasing)) }
+            alphaAnim.animateTo(0f, tween(210, easing = smoothEasing))
         } else {
             launch {
-                burstProgress.animateTo(1f, tween(340, easing = FastOutSlowInEasing))
+                burstProgress.animateTo(1f, tween(340, easing = smoothEasing))
             }
-            launch { slideY.animateTo(-86f, tween(340, easing = FastOutSlowInEasing)) }
-            alphaAnim.animateTo(0f, tween(320))
+            launch { slideY.animateTo(-86f, tween(320, easing = smoothEasing)) }
+            alphaAnim.animateTo(0f, tween(290, easing = smoothEasing))
         }
         onFinished()
     }
@@ -193,8 +193,10 @@ private fun BookmarkRibbonDropAnimation(
     Box(
         modifier = modifier
             .size(width = 58.dp, height = 84.dp)
-            .offset { IntOffset(0, slideY.value.roundToInt()) }
-            .alpha(alphaAnim.value)
+            .graphicsLayer {
+                translationY = slideY.value
+                alpha = alphaAnim.value
+            }
             .testTag("bookmark_ribbon_animation"),
         contentAlignment = Alignment.TopCenter
     ) {
@@ -280,35 +282,36 @@ private fun TactileIconPulseAnimation(
     val alphaAnim = remember(eventId) { Animatable(0f) }
     val rippleProgress = remember(eventId) { Animatable(0f) }
 
+    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     LaunchedEffect(eventId) {
-        launch { alphaAnim.animateTo(1f, tween(130)) }
+        launch { alphaAnim.animateTo(1f, tween(140, easing = smoothEasing)) }
         launch {
             scaleAnim.animateTo(
                 targetValue = 1f,
                 animationSpec = spring(
-                    dampingRatio = 0.54f,
-                    stiffness = Spring.StiffnessMedium
+                    dampingRatio = 0.66f,
+                    stiffness = 420f
                 )
             )
         }
         launch {
-            rippleProgress.animateTo(1f, tween(650, easing = FastOutSlowInEasing))
+            rippleProgress.animateTo(1f, tween(620, easing = smoothEasing))
         }
-        delay(680)
+        delay(660)
         launch {
             scaleAnim.animateTo(
-                targetValue = if (isDeleteStyle) 0.55f else 0.82f,
-                animationSpec = tween(220, easing = FastOutSlowInEasing)
+                targetValue = if (isDeleteStyle) 0.58f else 0.84f,
+                animationSpec = tween(210, easing = smoothEasing)
             )
         }
-        alphaAnim.animateTo(0f, tween(210))
+        alphaAnim.animateTo(0f, tween(200, easing = smoothEasing))
         onFinished()
     }
 
     Box(
         modifier = modifier
             .size(86.dp)
-            .alpha(alphaAnim.value)
+            .graphicsLayer { alpha = alphaAnim.value }
             .testTag("luma_micro_feedback_pulse"),
         contentAlignment = Alignment.Center
     ) {
@@ -328,7 +331,11 @@ private fun TactileIconPulseAnimation(
         Box(
             modifier = Modifier
                 .size(52.dp)
-                .scale(scaleAnim.value)
+                .graphicsLayer {
+                    val s = scaleAnim.value
+                    scaleX = s
+                    scaleY = s
+                }
                 .shadow(12.dp, CircleShape, ambientColor = accentTint.copy(alpha = 0.35f))
                 .clip(CircleShape)
                 .background(palette.surface.copy(alpha = 0.96f))
@@ -374,8 +381,12 @@ private fun ErrorFrostedPillAnimation(
     val pillShape = RoundedCornerShape(50)
     Row(
         modifier = modifier
-            .scale(scaleAnim.value)
-            .alpha(alphaAnim.value)
+            .graphicsLayer {
+                val s = scaleAnim.value
+                scaleX = s
+                scaleY = s
+                alpha = alphaAnim.value
+            }
             .widthIn(max = 320.dp)
             .shadow(12.dp, pillShape, ambientColor = Color.Black.copy(alpha = 0.22f))
             .clip(pillShape)

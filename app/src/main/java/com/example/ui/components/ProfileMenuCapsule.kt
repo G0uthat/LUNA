@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Slideshow
 import androidx.compose.material.icons.rounded.TextSnippet
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -242,12 +244,13 @@ fun ProfileDropdownCapsuleOverlay(
     val innerPadPx = with(density) { 10.dp.toPx() }
     val capsuleTopOffsetPx = (anchorTopPx - innerPadPx).coerceAtLeast(0f).roundToInt()
 
+    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     Box(modifier = Modifier.fillMaxSize()) {
         // Gentle 15% dim + subtle frosted veil (pairs with the 18% background blur in LibraryScreen)
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = tween(160)),
-            exit = fadeOut(animationSpec = tween(140))
+            enter = fadeIn(animationSpec = tween(190, easing = smoothEasing)),
+            exit = fadeOut(animationSpec = tween(155, easing = smoothEasing))
         ) {
             Box(
                 modifier = Modifier
@@ -271,18 +274,18 @@ fun ProfileDropdownCapsuleOverlay(
                 .offset { IntOffset(0, capsuleTopOffsetPx) }
                 .padding(end = 8.dp),
             enter = scaleIn(
-                initialScale = 0.86f,
+                initialScale = 0.88f,
                 transformOrigin = TransformOrigin(0.88f, 0.08f),
                 animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = Spring.StiffnessMedium
+                    dampingRatio = 0.86f,
+                    stiffness = 440f
                 )
-            ) + fadeIn(animationSpec = tween(150)),
+            ) + fadeIn(animationSpec = tween(175, easing = smoothEasing)),
             exit = scaleOut(
-                targetScale = 0.88f,
+                targetScale = 0.90f,
                 transformOrigin = TransformOrigin(0.88f, 0.08f),
-                animationSpec = tween(140)
-            ) + fadeOut(animationSpec = tween(120))
+                animationSpec = tween(155, easing = smoothEasing)
+            ) + fadeOut(animationSpec = tween(135, easing = smoothEasing))
         ) {
             val capsuleShape = RoundedCornerShape(32.dp)
             val accountSubtitle = remember(userProfile.username) {
@@ -415,7 +418,7 @@ fun ProfileDropdownCapsuleOverlay(
                 // 3. IMPORTAR (EPUB, PDF, DOCX, TXT)
                 ProfileCapsuleActionRow(
                     title = "IMPORTAR",
-                    subtitle = if (isImporting) "Importando…" else "EPUB · PDF · DOCX",
+                    subtitle = if (isImporting) "Importando…" else "EPUB · PDF · DOCX · PPTX",
                     subtitleHighlight = true,
                     icon = Icons.Rounded.Add,
                     iconContentDescription = "Importar documento",
@@ -582,15 +585,17 @@ fun LibraryFilterDropdownOverlay(
             Triple("EPUB", "Libros EPUB", Icons.Rounded.AutoStories),
             Triple("PDF", "PDF y Manhwa", Icons.Rounded.PictureAsPdf),
             Triple("DOCX", "Documentos DOCX", Icons.Rounded.Description),
+            Triple("PPTX", "PowerPoint PPTX", Icons.Rounded.Slideshow),
             Triple("Otros", "TXT y FB2", Icons.Rounded.TextSnippet)
         )
     }
 
+    val smoothFilterEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = tween(160)),
-            exit = fadeOut(animationSpec = tween(140))
+            enter = fadeIn(animationSpec = tween(190, easing = smoothFilterEasing)),
+            exit = fadeOut(animationSpec = tween(155, easing = smoothFilterEasing))
         ) {
             Box(
                 modifier = Modifier
@@ -613,18 +618,18 @@ fun LibraryFilterDropdownOverlay(
                 .offset { IntOffset(0, menuTopOffsetPx) }
                 .padding(end = 16.dp, start = 16.dp),
             enter = scaleIn(
-                initialScale = 0.86f,
+                initialScale = 0.88f,
                 transformOrigin = TransformOrigin(0.90f, 0.05f),
                 animationSpec = spring(
-                    dampingRatio = 0.82f,
-                    stiffness = Spring.StiffnessMedium
+                    dampingRatio = 0.86f,
+                    stiffness = 440f
                 )
-            ) + fadeIn(animationSpec = tween(150)),
+            ) + fadeIn(animationSpec = tween(175, easing = smoothFilterEasing)),
             exit = scaleOut(
-                targetScale = 0.88f,
+                targetScale = 0.90f,
                 transformOrigin = TransformOrigin(0.90f, 0.05f),
-                animationSpec = tween(140)
-            ) + fadeOut(animationSpec = tween(120))
+                animationSpec = tween(155, easing = smoothFilterEasing)
+            ) + fadeOut(animationSpec = tween(135, easing = smoothFilterEasing))
         ) {
             val capsuleShape = RoundedCornerShape(32.dp)
             Column(

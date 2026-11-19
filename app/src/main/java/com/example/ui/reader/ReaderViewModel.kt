@@ -53,6 +53,8 @@ data class ReaderUiState(
     val jumpToChapterTrigger: Int = 0,
     val isDockExpanded: Boolean = false,
     val isDrawingMode: Boolean = false,
+    val isPanZoomWhileDrawing: Boolean = false,
+    val pptxForceAdaptedText: Boolean = false,
     val activeTool: DrawingTool = DrawingTool.PEN,
     val activeColorArgb: Long = 0xFF1D5BFFL,
     val activeWidthNorm: Float = 0.008f,
@@ -145,7 +147,11 @@ class ReaderViewModel(
                 if (!file.exists()) error("El archivo local ya no existe en el dispositivo.")
                 val format = DocumentFormat.fromExtension(doc.format) ?: DocumentFormat.EPUB
                 val parsed = DocumentParser.parse(getApplication(), file, format)
-                val totalUnits = if (format == DocumentFormat.PDF) parsed.pdfPageCount else parsed.chapters.size
+                val totalUnits = when (format) {
+                    DocumentFormat.PDF -> parsed.pdfPageCount
+                    DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+                    else -> parsed.chapters.size
+                }
                 val startUnit = doc.currentUnit.coerceIn(0, (totalUnits - 1).coerceAtLeast(0))
 
                 _uiState.update {
@@ -223,8 +229,10 @@ class ReaderViewModel(
 
     fun toggleDrawingMode(enabled: Boolean? = null) {
         _uiState.update {
+            val next = enabled ?: !it.isDrawingMode
             it.copy(
-                isDrawingMode = enabled ?: !it.isDrawingMode,
+                isDrawingMode = next,
+                isPanZoomWhileDrawing = if (!next) false else it.isPanZoomWhileDrawing,
                 isDockExpanded = false,
                 selectedWord = null
             )
@@ -232,12 +240,38 @@ class ReaderViewModel(
         refreshUndoRedoFlags()
     }
 
+    fun togglePanZoomWhileDrawing() {
+        _uiState.update { it.copy(isPanZoomWhileDrawing = !it.isPanZoomWhileDrawing) }
+    }
+
+    fun applySignaturePreset() {
+        _uiState.update {
+            it.copy(
+                isPanZoomWhileDrawing = false,
+                activeTool = DrawingTool.PEN,
+                activeColorArgb = 0xFF141B29L,
+                activeWidthNorm = 0.0042f
+            )
+        }
+    }
+
+    fun toggleStandardPageViewForCurrentDoc() {
+        val parsed = _uiState.value.parsed
+        if (parsed?.format == DocumentFormat.PPTX) {
+            _uiState.update { it.copy(pptxForceAdaptedText = !it.pptxForceAdaptedText, isPanZoomWhileDrawing = false) }
+        } else {
+            val next = !preferences.value.useStandardPageView
+            _uiState.update { it.copy(isPanZoomWhileDrawing = false) }
+            updatePreferences { it.copy(useStandardPageView = next) }
+        }
+    }
+
     fun setDrawingTool(tool: DrawingTool) {
-        _uiState.update { it.copy(activeTool = tool) }
+        _uiState.update { it.copy(activeTool = tool, isPanZoomWhileDrawing = false) }
     }
 
     fun setDrawingColor(argb: Long) {
-        _uiState.update { it.copy(activeColorArgb = argb) }
+        _uiState.update { it.copy(activeColorArgb = argb, isPanZoomWhileDrawing = false) }
     }
 
     fun setDrawingWidth(widthNorm: Float) {
@@ -331,10 +365,11 @@ class ReaderViewModel(
             } else {
                 val parsed = _uiState.value.parsed
                 val unit = _uiState.value.currentUnitIndex
-                val label = if (parsed?.format == DocumentFormat.PDF) {
-                    "Página ${unit + 1}"
-                } else {
-                    parsed?.chapters?.getOrNull(unit)?.title ?: "Sección ${unit + 1}"
+                val label = when {
+                    parsed?.format == DocumentFormat.PDF -> "Página ${unit + 1}"
+                    parsed?.format == DocumentFormat.PPTX -> "Diapositiva ${unit + 1}"
+                    loc.startsWith("std-page-") -> "Hoja ${_uiState.value.currentSheetIndex + 1}"
+                    else -> parsed?.chapters?.getOrNull(unit)?.title ?: "Sección ${unit + 1}"
                 }
                 repository.addBookmark(
                     BookmarkEntity(
@@ -672,7 +707,8 @@ class ReaderViewModel(
                     highlights = hl,
                     ocrByPage = ocr,
                     formatOption = option,
-                    destinationUri = uri
+                    destinationUri = uri,
+                    standardPageFormat = preferences.value.standardPageFormat
                 )
                 if (res.isSuccess) {
                     emitFeedback(LumaActionAnimType.EXPORTED)
@@ -702,7 +738,8 @@ class ReaderViewModel(
                     drawingsByLocation = drawings,
                     highlights = hl,
                     ocrByPage = ocr,
-                    formatOption = option
+                    formatOption = option,
+                    standardPageFormat = preferences.value.standardPageFormat
                 )
                 val file = res.getOrNull()
                 if (file != null) {

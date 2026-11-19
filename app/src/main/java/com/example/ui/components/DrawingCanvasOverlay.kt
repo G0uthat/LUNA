@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,7 +28,10 @@ import androidx.compose.material.icons.rounded.AutoFixNormal
 import androidx.compose.material.icons.rounded.BorderColor
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.OpenWith
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -228,9 +233,17 @@ fun DrawingFloatingToolbar(
     activeWidthNorm: Float,
     canUndo: Boolean,
     canRedo: Boolean,
+    isStandardPageView: Boolean = false,
+    standardFormatLabel: String = "A4",
+    showStandardViewToggle: Boolean = true,
+    canTogglePanZoom: Boolean = false,
+    isPanZoomMode: Boolean = false,
     onSelectTool: (DrawingTool) -> Unit,
     onSelectColor: (Long) -> Unit,
     onWidthChange: (Float) -> Unit,
+    onToggleStandardPageView: () -> Unit = {},
+    onTogglePanZoomMode: () -> Unit = {},
+    onApplySignaturePreset: () -> Unit = {},
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onClearPage: () -> Unit,
@@ -239,6 +252,10 @@ fun DrawingFloatingToolbar(
 ) {
     val palette = LocalFolioPalette.current
     val shape = RoundedCornerShape(26.dp)
+    val isSignaturePresetActive = !isPanZoomMode &&
+        activeTool == DrawingTool.PEN &&
+        activeWidthNorm <= 0.005f &&
+        (activeColorArgb == 0xFF141B29L || activeColorArgb == 0xFF1D5BFFL)
 
     Column(
         modifier = modifier
@@ -251,8 +268,43 @@ fun DrawingFloatingToolbar(
             .border(2.dp, palette.border, shape)
             .padding(12.dp)
             .testTag("drawing_toolbar"),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
+        // Row 0: Quick Work / Signature Strip (Firma fina + Hoja Estándar toggle + Mover/Zoom toggle)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ToolbarModeChip(
+                icon = Icons.Rounded.Draw,
+                label = "Firma fina",
+                selected = isSignaturePresetActive,
+                onClick = onApplySignaturePreset,
+                testTag = "draw_signature_preset"
+            )
+            if (showStandardViewToggle) {
+                ToolbarModeChip(
+                    icon = Icons.Rounded.Description,
+                    label = if (isStandardPageView) "Hoja · $standardFormatLabel" else "Hoja estándar",
+                    selected = isStandardPageView,
+                    onClick = onToggleStandardPageView,
+                    testTag = "draw_toggle_standard_view"
+                )
+            }
+            if (canTogglePanZoom) {
+                ToolbarModeChip(
+                    icon = Icons.Rounded.OpenWith,
+                    label = if (isPanZoomMode) "Zoom activo" else "Mover / Zoom",
+                    selected = isPanZoomMode,
+                    onClick = onTogglePanZoomMode,
+                    testTag = "draw_toggle_pan_zoom"
+                )
+            }
+        }
+
         // Row 1: Tools + Undo / Redo / Clear / Done
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -356,7 +408,7 @@ fun DrawingFloatingToolbar(
             Slider(
                 value = activeWidthNorm,
                 onValueChange = onWidthChange,
-                valueRange = 0.004f..0.022f,
+                valueRange = 0.0035f..0.022f,
                 modifier = Modifier.weight(1f),
                 colors = SliderDefaults.colors(
                     thumbColor = palette.accent,
@@ -364,5 +416,44 @@ fun DrawingFloatingToolbar(
                 )
             )
         }
+    }
+}
+
+@Composable
+private fun ToolbarModeChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    val palette = LocalFolioPalette.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) palette.accent else palette.surfaceAlt)
+            .border(
+                width = 1.dp,
+                color = if (selected) palette.accent else palette.border,
+                shape = RoundedCornerShape(50)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = if (selected) Color.White else palette.ink,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = if (selected) Color.White else palette.ink
+        )
     }
 }

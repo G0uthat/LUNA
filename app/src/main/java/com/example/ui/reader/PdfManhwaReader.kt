@@ -129,6 +129,8 @@ fun PdfManhwaReader(
     processingMessage: String,
     isDockExpanded: Boolean = false,
     isDrawingMode: Boolean,
+    isPanZoomWhileDrawing: Boolean = false,
+    detectedFormatLabel: String = "",
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
@@ -173,6 +175,7 @@ fun PdfManhwaReader(
         Modifier.fillMaxSize()
     }
     val applyPdfNightFilter = prefs.pdfNightFilter && palette.isDark
+    val canDrawOnCanvas = isDrawingMode && !isPanZoomWhileDrawing
 
     Box(modifier = modifier.fillMaxSize().background(palette.background)) {
         if (prefs.pageAnimation == PageAnimationMode.VERTICAL_SCROLL) {
@@ -187,11 +190,15 @@ fun PdfManhwaReader(
             }
             LazyColumn(
                 state = listState,
-                userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
+                userScrollEnabled = !canDrawOnCanvas && zoomScale <= 1.02f,
                 modifier = pdfViewportMod,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(safePageCount) { pageIdx ->
+                items(
+                    count = safePageCount,
+                    key = { pageIdx -> "pdf_page_$pageIdx" },
+                    contentType = { "pdf_page" }
+                ) { pageIdx ->
                     PdfInteractivePage(
                         pageIndex = pageIdx,
                         renderer = pfdAndRenderer?.second,
@@ -202,7 +209,7 @@ fun PdfManhwaReader(
                         strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
                         zoomScale = zoomScale,
                         panOffset = panOffset,
-                        isDrawingMode = isDrawingMode,
+                        isDrawingMode = canDrawOnCanvas,
                         activeTool = activeTool,
                         activeColorArgb = activeColorArgb,
                         activeWidthNorm = activeWidthNorm,
@@ -289,7 +296,7 @@ fun PdfManhwaReader(
             Box(modifier = pdfViewportMod) {
                 HorizontalPager(
                     state = pagerState,
-                    userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
+                    userScrollEnabled = !canDrawOnCanvas && zoomScale <= 1.02f,
                     modifier = Modifier.fillMaxSize()
                 ) { pageIdx ->
                     val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
@@ -374,7 +381,7 @@ fun PdfManhwaReader(
                             strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
                             zoomScale = zoomScale,
                             panOffset = panOffset,
-                            isDrawingMode = isDrawingMode,
+                            isDrawingMode = canDrawOnCanvas,
                             activeTool = activeTool,
                             activeColorArgb = activeColorArgb,
                             activeWidthNorm = activeWidthNorm,
@@ -452,8 +459,10 @@ fun PdfManhwaReader(
                 }
             }
 
-            // Quick floating toggles for Zoom Reset & Translated Manhwa toggle (cleanly at bottom!)
-            val showQuickControls = !isDrawingMode && (zoomScale > 1.05f || ocrByPage[safeIndex]?.isTranslated == true)
+            // Quick floating toggles for Zoom Reset, Original Paper Size badge & Translated Manhwa toggle
+            val showFormatBadge = prefs.useStandardPageView && detectedFormatLabel.isNotBlank() && !isDrawingMode
+            val showQuickControls = (!isDrawingMode && (zoomScale > 1.05f || ocrByPage[safeIndex]?.isTranslated == true || showFormatBadge)) ||
+                (isDrawingMode && zoomScale > 1.05f)
             AnimatedVisibility(
                 visible = showQuickControls,
                 enter = fadeIn(tween(180)),
@@ -463,6 +472,24 @@ fun PdfManhwaReader(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (showFormatBadge) {
+                        Row(
+                            modifier = Modifier
+                                .shadow(6.dp, RoundedCornerShape(50))
+                                .clip(RoundedCornerShape(50))
+                                .background(palette.surface.copy(alpha = 0.95f))
+                                .border(1.dp, palette.accent.copy(alpha = 0.5f), RoundedCornerShape(50))
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Hoja original · $detectedFormatLabel",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = palette.accent
+                            )
+                        }
+                    }
                     if (zoomScale > 1.05f) {
                         Row(
                             modifier = Modifier

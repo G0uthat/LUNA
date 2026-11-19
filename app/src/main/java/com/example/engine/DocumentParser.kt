@@ -8,6 +8,7 @@ import com.example.data.model.DocumentFormat
 import com.example.data.model.ParsedBlock
 import com.example.data.model.ParsedChapter
 import com.example.data.model.ParsedDocument
+import com.example.data.model.ParsedSlide
 import com.example.data.model.TocEntry
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -27,6 +28,7 @@ object DocumentParser {
             when (format) {
                 DocumentFormat.EPUB -> parseEpub(file)
                 DocumentFormat.DOCX -> parseDocx(file)
+                DocumentFormat.PPTX -> parsePptx(context, file)
                 DocumentFormat.PDF -> parsePdf(context, file)
                 DocumentFormat.TXT -> parseTxt(file)
                 DocumentFormat.FB2 -> parseFb2(file)
@@ -123,6 +125,8 @@ object DocumentParser {
         val allBlocks = mutableListOf<ParsedBlock>()
         var docTitle = fallbackTitle
         var docAuthor = "Documento DOCX"
+        var nativeWidthPt = 595f
+        var nativeHeightPt = 842f
 
         ZipFile(file).use { zip ->
             zip.getEntry("docProps/core.xml")?.let { coreEntry ->
@@ -148,6 +152,31 @@ object DocumentParser {
                         XmlPullParser.START_TAG -> {
                             val tag = parser.name.substringAfter(':')
                             when (tag) {
+                                "pgSz" -> {
+                                    var wTwips: Float? = null
+                                    var hTwips: Float? = null
+                                    var orient = ""
+                                    for (i in 0 until parser.attributeCount) {
+                                        val attr = parser.getAttributeName(i).substringAfter(':')
+                                        val v = parser.getAttributeValue(i)
+                                        when (attr) {
+                                            "w" -> wTwips = v.toFloatOrNull()
+                                            "h" -> hTwips = v.toFloatOrNull()
+                                            "orient" -> orient = v
+                                        }
+                                    }
+                                    if (wTwips != null && hTwips != null && wTwips > 0f && hTwips > 0f) {
+                                        var wPt = wTwips / 20f
+                                        var hPt = hTwips / 20f
+                                        if (orient.equals("landscape", ignoreCase = true) && wPt < hPt) {
+                                            val tmp = wPt
+                                            wPt = hPt
+                                            hPt = tmp
+                                        }
+                                        nativeWidthPt = wPt.coerceIn(240f, 2400f)
+                                        nativeHeightPt = hPt.coerceIn(240f, 2400f)
+                                    }
+                                }
                                 "p" -> {
                                     inParagraph = true
                                     currentStyle = ""
@@ -244,17 +273,459 @@ object DocumentParser {
             format = DocumentFormat.DOCX,
             chapters = chapters,
             toc = toc,
-            totalWords = chapters.sumOf { it.wordCount }
+            totalWords = chapters.sumOf { it.wordCount },
+            nativePageWidthPt = nativeWidthPt,
+            nativePageHeightPt = nativeHeightPt,
+            detectedFormatLabel = detectPageFormatLabel(nativeWidthPt, nativeHeightPt)
         )
+    }
+
+    private fun parsePptx(context: Context, file: File): ParsedDocument {
+        val fallbackTitle = file.nameWithoutExtension.replace('_', ' ').replace('-', ' ')
+        var docTitle = fallbackTitle
+        var docAuthor = "Presentación PowerPoint"
+        var slideWidthPt = 960f
+        var slideHeightPt = 540f
+
+        val slides = mutableListOf<ParsedSlide>()
+        val chapters = mutableListOf<ParsedChapter>()
+        val toc = mutableListOf<TocEntry>()
+        val slideRegex = Regex("^ppt/slides/slide(\\d+)\\.xml$", RegexOption.IGNORE_CASE)
+        val mediaCacheDir = File(
+            context.cacheDir,
+            "pptx_media/${kotlin.math.abs(file.absolutePath.hashCode())}_${file.lastModified()}"
+        ).apply { mkdirs() }
+
+        ZipFile(file).use { zip ->
+            zip.getEntry("docProps/core.xml")?.let { coreEntry ->
+                val coreXml = zip.getInputStream(coreEntry).bufferedReader().use { it.readText() }
+                extractTagText(coreXml, "title")?.takeIf { it.isNotBlank() }?.let { docTitle = it }
+                extractTagText(coreXml, "creator")?.takeIf { it.isNotBlank() }?.let { docAuthor = it }
+            }
+
+            // Read authentic PowerPoint slide dimensions (cx/cy in EMUs: 12700 EMU = 1 pt)
+            zip.getEntry("ppt/presentation.xml")?.let { presEntry ->
+                val presXml = zip.getInputStream(presEntry).bufferedReader().use { it.readText() }
+                runCatching {
+                    val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
+                    val parser = factory.newPullParser()
+                    parser.setInput(StringReader(presXml))
+                    var event = parser.eventType
+                    while (event != XmlPullParser.END_DOCUMENT) {
+                        if (event == XmlPullParser.START_TAG && parser.name.substringAfter(':') == "sldSz") {
+                            var cx: Long? = null
+                            var cy: Long? = null
+                            for (i in 0 until parser.attributeCount) {
+                                when (parser.getAttributeName(i).substringAfter(':')) {
+                                    "cx" -> cx = parser.getAttributeValue(i).toLongOrNull()
+                                    "cy" -> cy = parser.getAttributeValue(i).toLongOrNull()
+                                }
+                            }
+                            if (cx != null && cy != null && cx > 0L && cy > 0L) {
+                                slideWidthPt = (cx.toFloat() / 12700f).coerceIn(320f, 2400f)
+                                slideHeightPt = (cy.toFloat() / 12700f).coerceIn(240f, 2400f)
+                            }
+                            break
+                        }
+                        event = parser.next()
+                    }
+                }
+            }
+
+            val orderedSlideEntries = zip.entries().asSequence()
+                .mapNotNull { entry ->
+                    val m = slideRegex.matchEntire(entry.name) ?: return@mapNotNull null
+                    val num = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+                    num to entry
+                }
+                .sortedBy { it.first }
+                .toList()
+
+            orderedSlideEntries.forEachIndexed { slideIdx, (slideNum, slideEntry) ->
+                val slideXml = zip.getInputStream(slideEntry).bufferedReader().use { it.readText() }
+
+                // Parse slide relationships to locate embedded media and speaker notes
+                val relsPath = "ppt/slides/_rels/slide$slideNum.xml.rels"
+                val relTargets = mutableMapOf<String, Pair<String, String>>() // rId -> (type, target)
+                zip.getEntry(relsPath)?.let { relsEntry ->
+                    val relsXml = zip.getInputStream(relsEntry).bufferedReader().use { it.readText() }
+                    runCatching {
+                        val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
+                        val rp = factory.newPullParser()
+                        rp.setInput(StringReader(relsXml))
+                        var ev = rp.eventType
+                        while (ev != XmlPullParser.END_DOCUMENT) {
+                            if (ev == XmlPullParser.START_TAG && rp.name.substringAfter(':') == "Relationship") {
+                                val id = rp.getAttributeValue(null, "Id").orEmpty()
+                                val type = rp.getAttributeValue(null, "Type").orEmpty()
+                                val target = rp.getAttributeValue(null, "Target").orEmpty()
+                                if (id.isNotBlank() && target.isNotBlank()) {
+                                    relTargets[id] = type to target
+                                }
+                            }
+                            ev = rp.next()
+                        }
+                    }
+                }
+
+                val extracted = extractPptxSlideContent(slideXml)
+                val imagePaths = mutableListOf<String>()
+                for (embedId in extracted.imageRelIds) {
+                    val target = relTargets[embedId]?.second ?: continue
+                    val resolvedZipPath = resolveZipPath("ppt/slides/", target)
+                    val mediaEntry = zip.getEntry(resolvedZipPath) ?: continue
+                    val ext = resolvedZipPath.substringAfterLast('.', "png").lowercase()
+                    if (ext !in setOf("png", "jpg", "jpeg", "webp", "bmp", "gif")) continue
+                    val cachedImg = File(mediaCacheDir, "s${slideNum}_${embedId}.$ext")
+                    if (!cachedImg.exists() || cachedImg.length() == 0L) {
+                        runCatching {
+                            zip.getInputStream(mediaEntry).use { inp ->
+                                cachedImg.outputStream().use { out -> inp.copyTo(out) }
+                            }
+                        }
+                    }
+                    if (cachedImg.exists() && cachedImg.length() > 0L) {
+                        imagePaths.add(cachedImg.absolutePath)
+                    }
+                }
+
+                // Extract speaker notes if linked
+                val notesTarget = relTargets.values
+                    .firstOrNull { it.first.contains("notesSlide", ignoreCase = true) }
+                    ?.second
+                val notesText = notesTarget?.let { target ->
+                    val notesZipPath = resolveZipPath("ppt/slides/", target)
+                    zip.getEntry(notesZipPath)?.let { ne ->
+                        val notesXml = zip.getInputStream(ne).bufferedReader().use { it.readText() }
+                        extractPlainDrawingMlText(notesXml)
+                    }
+                }.orEmpty()
+
+                val slideTitle = extracted.title.ifBlank { "Diapositiva ${slideIdx + 1}" }
+                val bodyBlocks = extracted.bodyBlocks.ifEmpty {
+                    if (imagePaths.isEmpty() && extracted.subtitle.isBlank()) {
+                        listOf(ParsedBlock(0, BlockType.PARAGRAPH, "Diapositiva ${slideIdx + 1}"))
+                    } else {
+                        emptyList()
+                    }
+                }
+
+                val parsedSlide = ParsedSlide(
+                    index = slideIdx,
+                    title = slideTitle,
+                    subtitle = extracted.subtitle,
+                    bodyBlocks = bodyBlocks,
+                    notes = notesText,
+                    imagePaths = imagePaths
+                )
+                slides.add(parsedSlide)
+
+                val chapterBlocks = buildList {
+                    var bIdx = 0
+                    add(ParsedBlock(bIdx++, BlockType.HEADING_1, slideTitle))
+                    if (extracted.subtitle.isNotBlank()) {
+                        add(ParsedBlock(bIdx++, BlockType.HEADING_2, extracted.subtitle))
+                    }
+                    for (b in bodyBlocks) {
+                        add(b.copy(index = bIdx++))
+                    }
+                    if (notesText.isNotBlank()) {
+                        add(ParsedBlock(bIdx++, BlockType.QUOTE, "Notas: $notesText"))
+                    }
+                }
+                val words = chapterBlocks.sumOf { countWords(it.text) }
+                chapters.add(
+                    ParsedChapter(
+                        index = slideIdx,
+                        title = "${slideIdx + 1}. ${slideTitle.take(54)}",
+                        cfiPrefix = "pptx(/slide/$slideIdx)",
+                        href = "slide_${slideIdx + 1}",
+                        blocks = chapterBlocks,
+                        wordCount = words
+                    )
+                )
+                toc.add(TocEntry(title = "${slideIdx + 1}. ${slideTitle.take(56)}", targetIndex = slideIdx, level = 0))
+            }
+        }
+
+        if (slides.isEmpty()) {
+            val fallbackSlide = ParsedSlide(
+                index = 0,
+                title = docTitle,
+                bodyBlocks = listOf(ParsedBlock(0, BlockType.PARAGRAPH, "No se encontraron diapositivas visibles en este archivo PPTX."))
+            )
+            slides.add(fallbackSlide)
+            chapters.add(
+                ParsedChapter(
+                    index = 0,
+                    title = docTitle,
+                    cfiPrefix = "pptx(/slide/0)",
+                    href = "slide_1",
+                    blocks = fallbackSlide.bodyBlocks,
+                    wordCount = 9
+                )
+            )
+            toc.add(TocEntry(docTitle, 0, 0))
+        }
+
+        return ParsedDocument(
+            title = docTitle,
+            author = docAuthor,
+            format = DocumentFormat.PPTX,
+            chapters = chapters,
+            toc = toc,
+            totalWords = chapters.sumOf { it.wordCount }.coerceAtLeast(slides.size * 25),
+            slides = slides,
+            nativePageWidthPt = slideWidthPt,
+            nativePageHeightPt = slideHeightPt,
+            detectedFormatLabel = detectPageFormatLabel(slideWidthPt, slideHeightPt, isPresentation = true)
+        )
+    }
+
+    private data class ExtractedPptxSlide(
+        val title: String,
+        val subtitle: String,
+        val bodyBlocks: List<ParsedBlock>,
+        val imageRelIds: List<String>
+    )
+
+    private fun extractPptxSlideContent(slideXml: String): ExtractedPptxSlide {
+        var title = ""
+        var subtitle = ""
+        val bodyBlocks = mutableListOf<ParsedBlock>()
+        val imageRelIds = mutableListOf<String>()
+
+        runCatching {
+            val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
+            val parser = factory.newPullParser()
+            parser.setInput(StringReader(slideXml))
+
+            var inShape = false
+            var currentPhType = ""
+            var inParagraph = false
+            var isBulletParagraph = false
+            val paraBuilder = StringBuilder()
+
+            var inTableRow = false
+            var inTableCell = false
+            val currentRowCells = mutableListOf<String>()
+            val currentCellBuilder = StringBuilder()
+
+            var event = parser.eventType
+            while (event != XmlPullParser.END_DOCUMENT) {
+                when (event) {
+                    XmlPullParser.START_TAG -> {
+                        val tag = parser.name.substringAfter(':')
+                        when (tag) {
+                            "sp" -> {
+                                inShape = true
+                                currentPhType = ""
+                            }
+                            "ph" -> {
+                                if (inShape) {
+                                    for (i in 0 until parser.attributeCount) {
+                                        if (parser.getAttributeName(i).substringAfter(':') == "type") {
+                                            currentPhType = parser.getAttributeValue(i)
+                                        }
+                                    }
+                                }
+                            }
+                            "blip" -> {
+                                for (i in 0 until parser.attributeCount) {
+                                    val attr = parser.getAttributeName(i).substringAfter(':')
+                                    if (attr == "embed" || attr == "link") {
+                                        val rId = parser.getAttributeValue(i)
+                                        if (rId.isNotBlank() && rId !in imageRelIds) {
+                                            imageRelIds.add(rId)
+                                        }
+                                    }
+                                }
+                            }
+                            "tr" -> {
+                                inTableRow = true
+                                currentRowCells.clear()
+                            }
+                            "tc" -> {
+                                if (inTableRow) {
+                                    inTableCell = true
+                                    currentCellBuilder.clear()
+                                }
+                            }
+                            "p" -> {
+                                if (inShape && !inTableCell) {
+                                    inParagraph = true
+                                    isBulletParagraph = false
+                                    paraBuilder.clear()
+                                }
+                            }
+                            "pPr" -> {
+                                if (inParagraph) {
+                                    val lvl = (0 until parser.attributeCount)
+                                        .firstOrNull { parser.getAttributeName(it).substringAfter(':') == "lvl" }
+                                        ?.let { parser.getAttributeValue(it).toIntOrNull() } ?: 0
+                                    if (lvl > 0) isBulletParagraph = true
+                                }
+                            }
+                            "buChar", "buAutoNum" -> {
+                                if (inParagraph) isBulletParagraph = true
+                            }
+                            "br" -> {
+                                if (inParagraph) paraBuilder.append('\n')
+                                if (inTableCell) currentCellBuilder.append(' ')
+                            }
+                            "t" -> {
+                                val txt = parser.nextText()
+                                if (inTableCell) {
+                                    currentCellBuilder.append(txt)
+                                } else if (inParagraph) {
+                                    paraBuilder.append(txt)
+                                }
+                            }
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        val tag = parser.name.substringAfter(':')
+                        when (tag) {
+                            "p" -> {
+                                if (inParagraph && inShape && !inTableCell) {
+                                    val text = paraBuilder.toString().trim()
+                                    if (text.isNotEmpty()) {
+                                        val isTitlePh = currentPhType.equals("title", true) ||
+                                            currentPhType.equals("ctrTitle", true)
+                                        val isSubPh = currentPhType.equals("subTitle", true)
+                                        val isFooterPh = currentPhType.equals("sldNum", true) ||
+                                            currentPhType.equals("dt", true) ||
+                                            currentPhType.equals("ftr", true)
+
+                                        when {
+                                            isFooterPh -> Unit
+                                            isTitlePh && title.isBlank() -> title = text
+                                            isTitlePh -> title = "$title $text"
+                                            isSubPh && subtitle.isBlank() -> subtitle = text
+                                            isSubPh -> subtitle = "$subtitle\n$text"
+                                            title.isBlank() && bodyBlocks.isEmpty() && text.length <= 90 -> title = text
+                                            else -> {
+                                                val bType = if (isBulletParagraph || currentPhType.equals("body", true)) {
+                                                    BlockType.LIST_ITEM
+                                                } else {
+                                                    BlockType.PARAGRAPH
+                                                }
+                                                bodyBlocks.add(ParsedBlock(bodyBlocks.size, bType, text))
+                                            }
+                                        }
+                                    }
+                                    inParagraph = false
+                                }
+                            }
+                            "sp" -> {
+                                inShape = false
+                                currentPhType = ""
+                            }
+                            "tc" -> {
+                                if (inTableCell) {
+                                    val cell = currentCellBuilder.toString().trim()
+                                    if (cell.isNotEmpty()) currentRowCells.add(cell)
+                                    inTableCell = false
+                                }
+                            }
+                            "tr" -> {
+                                if (inTableRow) {
+                                    if (currentRowCells.isNotEmpty()) {
+                                        bodyBlocks.add(
+                                            ParsedBlock(
+                                                bodyBlocks.size,
+                                                BlockType.PARAGRAPH,
+                                                currentRowCells.joinToString("  ·  ")
+                                            )
+                                        )
+                                    }
+                                    inTableRow = false
+                                }
+                            }
+                        }
+                    }
+                }
+                event = parser.next()
+            }
+        }
+
+        return ExtractedPptxSlide(
+            title = title.trim(),
+            subtitle = subtitle.trim(),
+            bodyBlocks = bodyBlocks,
+            imageRelIds = imageRelIds
+        )
+    }
+
+    private fun extractPlainDrawingMlText(xml: String): String {
+        val sb = StringBuilder()
+        runCatching {
+            val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
+            val parser = factory.newPullParser()
+            parser.setInput(StringReader(xml))
+            var event = parser.eventType
+            while (event != XmlPullParser.END_DOCUMENT) {
+                if (event == XmlPullParser.START_TAG) {
+                    val tag = parser.name.substringAfter(':')
+                    if (tag == "t") {
+                        val txt = parser.nextText().trim()
+                        if (txt.isNotEmpty()) {
+                            if (sb.isNotEmpty()) sb.append(' ')
+                            sb.append(txt)
+                        }
+                    }
+                }
+                event = parser.next()
+            }
+        }
+        return sb.toString().trim()
+    }
+
+    private fun detectPageFormatLabel(
+        widthPt: Float,
+        heightPt: Float,
+        isPresentation: Boolean = false
+    ): String {
+        val w = widthPt.coerceAtLeast(1f)
+        val h = heightPt.coerceAtLeast(1f)
+        val ratio = w / h
+        if (isPresentation || ratio > 1.25f) {
+            if (kotlin.math.abs(ratio - (16f / 9f)) < 0.12f) return "Slide 16:9"
+            if (kotlin.math.abs(ratio - (4f / 3f)) < 0.10f) return "Slide 4:3"
+        }
+        val minSide = minOf(w, h)
+        val maxSide = maxOf(w, h)
+        val isLandscape = w > h * 1.05f
+        val base = when {
+            kotlin.math.abs(minSide - 595f) < 18f && kotlin.math.abs(maxSide - 842f) < 22f -> "A4"
+            kotlin.math.abs(minSide - 612f) < 18f && kotlin.math.abs(maxSide - 792f) < 22f -> "Carta"
+            kotlin.math.abs(minSide - 612f) < 18f && kotlin.math.abs(maxSide - 1008f) < 28f -> "Oficio"
+            kotlin.math.abs(minSide - 842f) < 24f && kotlin.math.abs(maxSide - 1191f) < 30f -> "A3"
+            kotlin.math.abs(minSide - 420f) < 16f && kotlin.math.abs(maxSide - 595f) < 20f -> "A5"
+            else -> {
+                val mmW = (w * 25.4f / 72f).toInt()
+                val mmH = (h * 25.4f / 72f).toInt()
+                "${mmW}×${mmH} mm"
+            }
+        }
+        return if (isLandscape && !base.contains("×")) "$base Horiz." else base
     }
 
     private fun parsePdf(context: Context, file: File): ParsedDocument {
         val fallbackTitle = file.nameWithoutExtension.replace('_', ' ').replace('-', ' ')
         var pageCount = 1
+        var nativeWidthPt = 595f
+        var nativeHeightPt = 842f
         runCatching {
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                 PdfRenderer(pfd).use { renderer ->
                     pageCount = renderer.pageCount.coerceAtLeast(1)
+                    if (renderer.pageCount > 0) {
+                        renderer.openPage(0).use { firstPage ->
+                            nativeWidthPt = firstPage.width.toFloat().coerceIn(240f, 2400f)
+                            nativeHeightPt = firstPage.height.toFloat().coerceIn(240f, 2400f)
+                        }
+                    }
                 }
             }
         }
@@ -293,7 +764,10 @@ object DocumentParser {
             toc = toc,
             totalWords = totalWords,
             pdfPageCount = pageCount,
-            pdfPageTexts = pageTexts
+            pdfPageTexts = pageTexts,
+            nativePageWidthPt = nativeWidthPt,
+            nativePageHeightPt = nativeHeightPt,
+            detectedFormatLabel = detectPageFormatLabel(nativeWidthPt, nativeHeightPt)
         )
     }
 

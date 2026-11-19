@@ -272,7 +272,7 @@ class LibraryViewModel(
                 val displayName = resolveDisplayName(uri) ?: "documento_${System.currentTimeMillis()}.epub"
                 val format = detectFormat(displayName, context.contentResolver.getType(uri))
                 if (format == null) {
-                    emitFeedback(LumaActionAnimType.ERROR, "Usa EPUB, PDF, DOCX, TXT o FB2")
+                    emitFeedback(LumaActionAnimType.ERROR, "Usa EPUB, PDF, DOCX, PPTX, TXT o FB2")
                     return@launch
                 }
 
@@ -289,7 +289,11 @@ class LibraryViewModel(
                 }
 
                 val parsed = DocumentParser.parse(context, destFile, format)
-                val units = if (format == DocumentFormat.PDF) parsed.pdfPageCount else parsed.chapters.size
+                val units = when (format) {
+                    DocumentFormat.PDF -> parsed.pdfPageCount
+                    DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+                    else -> parsed.chapters.size
+                }
                 val isImagePdf = format == DocumentFormat.PDF && parsed.pdfPageTexts.all { it.length < 30 }
                 val accentColor = coverColors[(destFile.name.hashCode().and(0x7FFFFFFF)) % coverColors.size]
 
@@ -343,6 +347,7 @@ class LibraryViewModel(
             "application/epub+zip" -> DocumentFormat.EPUB
             "application/pdf" -> DocumentFormat.PDF
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> DocumentFormat.DOCX
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" -> DocumentFormat.PPTX
             "text/plain" -> DocumentFormat.TXT
             "application/x-fictionbook+xml", "text/xml" -> DocumentFormat.FB2
             else -> null

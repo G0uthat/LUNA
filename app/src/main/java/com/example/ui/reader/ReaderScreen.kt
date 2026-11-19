@@ -51,6 +51,7 @@ import com.example.data.local.HighlightNoteEntity
 import com.example.data.model.DocumentFormat
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.ReaderMenuStyle
+import com.example.data.model.StandardPageFormat
 import com.example.engine.DynamicIslandEventManager
 import com.example.engine.MergedDocumentExporter
 import com.example.engine.SocialRepository
@@ -91,6 +92,7 @@ fun ReaderScreen(
     val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
     val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
     val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
+    val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
     val socialRepo = remember(context) { SocialRepository.getInstance(context) }
 
     var showAppearanceSheet by remember { mutableStateOf(false) }
@@ -206,6 +208,13 @@ fun ReaderScreen(
                 val doc = state.document!!
                 val parsed = state.parsed!!
                 val isPdf = parsed.format == DocumentFormat.PDF
+                val isPptx = parsed.format == DocumentFormat.PPTX
+                val isShowingStandardView = if (isPptx) !state.pptxForceAdaptedText else prefs.useStandardPageView
+                val resolvedFormatLabel = if (prefs.standardPageFormat == StandardPageFormat.AUTO) {
+                    parsed.detectedFormatLabel
+                } else {
+                    prefs.standardPageFormat.shortLabel
+                }
                 val totalUnits = (if (isPdf) parsed.pdfPageCount else state.totalSheetCount).coerceAtLeast(1)
                 val currentDisplayIndex = if (isPdf) state.currentUnitIndex else state.currentSheetIndex
                 val progress = ((currentDisplayIndex + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
@@ -227,60 +236,89 @@ fun ReaderScreen(
                     showExportDialog || showNewNoteDialog || editingHighlight != null
                 val readerBlurRadius by animateDpAsState(
                     targetValue = if (anyReaderMenuOpen) 6.dp else 0.dp,
-                    animationSpec = tween(200),
+                    animationSpec = tween(210),
                     label = "reader_menu_blur"
                 )
-
-                // 1. Distraction-Free Reading Surface (Fluid Sheets or PDF/Manhwa)
-                if (isPdf) {
-                    PdfManhwaReader(
-                        filePath = doc.filePath,
-                        pageCount = parsed.pdfPageCount,
-                        currentPageIndex = state.currentUnitIndex,
-                        prefs = prefs,
-                        drawingsByLocation = drawingsByLocation,
-                        ocrByPage = ocrByPage,
-                        showTranslatedOverlay = state.showTranslatedManhwaOverlay,
-                        isProcessingOcrOrTranslation = state.isProcessingOcrOrTranslation,
-                        processingMessage = state.ocrTranslationStatus,
-                        isDockExpanded = state.isDockExpanded,
-                        isDrawingMode = state.isDrawingMode,
-                        activeTool = state.activeTool,
-                        activeColorArgb = state.activeColorArgb,
-                        activeWidthNorm = state.activeWidthNorm,
-                        onPageChanged = { idx -> viewModel.onUnitChanged(idx) },
-                        onPageBitmapReady = viewModel::onPdfPageBitmapReady,
-                        onWordSelected = viewModel::onWordSelected,
-                        onStrokeCompleted = viewModel::addStroke,
-                        onEraseStrokes = viewModel::eraseStrokes,
-                        onToggleTranslateOverlay = viewModel::toggleOrRunManhwaPageTranslation,
-                        onTapPageCenter = handleTapCenter,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .blur(radius = readerBlurRadius)
-                    )
+                val readerSurfaceMod = if (readerBlurRadius > 0.dp) {
+                    Modifier.fillMaxSize().blur(radius = readerBlurRadius)
                 } else {
-                    FluidBookReader(
-                        chapters = parsed.chapters,
-                        currentChapterIndex = state.currentUnitIndex,
-                        jumpToChapterTrigger = state.jumpToChapterTrigger,
-                        prefs = prefs,
-                        highlights = highlights,
-                        drawingsByLocation = drawingsByLocation,
-                        isDrawingMode = state.isDrawingMode,
-                        activeTool = state.activeTool,
-                        activeColorArgb = state.activeColorArgb,
-                        activeWidthNorm = state.activeWidthNorm,
-                        activeSelection = state.selectedWord,
-                        onActiveSheetChanged = viewModel::onFluidSheetChanged,
-                        onWordSelected = viewModel::onWordSelected,
-                        onStrokeCompleted = viewModel::addStroke,
-                        onEraseStrokes = viewModel::eraseStrokes,
-                        onTapPageCenter = handleTapCenter,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .blur(radius = readerBlurRadius)
-                    )
+                    Modifier.fillMaxSize()
+                }
+
+                // 1. Distraction-Free Reading Surface (PDF/Manhwa, Standard Physical Sheet/PPTX, or Adapted Fluid Book)
+                when {
+                    isPdf -> {
+                        PdfManhwaReader(
+                            filePath = doc.filePath,
+                            pageCount = parsed.pdfPageCount,
+                            currentPageIndex = state.currentUnitIndex,
+                            prefs = prefs,
+                            drawingsByLocation = drawingsByLocation,
+                            ocrByPage = ocrByPage,
+                            showTranslatedOverlay = state.showTranslatedManhwaOverlay,
+                            isProcessingOcrOrTranslation = state.isProcessingOcrOrTranslation,
+                            processingMessage = state.ocrTranslationStatus,
+                            isDockExpanded = state.isDockExpanded,
+                            isDrawingMode = state.isDrawingMode,
+                            isPanZoomWhileDrawing = state.isPanZoomWhileDrawing,
+                            detectedFormatLabel = parsed.detectedFormatLabel,
+                            activeTool = state.activeTool,
+                            activeColorArgb = state.activeColorArgb,
+                            activeWidthNorm = state.activeWidthNorm,
+                            onPageChanged = { idx -> viewModel.onUnitChanged(idx) },
+                            onPageBitmapReady = viewModel::onPdfPageBitmapReady,
+                            onWordSelected = viewModel::onWordSelected,
+                            onStrokeCompleted = viewModel::addStroke,
+                            onEraseStrokes = viewModel::eraseStrokes,
+                            onToggleTranslateOverlay = viewModel::toggleOrRunManhwaPageTranslation,
+                            onTapPageCenter = handleTapCenter,
+                            modifier = readerSurfaceMod
+                        )
+                    }
+                    isShowingStandardView -> {
+                        StandardPageDocumentReader(
+                            parsed = parsed,
+                            currentUnitIndex = state.currentUnitIndex,
+                            jumpToUnitTrigger = state.jumpToChapterTrigger,
+                            prefs = prefs,
+                            drawingsByLocation = drawingsByLocation,
+                            isDrawingMode = state.isDrawingMode,
+                            isPanZoomWhileDrawing = state.isPanZoomWhileDrawing,
+                            activeTool = state.activeTool,
+                            activeColorArgb = state.activeColorArgb,
+                            activeWidthNorm = state.activeWidthNorm,
+                            onActiveSheetChanged = viewModel::onFluidSheetChanged,
+                            onSelectStandardFormat = { fmt ->
+                                viewModel.updatePreferences { it.copy(standardPageFormat = fmt) }
+                            },
+                            onToggleStandardView = viewModel::toggleStandardPageViewForCurrentDoc,
+                            onStrokeCompleted = viewModel::addStroke,
+                            onEraseStrokes = viewModel::eraseStrokes,
+                            onTapPageCenter = handleTapCenter,
+                            modifier = readerSurfaceMod
+                        )
+                    }
+                    else -> {
+                        FluidBookReader(
+                            chapters = parsed.chapters,
+                            currentChapterIndex = state.currentUnitIndex,
+                            jumpToChapterTrigger = state.jumpToChapterTrigger,
+                            prefs = prefs,
+                            highlights = highlights,
+                            drawingsByLocation = drawingsByLocation,
+                            isDrawingMode = state.isDrawingMode,
+                            activeTool = state.activeTool,
+                            activeColorArgb = state.activeColorArgb,
+                            activeWidthNorm = state.activeWidthNorm,
+                            activeSelection = state.selectedWord,
+                            onActiveSheetChanged = viewModel::onFluidSheetChanged,
+                            onWordSelected = viewModel::onWordSelected,
+                            onStrokeCompleted = viewModel::addStroke,
+                            onEraseStrokes = viewModel::eraseStrokes,
+                            onTapPageCenter = handleTapCenter,
+                            modifier = readerSurfaceMod
+                        )
+                    }
                 }
 
                 // 2. Ultra-minimalist discrete reading progress footer (only if enabled or tapped)
@@ -301,10 +339,11 @@ fun ReaderScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (isPdf) {
-                                "Pág. ${currentDisplayIndex + 1} / $totalUnits"
-                            } else {
-                                "Hoja ${currentDisplayIndex + 1} / $totalUnits"
+                            text = when {
+                                isPdf -> "Pág. ${currentDisplayIndex + 1} / $totalUnits"
+                                isPptx -> "Diapositiva ${currentDisplayIndex + 1} / $totalUnits"
+                                isShowingStandardView -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · $resolvedFormatLabel"
+                                else -> "Hoja ${currentDisplayIndex + 1} / $totalUnits"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             color = palette.inkMuted.copy(alpha = 0.72f)
@@ -344,11 +383,13 @@ fun ReaderScreen(
                     isBookmarkedHere = isBookmarkedHere,
                     isDrawingMode = state.isDrawingMode,
                     isPdfDocument = isPdf,
+                    isStandardPageView = if (isPdf) prefs.useStandardPageView else isShowingStandardView,
+                    standardPageFormatLabel = resolvedFormatLabel,
                     isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
                     isProcessingStatus = state.isProcessingOcrOrTranslation,
                     processingStatusText = state.ocrTranslationStatus,
                     mediaInfo = mediaInfo,
-                    activeIslandEvent = activeIslandEvent,
+                    activeIslandEvent = if (topModalHostId == null) activeIslandEvent else null,
                     queuedIslandCount = queuedIslandCount,
                     bookTitle = parsed.title,
                     progressLabel = progressSummary,
@@ -364,6 +405,7 @@ fun ReaderScreen(
                     onOpenAppearance = { showAppearanceSheet = true },
                     onOpenToc = { showTocSheet = true },
                     onToggleDrawing = { viewModel.toggleDrawingMode() },
+                    onToggleStandardPageView = viewModel::toggleStandardPageViewForCurrentDoc,
                     onTriggerOcrTranslate = viewModel::toggleOrRunManhwaPageTranslation,
                     onOpenAnnotations = { showAnnotationsSheet = true },
                     onOpenSearch = { showSearchSheet = true },
@@ -382,7 +424,7 @@ fun ReaderScreen(
                     onDismissIslandEvent = { DynamicIslandEventManager.dismissActiveEvent() }
                 )
 
-                // 4. Floating Drawing Toolbar (only when drawing mode is active)
+                // 4. Floating Drawing & Signature Toolbar (only when drawing mode is active)
                 if (state.isDrawingMode) {
                     DrawingFloatingToolbar(
                         activeTool = state.activeTool,
@@ -390,9 +432,17 @@ fun ReaderScreen(
                         activeWidthNorm = state.activeWidthNorm,
                         canUndo = state.canUndo,
                         canRedo = state.canRedo,
+                        isStandardPageView = if (isPdf) true else isShowingStandardView,
+                        standardFormatLabel = resolvedFormatLabel,
+                        showStandardViewToggle = !isPdf,
+                        canTogglePanZoom = isPdf || isShowingStandardView,
+                        isPanZoomMode = state.isPanZoomWhileDrawing,
                         onSelectTool = viewModel::setDrawingTool,
                         onSelectColor = viewModel::setDrawingColor,
                         onWidthChange = viewModel::setDrawingWidth,
+                        onToggleStandardPageView = viewModel::toggleStandardPageViewForCurrentDoc,
+                        onTogglePanZoomMode = viewModel::togglePanZoomWhileDrawing,
+                        onApplySignaturePreset = viewModel::applySignaturePreset,
                         onUndo = viewModel::undoDrawing,
                         onRedo = viewModel::redoDrawing,
                         onClearPage = viewModel::clearCurrentPageDrawings,

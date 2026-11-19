@@ -75,7 +75,13 @@ class MainActivity : ComponentActivity() {
             )
             val palette = paletteFor(prefs.theme)
 
-            LaunchedEffect(prefs) {
+            LaunchedEffect(
+                prefs.islandFilterMode,
+                prefs.islandAllowedPackages,
+                prefs.islandShowCriticalBattery,
+                prefs.islandShowCriticalConnectivity,
+                prefs.islandAllowIncomingCalls
+            ) {
                 DynamicIslandEventManager.updatePolicy(prefs)
             }
 
@@ -108,6 +114,7 @@ class MainActivity : ComponentActivity() {
                 var activeDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
                 val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
                 val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
+                val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
 
                 val libraryViewModel: LibraryViewModel = viewModel(
                     factory = remember {
@@ -122,9 +129,9 @@ class MainActivity : ComponentActivity() {
                             viewModel = libraryViewModel,
                             onOpenDocument = { id -> activeDocumentId = id }
                         )
-                        // Global centralized Dynamic Island events (critical states & permitted apps) on Library
+                        // Global centralized Dynamic Island events on Library (suppressed if a top modal hosts it)
                         DynamicIslandEventBanner(
-                            event = activeIslandEvent,
+                            event = if (topModalHostId == null) activeIslandEvent else null,
                             queuedCount = queuedIslandCount,
                             onTapEvent = { event ->
                                 DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
@@ -166,7 +173,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)
+        SystemMediaController.setForegroundActive(true)
         SystemMediaController.refreshPermissionStatus(applicationContext)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        SystemMediaController.setForegroundActive(false)
     }
 }
 

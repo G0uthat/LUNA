@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,6 +65,7 @@ import com.example.data.model.ReaderFont
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.ReadingTheme
 import com.example.data.model.SearchMatch
+import com.example.data.model.StandardPageFormat
 import com.example.data.model.TextAlignOption
 import com.example.data.model.TocEntry
 import com.example.ui.theme.LocalFolioPalette
@@ -99,6 +101,86 @@ fun AppearanceSettingsSheet(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // 0. Standard Physical Page Format (A4, Carta, Oficio, A3, A5, 16:9, 4:3) for Work & Signing
+            SectionTitle("Formato de hoja (Trabajo y Firma)")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(palette.surfaceAlt.copy(alpha = 0.72f))
+                    .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Ver en hoja estándar",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.ink
+                        )
+                        Text(
+                            text = "Muestra el archivo a escala real (A4, Carta, A3, PPTX) sin adaptarlo al ancho, ideal para revisar y firmar.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkMuted
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Switch(
+                        checked = prefs.useStandardPageView,
+                        onCheckedChange = { checked -> onUpdatePrefs { it.copy(useStandardPageView = checked) } },
+                        colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+                        modifier = Modifier.testTag("appearance_standard_page_switch")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    for (pageFmt in StandardPageFormat.entries) {
+                        val selected = prefs.standardPageFormat == pageFmt
+                        Column(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(if (selected) palette.accentSoft else palette.surface)
+                                .border(
+                                    width = if (selected) 2.dp else 1.dp,
+                                    color = if (selected) palette.accent else palette.border,
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                                .clickable {
+                                    onUpdatePrefs {
+                                        it.copy(
+                                            useStandardPageView = true,
+                                            standardPageFormat = pageFmt
+                                        )
+                                    }
+                                }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .testTag("std_page_fmt_${pageFmt.name}")
+                        ) {
+                            Text(
+                                text = pageFmt.displayName,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = if (selected) palette.accent else palette.ink
+                            )
+                            Text(
+                                text = pageFmt.dimensionsLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                    }
+                }
+            }
 
             // 1. Reading Themes (7 soft themes including Azul Marino)
             SectionTitle("Tema de lectura (${ReadingTheme.entries.size} estilos)")
@@ -353,7 +435,11 @@ fun TocBottomSheet(
                 modifier = Modifier.heightIn(max = 420.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(toc) { entry ->
+                itemsIndexed(
+                    items = toc,
+                    key = { index, entry -> "${index}_${entry.targetIndex}_${entry.title}" },
+                    contentType = { _, _ -> "toc_entry" }
+                ) { _, entry ->
                     val isCurrent = entry.targetIndex == currentIndex
                     Row(
                         modifier = Modifier
@@ -445,7 +531,11 @@ fun InBookSearchSheet(
                     modifier = Modifier.heightIn(max = 360.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(matches) { match ->
+                    itemsIndexed(
+                        items = matches,
+                        key = { index, match -> "${index}_${match.chapterTitle}_${match.snippet.hashCode()}" },
+                        contentType = { _, _ -> "search_match" }
+                    ) { _, match ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()

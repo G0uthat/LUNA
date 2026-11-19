@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -39,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -109,11 +111,20 @@ fun LumaFloatingDropdownDialog(
             isDismissing = true
             isVisible = false
             scope.launch {
-                delay(150L)
+                delay(165L)
                 onDismiss()
             }
         }
     }
+
+    val modalHostId = remember { DynamicIslandEventManager.registerModalHost() }
+    DisposableEffect(modalHostId) {
+        onDispose {
+            DynamicIslandEventManager.unregisterModalHost(modalHostId)
+        }
+    }
+
+    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
 
     Dialog(
         onDismissRequest = { if (dismissOnScrimClick) triggerDismiss() },
@@ -134,13 +145,14 @@ fun LumaFloatingDropdownDialog(
         val dialogContext = LocalContext.current
         val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
         val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
+        val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
 
         Box(modifier = Modifier.fillMaxSize()) {
             // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(animationSpec = tween(160)),
-                exit = fadeOut(animationSpec = tween(140))
+                enter = fadeIn(animationSpec = tween(190, easing = smoothEasing)),
+                exit = fadeOut(animationSpec = tween(155, easing = smoothEasing))
             ) {
                 Box(
                     modifier = Modifier
@@ -169,18 +181,18 @@ fun LumaFloatingDropdownDialog(
                 AnimatedVisibility(
                     visible = isVisible,
                     enter = scaleIn(
-                        initialScale = 0.86f,
+                        initialScale = 0.88f,
                         transformOrigin = transformOrigin,
                         animationSpec = spring(
-                            dampingRatio = 0.82f,
-                            stiffness = Spring.StiffnessMedium
+                            dampingRatio = 0.86f,
+                            stiffness = 430f
                         )
-                    ) + fadeIn(animationSpec = tween(150)),
+                    ) + fadeIn(animationSpec = tween(175, easing = smoothEasing)),
                     exit = scaleOut(
-                        targetScale = 0.88f,
+                        targetScale = 0.90f,
                         transformOrigin = transformOrigin,
-                        animationSpec = tween(140)
-                    ) + fadeOut(animationSpec = tween(120))
+                        animationSpec = tween(155, easing = smoothEasing)
+                    ) + fadeOut(animationSpec = tween(140, easing = smoothEasing))
                 ) {
                     Column(
                         modifier = Modifier
@@ -208,18 +220,20 @@ fun LumaFloatingDropdownDialog(
                 }
             }
 
-            // Keep centralized Dynamic Island alerts visible above open floating dialogs (critical states, allowed apps & previews)
-            DynamicIslandEventBanner(
-                event = activeIslandEvent,
-                queuedCount = queuedIslandCount,
-                onTapEvent = { event -> DynamicIslandEventManager.openActiveEvent(dialogContext, event) },
-                onDismiss = { DynamicIslandEventManager.dismissActiveEvent() },
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .displayCutoutPadding()
-                    .statusBarsPadding()
-                    .padding(top = 6.dp, start = 12.dp, end = 12.dp)
-            )
+            // Only the topmost modal host renders DynamicIslandEventBanner (zero duplicate animations)
+            if (topModalHostId == modalHostId) {
+                DynamicIslandEventBanner(
+                    event = activeIslandEvent,
+                    queuedCount = queuedIslandCount,
+                    onTapEvent = { event -> DynamicIslandEventManager.openActiveEvent(dialogContext, event) },
+                    onDismiss = { DynamicIslandEventManager.dismissActiveEvent() },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .displayCutoutPadding()
+                        .statusBarsPadding()
+                        .padding(top = 6.dp, start = 12.dp, end = 12.dp)
+                )
+            }
         }
     }
 }

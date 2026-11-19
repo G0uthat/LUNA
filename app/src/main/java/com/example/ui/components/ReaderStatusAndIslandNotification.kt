@@ -1,25 +1,35 @@
 package com.example.ui.components
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -38,13 +48,14 @@ import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
@@ -54,8 +65,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,6 +80,9 @@ import com.example.engine.CriticalEventKind
 import com.example.engine.DynamicIslandEvent
 import com.example.engine.DynamicIslandEventManager
 import com.example.ui.theme.LocalFolioPalette
+import kotlinx.coroutines.launch
+
+private val SmoothIslandEasing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 
 /**
  * Ultra-minimal, distraction-free battery-only indicator shown in the reader while
@@ -150,11 +167,12 @@ fun ReaderBatteryOnlyIndicator(
 }
 
 /**
- * Centralized Dynamic Island event banner that zooms in/out cleanly from top-center,
- * rendering ONLY:
- * - [DynamicIslandEvent.CriticalState]: critical battery, connectivity drops/restores,
- *   urgent calls/alarms, or critical app errors (with subtle pulsing critical dot & tinted ring).
- * - [DynamicIslandEvent.AllowedAppAlert]: notifications from explicitly permitted external apps.
+ * Centralized Dynamic Island event banner with buttery GPU-composited motion:
+ * - Pure top-center Zoom-In / Zoom-Out with smooth cubic-bezier easing.
+ * - Seamless in-place [AnimatedContent] morphing between consecutive queued events.
+ * - Tactile swipe-up-to-dismiss gesture with spring snap-back (zero recompositions during drag).
+ * - Subtle bottom progress hairline indicating remaining visibility time.
+ * - Renders ONLY [DynamicIslandEvent.CriticalState] and [DynamicIslandEvent.AllowedAppAlert].
  */
 @Composable
 fun DynamicIslandEventBanner(
@@ -165,8 +183,10 @@ fun DynamicIslandEventBanner(
     modifier: Modifier = Modifier
 ) {
     val topOrigin = TransformOrigin(0.5f, 0f)
-    val islandBg = Color(0xFF0C111C)
-    val islandFg = Color(0xFFF3F6FC)
+    val density = LocalDensity.current
+    val dismissThresholdPx = with(density) { -28.dp.toPx() }
+    val coroutineScope = rememberCoroutineScope()
+    val dragOffsetY = remember { Animatable(0f) }
 
     // Keep last non-null reference briefly so exit zoom-out renders smoothly
     var lastEvent by remember { mutableStateOf<DynamicIslandEvent?>(null) }
@@ -174,50 +194,144 @@ fun DynamicIslandEventBanner(
         lastEvent = event
     }
 
+    LaunchedEffect(event?.id) {
+        if (event != null && dragOffsetY.value != 0f) {
+            dragOffsetY.snapTo(0f)
+        }
+    }
+
     AnimatedVisibility(
         visible = event != null,
         modifier = modifier,
         enter = scaleIn(
-            initialScale = 0.56f,
+            initialScale = 0.60f,
             transformOrigin = topOrigin,
-            animationSpec = tween(220, easing = FastOutSlowInEasing)
-        ) + fadeIn(tween(170)),
+            animationSpec = spring(
+                dampingRatio = 0.84f,
+                stiffness = 460f
+            )
+        ) + fadeIn(tween(180, easing = SmoothIslandEasing)),
         exit = scaleOut(
-            targetScale = 0.56f,
+            targetScale = 0.60f,
             transformOrigin = topOrigin,
-            animationSpec = tween(180, easing = FastOutSlowInEasing)
-        ) + fadeOut(tween(135))
+            animationSpec = tween(190, easing = SmoothIslandEasing)
+        ) + fadeOut(tween(145, easing = SmoothIslandEasing))
     ) {
-        val current = event ?: lastEvent ?: return@AnimatedVisibility
-        val pillShape = RoundedCornerShape(26.dp)
-
-        when (current) {
-            is DynamicIslandEvent.CriticalState -> {
-                val accent = Color(current.accentColorArgb)
-                val pulseTransition = rememberInfiniteTransition(label = "island_critical_pulse")
-                val dotAlpha by pulseTransition.animateFloat(
-                    initialValue = 0.35f,
-                    targetValue = 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(680, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "island_critical_dot_alpha"
-                )
-                val isInteractive = current.contentIntent != null || current.packageName.isNotBlank()
-
-                Row(
-                    modifier = Modifier
-                        .widthIn(min = 224.dp, max = 336.dp)
-                        .shadow(18.dp, pillShape, ambientColor = accent.copy(alpha = 0.42f))
-                        .clip(pillShape)
-                        .background(islandBg.copy(alpha = 0.98f))
-                        .border(1.2.dp, accent.copy(alpha = 0.58f), pillShape)
-                        .clickable {
-                            if (isInteractive) onTapEvent(current) else onDismiss()
+        val displayedEvent = event ?: lastEvent ?: return@AnimatedVisibility
+        Box(
+            modifier = Modifier
+                .graphicsLayer {
+                    val y = dragOffsetY.value
+                    translationY = y
+                    alpha = (1f + (y / (dismissThresholdPx.coerceAtMost(-1f) * -2.2f))).coerceIn(0.45f, 1f)
+                }
+                .pointerInput(displayedEvent.id) {
+                    detectVerticalDragGestures(
+                        onDragEnd = {
+                            if (dragOffsetY.value <= dismissThresholdPx) {
+                                onDismiss()
+                            } else {
+                                coroutineScope.launch {
+                                    dragOffsetY.animateTo(
+                                        0f,
+                                        spring(
+                                            dampingRatio = Spring.DampingRatioNoBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            coroutineScope.launch {
+                                dragOffsetY.animateTo(
+                                    0f,
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                )
+                            }
+                        },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            val next = (dragOffsetY.value + dragAmount).coerceIn(dismissThresholdPx * 2.1f, 14f)
+                            coroutineScope.launch { dragOffsetY.snapTo(next) }
                         }
-                        .padding(horizontal = 12.dp, vertical = 9.dp)
-                        .testTag("dynamic_island_critical_banner"),
+                    )
+                }
+        ) {
+            AnimatedContent(
+                targetState = displayedEvent,
+                contentKey = { it.id },
+                transitionSpec = {
+                    (fadeIn(tween(180, easing = SmoothIslandEasing)) + scaleIn(
+                        initialScale = 0.94f,
+                        transformOrigin = topOrigin,
+                        animationSpec = tween(210, easing = SmoothIslandEasing)
+                    )) togetherWith (fadeOut(tween(130, easing = SmoothIslandEasing)) + scaleOut(
+                        targetScale = 0.94f,
+                        transformOrigin = topOrigin,
+                        animationSpec = tween(140, easing = SmoothIslandEasing)
+                    )) using SizeTransform(clip = false) { _, _ ->
+                        spring(dampingRatio = 0.88f, stiffness = 420f)
+                    }
+                },
+                label = "dynamic_island_event_morph"
+            ) { current ->
+                DynamicIslandEventPillCard(
+                    event = current,
+                    queuedCount = queuedCount,
+                    onTapEvent = onTapEvent,
+                    onDismiss = onDismiss
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DynamicIslandEventPillCard(
+    event: DynamicIslandEvent,
+    queuedCount: Int,
+    onTapEvent: (DynamicIslandEvent) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val islandBg = Color(0xFF0C111C)
+    val islandFg = Color(0xFFF3F6FC)
+    val pillShape = RoundedCornerShape(26.dp)
+
+    val countdown = remember(event.id) { Animatable(1f) }
+    LaunchedEffect(event.id) {
+        countdown.snapTo(1f)
+        countdown.animateTo(
+            targetValue = 0f,
+            animationSpec = tween(
+                durationMillis = event.durationMs.toInt().coerceAtLeast(800),
+                easing = LinearEasing
+            )
+        )
+    }
+
+    when (event) {
+        is DynamicIslandEvent.CriticalState -> {
+            val accent = Color(event.accentColorArgb)
+            val isInteractive = event.contentIntent != null || event.packageName.isNotBlank()
+
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 228.dp, max = 336.dp)
+                    .shadow(18.dp, pillShape, ambientColor = accent.copy(alpha = 0.42f))
+                    .clip(pillShape)
+                    .background(islandBg.copy(alpha = 0.98f))
+                    .border(1.2.dp, accent.copy(alpha = 0.58f), pillShape)
+                    .clickable {
+                        if (isInteractive) onTapEvent(event) else onDismiss()
+                    }
+                    .testTag("dynamic_island_critical_banner")
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 9.dp, bottom = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -230,8 +344,8 @@ fun DynamicIslandEventBanner(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = criticalEventIcon(current.kind),
-                            contentDescription = current.badgeLabel,
+                            imageVector = criticalEventIcon(event.kind),
+                            contentDescription = event.badgeLabel,
                             tint = accent,
                             modifier = Modifier.size(18.dp)
                         )
@@ -245,28 +359,23 @@ fun DynamicIslandEventBanner(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .alpha(dotAlpha)
-                                    .clip(CircleShape)
-                                    .background(accent)
-                            )
+                            PulsingCriticalDot(color = accent)
                             Text(
-                                text = current.badgeLabel.uppercase(),
+                                text = event.badgeLabel.uppercase(),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 letterSpacing = 0.65.sp,
                                 color = accent,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                             if (queuedCount > 0) {
                                 IslandQueueCountChip(count = queuedCount)
                             }
                         }
                         Text(
-                            text = current.title,
+                            text = event.title,
                             fontSize = 12.sp,
                             lineHeight = 14.sp,
                             fontWeight = FontWeight.Bold,
@@ -274,9 +383,9 @@ fun DynamicIslandEventBanner(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (current.subtitle.isNotBlank()) {
+                        if (event.subtitle.isNotBlank()) {
                             Text(
-                                text = current.subtitle,
+                                text = event.subtitle,
                                 fontSize = 11.sp,
                                 lineHeight = 13.5.sp,
                                 color = islandFg.copy(alpha = 0.78f),
@@ -291,20 +400,27 @@ fun DynamicIslandEventBanner(
                         onClick = onDismiss
                     )
                 }
+                IslandCountdownHairline(
+                    progressProvider = { countdown.value },
+                    color = accent.copy(alpha = 0.68f)
+                )
             }
+        }
 
-            is DynamicIslandEvent.AllowedAppAlert -> {
-                val notif = current.notification
+        is DynamicIslandEvent.AllowedAppAlert -> {
+            val notif = event.notification
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 220.dp, max = 332.dp)
+                    .shadow(16.dp, pillShape, ambientColor = Color.Black.copy(alpha = 0.45f))
+                    .clip(pillShape)
+                    .background(islandBg.copy(alpha = 0.97f))
+                    .border(1.dp, Color.White.copy(alpha = 0.16f), pillShape)
+                    .clickable { onTapEvent(event) }
+                    .testTag("dynamic_island_notification_banner")
+            ) {
                 Row(
-                    modifier = Modifier
-                        .widthIn(min = 216.dp, max = 332.dp)
-                        .shadow(16.dp, pillShape, ambientColor = Color.Black.copy(alpha = 0.45f))
-                        .clip(pillShape)
-                        .background(islandBg.copy(alpha = 0.97f))
-                        .border(1.dp, Color.White.copy(alpha = 0.16f), pillShape)
-                        .clickable { onTapEvent(current) }
-                        .padding(horizontal = 12.dp, vertical = 9.dp)
-                        .testTag("dynamic_island_notification_banner"),
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 9.dp, bottom = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -388,8 +504,62 @@ fun DynamicIslandEventBanner(
                         onClick = onDismiss
                     )
                 }
+                IslandCountdownHairline(
+                    progressProvider = { countdown.value },
+                    color = Color(0xFF7BA4FF).copy(alpha = 0.52f)
+                )
             }
         }
+    }
+}
+
+/**
+ * Isolated GPU-composited pulsing dot so the parent Dynamic Island card NEVER recomposes at 60-120Hz.
+ */
+@Composable
+private fun PulsingCriticalDot(color: Color) {
+    val pulseTransition = rememberInfiniteTransition(label = "island_critical_pulse")
+    val dotAlpha by pulseTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(720, easing = SmoothIslandEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "island_critical_dot_alpha"
+    )
+    Box(
+        modifier = Modifier
+            .size(6.dp)
+            .graphicsLayer { alpha = dotAlpha }
+            .clip(CircleShape)
+            .background(color)
+    )
+}
+
+/**
+ * Zero-recomposition canvas hairline showing smooth live countdown inside the Dynamic Island pill.
+ */
+@Composable
+private fun IslandCountdownHairline(
+    progressProvider: () -> Float,
+    color: Color
+) {
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .height(2.dp)
+    ) {
+        val fraction = progressProvider().coerceIn(0f, 1f)
+        val w = size.width * fraction
+        val startX = (size.width - w) / 2f
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(startX, 0f),
+            size = Size(w, size.height),
+            cornerRadius = CornerRadius(size.height, size.height)
+        )
     }
 }
 

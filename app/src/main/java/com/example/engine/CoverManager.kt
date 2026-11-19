@@ -50,6 +50,7 @@ object CoverManager {
         val extracted: Bitmap? = when (format) {
             DocumentFormat.PDF -> extractPdfFirstPageBitmap(sourceFile)
             DocumentFormat.EPUB -> extractEpubCoverBitmap(sourceFile)
+            DocumentFormat.PPTX -> extractPptxCoverBitmap(sourceFile)
             else -> null
         }
 
@@ -155,6 +156,39 @@ object CoverManager {
             val scaled = Bitmap.createScaledBitmap(decoded, COVER_W, COVER_H, true)
             if (scaled !== decoded) decoded.recycle()
             scaled
+        }
+    }.getOrNull()
+
+    private fun extractPptxCoverBitmap(file: File): Bitmap? = runCatching {
+        ZipFile(file).use { zip ->
+            val preferred = zip.getEntry("docProps/thumbnail.jpeg")
+                ?: zip.getEntry("docProps/thumbnail.jpg")
+                ?: zip.getEntry("docProps/thumbnail.png")
+                ?: zip.entries().asSequence()
+                    .filter { entry ->
+                        val lower = entry.name.lowercase()
+                        lower.startsWith("ppt/media/") &&
+                            (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp"))
+                    }
+                    .maxByOrNull { it.size }
+                ?: return@runCatching null
+
+            val bytes = zip.getInputStream(preferred).use { it.readBytes() }
+            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+
+            // Frame widescreen slide thumbnail cleanly onto a studio vertical book cover
+            val out = Bitmap.createBitmap(COVER_W, COVER_H, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+            canvas.drawColor(Color.parseColor("#182032"))
+
+            val scale = minOf(COVER_W.toFloat() / decoded.width.coerceAtLeast(1), (COVER_H * 0.62f) / decoded.height.coerceAtLeast(1))
+            val dw = decoded.width * scale
+            val dh = decoded.height * scale
+            val left = (COVER_W - dw) * 0.5f
+            val top = (COVER_H - dh) * 0.5f
+            canvas.drawBitmap(decoded, null, RectF(left, top, left + dw, top + dh), Paint(Paint.FILTER_BITMAP_FLAG))
+            decoded.recycle()
+            out
         }
     }.getOrNull()
 

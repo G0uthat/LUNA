@@ -10,6 +10,7 @@ enum class DocumentFormat(val label: String, val extension: String, val mimeType
     EPUB("EPUB", "epub", "application/epub+zip"),
     PDF("PDF", "pdf", "application/pdf"),
     DOCX("DOCX", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    PPTX("PPTX", "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
     TXT("TXT", "txt", "text/plain"),
     FB2("FB2", "fb2", "application/x-fictionbook+xml");
 
@@ -99,6 +100,30 @@ enum class TargetFpsOption(val label: String, val fps: Float) {
     FPS_240("240", 240f)
 }
 
+enum class StandardPageFormat(
+    val displayName: String,
+    val shortLabel: String,
+    val dimensionsLabel: String,
+    val widthPt: Float,
+    val heightPt: Float
+) {
+    AUTO("Auto (Archivo)", "Auto", "Tamaño original", 595f, 842f),
+    A4("A4", "A4", "210 × 297 mm", 595f, 842f),
+    LETTER("Carta", "Carta", "216 × 279 mm", 612f, 792f),
+    LEGAL("Oficio", "Oficio", "216 × 356 mm", 612f, 1008f),
+    A3("A3", "A3", "297 × 420 mm", 842f, 1191f),
+    A5("A5", "A5", "148 × 210 mm", 420f, 595f),
+    SLIDE_16_9("Slide 16:9", "16:9", "Panorámica", 960f, 540f),
+    SLIDE_4_3("Slide 4:3", "4:3", "Clásica", 800f, 600f);
+
+    fun resolveSizePt(nativeWidthPt: Float, nativeHeightPt: Float): Pair<Float, Float> =
+        if (this == AUTO) {
+            nativeWidthPt.coerceIn(240f, 2400f) to nativeHeightPt.coerceIn(240f, 2400f)
+        } else {
+            widthPt to heightPt
+        }
+}
+
 enum class IslandNotificationFilterMode(val displayName: String, val subtitle: String) {
     ALLOWED_ONLY("Solo permitidas", "Estados críticos y únicamente apps que autorices"),
     CRITICAL_ONLY("Solo críticos", "Silencia apps externas; solo batería, red y llamadas"),
@@ -147,7 +172,9 @@ data class ReaderPreferences(
     val islandAllowedPackages: Set<String> = DEFAULT_ISLAND_ALLOWED_PACKAGES,
     val islandShowCriticalBattery: Boolean = true,
     val islandShowCriticalConnectivity: Boolean = true,
-    val islandAllowIncomingCalls: Boolean = true
+    val islandAllowIncomingCalls: Boolean = true,
+    val useStandardPageView: Boolean = false,
+    val standardPageFormat: StandardPageFormat = StandardPageFormat.AUTO
 )
 
 enum class BlockType {
@@ -179,6 +206,15 @@ data class TocEntry(
     val level: Int = 0
 )
 
+data class ParsedSlide(
+    val index: Int,
+    val title: String,
+    val subtitle: String = "",
+    val bodyBlocks: List<ParsedBlock> = emptyList(),
+    val notes: String = "",
+    val imagePaths: List<String> = emptyList()
+)
+
 data class ParsedDocument(
     val title: String,
     val author: String,
@@ -187,7 +223,11 @@ data class ParsedDocument(
     val toc: List<TocEntry>,
     val totalWords: Int,
     val pdfPageCount: Int = 0,
-    val pdfPageTexts: List<String> = emptyList()
+    val pdfPageTexts: List<String> = emptyList(),
+    val slides: List<ParsedSlide> = emptyList(),
+    val nativePageWidthPt: Float = 595f,
+    val nativePageHeightPt: Float = 842f,
+    val detectedFormatLabel: String = "A4"
 )
 
 enum class DrawingTool(val displayName: String) {

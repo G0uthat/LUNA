@@ -18,6 +18,7 @@ import com.example.data.model.ReaderFont
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.ReadingTheme
+import com.example.data.model.StandardPageFormat
 import com.example.data.model.TargetFpsOption
 import com.example.data.model.TextAlignOption
 import com.example.data.model.TranslationEngine
@@ -58,6 +59,8 @@ class PreferencesRepository(private val context: Context) {
         val ISLAND_CRITICAL_BATTERY = booleanPreferencesKey("island_critical_battery")
         val ISLAND_CRITICAL_CONNECTIVITY = booleanPreferencesKey("island_critical_connectivity")
         val ISLAND_ALLOW_CALLS = booleanPreferencesKey("island_allow_calls")
+        val USE_STANDARD_PAGE_VIEW = booleanPreferencesKey("use_standard_page_view")
+        val STANDARD_PAGE_FORMAT = stringPreferencesKey("standard_page_format")
     }
 
     val preferencesFlow: Flow<ReaderPreferences> = context.readerDataStore.data.map { prefs ->
@@ -91,7 +94,9 @@ class PreferencesRepository(private val context: Context) {
             islandAllowedPackages = prefs[Keys.ISLAND_ALLOWED_PACKAGES] ?: DEFAULT_ISLAND_ALLOWED_PACKAGES,
             islandShowCriticalBattery = prefs[Keys.ISLAND_CRITICAL_BATTERY] ?: true,
             islandShowCriticalConnectivity = prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] ?: true,
-            islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true
+            islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true,
+            useStandardPageView = prefs[Keys.USE_STANDARD_PAGE_VIEW] ?: false,
+            standardPageFormat = enumOrDefault(prefs[Keys.STANDARD_PAGE_FORMAT], StandardPageFormat.AUTO)
         )
     }
 
@@ -127,7 +132,9 @@ class PreferencesRepository(private val context: Context) {
                 islandAllowedPackages = prefs[Keys.ISLAND_ALLOWED_PACKAGES] ?: DEFAULT_ISLAND_ALLOWED_PACKAGES,
                 islandShowCriticalBattery = prefs[Keys.ISLAND_CRITICAL_BATTERY] ?: true,
                 islandShowCriticalConnectivity = prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] ?: true,
-                islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true
+                islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true,
+                useStandardPageView = prefs[Keys.USE_STANDARD_PAGE_VIEW] ?: false,
+                standardPageFormat = enumOrDefault(prefs[Keys.STANDARD_PAGE_FORMAT], StandardPageFormat.AUTO)
             )
             val updated = transform(current)
             prefs[Keys.THEME] = updated.theme.name
@@ -159,6 +166,8 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.ISLAND_CRITICAL_BATTERY] = updated.islandShowCriticalBattery
             prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] = updated.islandShowCriticalConnectivity
             prefs[Keys.ISLAND_ALLOW_CALLS] = updated.islandAllowIncomingCalls
+            prefs[Keys.USE_STANDARD_PAGE_VIEW] = updated.useStandardPageView
+            prefs[Keys.STANDARD_PAGE_FORMAT] = updated.standardPageFormat.name
         }
     }
 

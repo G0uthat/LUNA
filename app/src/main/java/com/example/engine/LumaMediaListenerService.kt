@@ -61,6 +61,12 @@ class LumaMediaListenerService : NotificationListenerService() {
         if (sbn == null) return
         DynamicIslandEventManager.onSystemNotificationPosted(applicationContext, sbn)
     }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        super.onNotificationRemoved(sbn)
+        if (sbn == null) return
+        DynamicIslandEventManager.onSystemNotificationRemoved(sbn)
+    }
 }
 
 /**
@@ -97,8 +103,29 @@ object SystemMediaController {
         selectBestController(controllers.orEmpty())
     }
 
+    private var tickerRunning = false
+    @Volatile
+    private var isForegroundActive = true
+
+    fun setForegroundActive(active: Boolean) {
+        isForegroundActive = active
+        if (active) {
+            if (!tickerRunning && appContext != null) {
+                tickerRunning = true
+                mainHandler.postDelayed(progressTicker, 600L)
+            }
+        } else {
+            tickerRunning = false
+            mainHandler.removeCallbacks(progressTicker)
+        }
+    }
+
     private val progressTicker = object : Runnable {
         override fun run() {
+            if (!isForegroundActive) {
+                tickerRunning = false
+                return
+            }
             val ctx = appContext
             val current = _mediaState.value
             if (current.isNotificationAccessGranted) {
@@ -114,10 +141,13 @@ object SystemMediaController {
             } else if (ctx != null) {
                 pollAudioManagerFallback(ctx)
             }
-            mainHandler.postDelayed(this, 1000L)
+            if (isForegroundActive) {
+                mainHandler.postDelayed(this, 1000L)
+            } else {
+                tickerRunning = false
+            }
         }
     }
-    private var tickerRunning = false
 
     private fun pollAudioManagerFallback(context: Context) {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return

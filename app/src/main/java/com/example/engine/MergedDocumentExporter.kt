@@ -1,10 +1,12 @@
 package com.example.engine
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.text.Layout
@@ -19,6 +21,7 @@ import com.example.data.model.DrawingTool
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.OcrPageResult
 import com.example.data.model.ParsedDocument
+import com.example.data.model.StandardPageFormat
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -51,7 +54,8 @@ object MergedDocumentExporter {
         highlights: List<HighlightNoteEntity>,
         ocrByPage: Map<Int, OcrPageResult>,
         formatOption: ExportFormatOption,
-        destinationUri: Uri
+        destinationUri: Uri,
+        standardPageFormat: StandardPageFormat = StandardPageFormat.AUTO
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             context.contentResolver.openOutputStream(destinationUri)?.use { out ->
@@ -63,6 +67,7 @@ object MergedDocumentExporter {
                     highlights = highlights,
                     ocrByPage = ocrByPage,
                     formatOption = formatOption,
+                    standardPageFormat = standardPageFormat,
                     outputStream = out
                 )
             } ?: error("No se pudo abrir el destino para guardar el archivo.")
@@ -76,7 +81,8 @@ object MergedDocumentExporter {
         drawingsByLocation: Map<String, List<DrawingStroke>>,
         highlights: List<HighlightNoteEntity>,
         ocrByPage: Map<Int, OcrPageResult>,
-        formatOption: ExportFormatOption
+        formatOption: ExportFormatOption,
+        standardPageFormat: StandardPageFormat = StandardPageFormat.AUTO
     ): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val exportDir = File(context.filesDir, "exports").apply { mkdirs() }
@@ -92,6 +98,7 @@ object MergedDocumentExporter {
                     highlights = highlights,
                     ocrByPage = ocrByPage,
                     formatOption = formatOption,
+                    standardPageFormat = standardPageFormat,
                     outputStream = out
                 )
             }
@@ -125,6 +132,7 @@ object MergedDocumentExporter {
         highlights: List<HighlightNoteEntity>,
         ocrByPage: Map<Int, OcrPageResult>,
         formatOption: ExportFormatOption,
+        standardPageFormat: StandardPageFormat,
         outputStream: OutputStream
     ) {
         val docFormat = DocumentFormat.fromExtension(document.format) ?: DocumentFormat.PDF
@@ -137,6 +145,14 @@ object MergedDocumentExporter {
                     sourceFile = sourceFile,
                     drawingsByLocation = drawingsByLocation,
                     ocrByPage = ocrByPage,
+                    outputStream = outputStream
+                )
+            }
+            docFormat == DocumentFormat.PPTX -> {
+                exportPptxAsSelectablePdf(
+                    parsed = parsed,
+                    drawingsByLocation = drawingsByLocation,
+                    standardPageFormat = standardPageFormat,
                     outputStream = outputStream
                 )
             }
@@ -162,6 +178,7 @@ object MergedDocumentExporter {
                     parsed = parsed,
                     drawingsByLocation = drawingsByLocation,
                     highlights = highlights,
+                    standardPageFormat = standardPageFormat,
                     outputStream = outputStream
                 )
             }
@@ -401,20 +418,171 @@ object MergedDocumentExporter {
     }
 
     /**
-     * Exports fluid documents (EPUB, DOCX, TXT, FB2) as a clean Vector PDF where all text is drawn
-     * as real selectable PDF text via StaticLayout, and chapter freehand strokes are fused on top!
+     * Exports PowerPoint (.pptx) presentations as a high-clarity selectable Vector PDF matching the
+     * authentic slide aspect ratio (e.g. 16:9, 4:3, or selected StandardPageFormat) with embedded
+     * slide images and all user freehand strokes / signatures merged cleanly on top.
+     */
+    private fun exportPptxAsSelectablePdf(
+        parsed: ParsedDocument,
+        drawingsByLocation: Map<String, List<DrawingStroke>>,
+        standardPageFormat: StandardPageFormat,
+        outputStream: OutputStream
+    ) {
+        val pdfDoc = PdfDocument()
+        val (wPt, hPt) = standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
+        val pageWidth = wPt.toInt().coerceIn(320, 2400)
+        val pageHeight = hPt.toInt().coerceIn(240, 2400)
+        val marginX = (pageWidth * 0.065f).coerceIn(28f, 64f)
+        val marginY = (pageHeight * 0.075f).coerceIn(24f, 56f)
+
+        val bgPaint = Paint().apply { color = Color.WHITE }
+        val accentBarPaint = Paint().apply { color = Color.parseColor("#1D5BFF") }
+        val footerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#6B7280")
+            textSize = (pageHeight * 0.022f).coerceIn(9f, 13f)
+        }
+
+        parsed.slides.forEachIndexed { idx, slide ->
+            val page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, idx + 1).create())
+            val canvas = page.canvas
+            canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), bgPaint)
+            canvas.drawRect(0f, 0f, pageWidth.toFloat(), 6f, accentBarPaint)
+
+            val hasImages = slide.imagePaths.isNotEmpty()
+            val textAreaWidth = if (hasImages && pageWidth > pageHeight) {
+                ((pageWidth - marginX * 2.5f) * 0.56f).toInt().coerceAtLeast(180)
+            } else {
+                (pageWidth - marginX * 2f).toInt().coerceAtLeast(180)
+            }
+
+            var y = marginY
+            val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#101828")
+                textSize = (pageHeight * 0.052f).coerceIn(18f, 30f)
+                isFakeBoldText = true
+            }
+            val titleLayout = StaticLayout.Builder
+                .obtain(slide.title, 0, slide.title.length, titlePaint, (pageWidth - marginX * 2f).toInt().coerceAtLeast(180))
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setLineSpacing(2f, 1.15f)
+                .build()
+            canvas.save()
+            canvas.translate(marginX, y)
+            titleLayout.draw(canvas)
+            canvas.restore()
+            y += titleLayout.height + 10f
+
+            if (slide.subtitle.isNotBlank()) {
+                val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.parseColor("#475467")
+                    textSize = (pageHeight * 0.032f).coerceIn(12f, 18f)
+                }
+                val subLayout = StaticLayout.Builder
+                    .obtain(slide.subtitle, 0, slide.subtitle.length, subPaint, textAreaWidth)
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setLineSpacing(2f, 1.2f)
+                    .build()
+                canvas.save()
+                canvas.translate(marginX, y)
+                subLayout.draw(canvas)
+                canvas.restore()
+                y += subLayout.height + 12f
+            }
+
+            val bodyTopY = y
+            val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#1D2939")
+                textSize = (pageHeight * 0.028f).coerceIn(11f, 16f)
+            }
+            for (block in slide.bodyBlocks) {
+                val prefix = if (block.type == BlockType.LIST_ITEM) "•  " else ""
+                val text = prefix + block.text
+                val layout = StaticLayout.Builder
+                    .obtain(text, 0, text.length, bodyPaint, textAreaWidth)
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setLineSpacing(2f, 1.24f)
+                    .build()
+                if (y + layout.height > pageHeight - marginY - 18f) break
+                canvas.save()
+                canvas.translate(marginX, y)
+                layout.draw(canvas)
+                canvas.restore()
+                y += layout.height + 8f
+            }
+
+            // Draw first embedded slide image neatly inside available space
+            if (hasImages) {
+                val imgPath = slide.imagePaths.first()
+                runCatching {
+                    val bmp = BitmapFactory.decodeFile(imgPath)
+                    if (bmp != null) {
+                        val destRect = if (pageWidth > pageHeight) {
+                            val left = marginX + textAreaWidth + marginX * 0.5f
+                            val right = pageWidth - marginX
+                            val top = bodyTopY
+                            val bottom = pageHeight - marginY - 22f
+                            fitRect(bmp.width.toFloat(), bmp.height.toFloat(), RectF(left, top, right, bottom))
+                        } else {
+                            val top = (y + 8f).coerceAtMost(pageHeight * 0.55f)
+                            val bottom = pageHeight - marginY - 22f
+                            fitRect(bmp.width.toFloat(), bmp.height.toFloat(), RectF(marginX, top, pageWidth - marginX, bottom))
+                        }
+                        canvas.drawBitmap(bmp, null, destRect, Paint(Paint.FILTER_BITMAP_FLAG))
+                        bmp.recycle()
+                    }
+                }
+            }
+
+            canvas.drawText(
+                "${idx + 1} / ${parsed.slides.size}",
+                pageWidth - marginX - 42f,
+                pageHeight - 14f,
+                footerPaint
+            )
+
+            val slideStrokes = drawingsByLocation["pptx-slide-$idx"].orEmpty() +
+                drawingsByLocation["std-page-$idx"].orEmpty() +
+                collectChapterStrokes(drawingsByLocation, "pptx(/slide/$idx)")
+            if (slideStrokes.isNotEmpty()) {
+                drawStrokesOnAndroidCanvas(canvas, slideStrokes, pageWidth.toFloat(), pageHeight.toFloat())
+            }
+            pdfDoc.finishPage(page)
+        }
+
+        pdfDoc.writeTo(outputStream)
+        pdfDoc.close()
+    }
+
+    private fun fitRect(srcW: Float, srcH: Float, bounds: RectF): RectF {
+        val bw = bounds.width().coerceAtLeast(1f)
+        val bh = bounds.height().coerceAtLeast(1f)
+        val scale = minOf(bw / srcW.coerceAtLeast(1f), bh / srcH.coerceAtLeast(1f))
+        val dw = srcW * scale
+        val dh = srcH * scale
+        val left = bounds.left + (bw - dw) * 0.5f
+        val top = bounds.top + (bh - dh) * 0.5f
+        return RectF(left, top, left + dw, top + dh)
+    }
+
+    /**
+     * Exports fluid documents (EPUB, DOCX, TXT, FB2) as a clean Vector PDF matching the selected
+     * physical StandardPageFormat (A4, Carta, A3, Oficio, A5, or Auto file size), with all text
+     * selectable via StaticLayout and all freehand drawings / signatures merged cleanly on top!
      */
     private fun exportFluidDocumentAsSelectablePdf(
         parsed: ParsedDocument,
         drawingsByLocation: Map<String, List<DrawingStroke>>,
         highlights: List<HighlightNoteEntity>,
+        standardPageFormat: StandardPageFormat,
         outputStream: OutputStream
     ) {
         val pdfDoc = PdfDocument()
-        val pageWidth = 595
-        val pageHeight = 842
-        val marginX = 48f
-        val contentWidth = (pageWidth - marginX * 2).toInt()
+        val (wPt, hPt) = standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
+        val pageWidth = wPt.toInt().coerceIn(320, 2400)
+        val pageHeight = hPt.toInt().coerceIn(320, 2400)
+        val marginX = (pageWidth * 0.08f).coerceIn(32f, 68f)
+        val marginY = (pageHeight * 0.07f).coerceIn(36f, 68f)
+        val contentWidth = (pageWidth - marginX * 2).toInt().coerceAtLeast(180)
         val highlightsByChapter = highlights.groupBy { it.chapterIndex }
 
         var pageNumber = 1
@@ -425,12 +593,17 @@ object MergedDocumentExporter {
 
             var page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
             var canvas = page.canvas
-            var y = 60f
+            var y = marginY
             var strokesDrawnOnChapter = false
 
-            fun finishCurrentPage(drawStrokes: Boolean) {
-                if (drawStrokes && chapterStrokes.isNotEmpty()) {
-                    drawStrokesOnAndroidCanvas(canvas, chapterStrokes, pageWidth.toFloat(), pageHeight.toFloat())
+            fun finishCurrentPage(drawChapterStrokes: Boolean) {
+                val stdPageStrokes = drawingsByLocation["std-page-${pageNumber - 1}"].orEmpty()
+                val combined = buildList {
+                    if (drawChapterStrokes) addAll(chapterStrokes)
+                    addAll(stdPageStrokes)
+                }
+                if (combined.isNotEmpty()) {
+                    drawStrokesOnAndroidCanvas(canvas, combined, pageWidth.toFloat(), pageHeight.toFloat())
                 }
                 pdfDoc.finishPage(page)
             }
@@ -453,13 +626,13 @@ object MergedDocumentExporter {
                     .setLineSpacing(4f, 1.25f)
                     .build()
 
-                if (y + layout.height > pageHeight - 64f) {
+                if (y + layout.height > pageHeight - marginY) {
                     finishCurrentPage(!strokesDrawnOnChapter)
                     strokesDrawnOnChapter = true
                     pageNumber++
                     page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
                     canvas = page.canvas
-                    y = 60f
+                    y = marginY
                 }
 
                 // Soft highlight tint behind block if highlighted

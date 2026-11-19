@@ -18,12 +18,14 @@ import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.StatusBarNotification
+import android.util.LruCache
 import com.example.data.model.DEFAULT_ISLAND_ALLOWED_PACKAGES
 import com.example.data.model.IslandNotificationFilterMode
 import com.example.data.model.ReaderPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicLong
 
 data class BatteryTelemetry(
     val levelPct: Int = 100,
@@ -118,6 +120,13 @@ object DynamicIslandEventManager {
     private val pendingQueue = ArrayDeque<DynamicIslandEvent>()
     private var clearRunnable: Runnable? = null
 
+    private val appIconCache = object : LruCache<String, Bitmap>(24) {}
+    private val modalHostIdGen = AtomicLong(1L)
+    private val activeModalHosts = mutableListOf<Long>()
+
+    private val _topModalHostId = MutableStateFlow<Long?>(null)
+    val topModalHostId: StateFlow<Long?> = _topModalHostId.asStateFlow()
+
     private val _activeEvent = MutableStateFlow<DynamicIslandEvent?>(null)
     val activeEvent: StateFlow<DynamicIslandEvent?> = _activeEvent.asStateFlow()
 
@@ -135,6 +144,22 @@ object DynamicIslandEventManager {
 
     private val _discoveredApps = MutableStateFlow<List<DiscoveredIslandApp>>(emptyList())
     val discoveredApps: StateFlow<List<DiscoveredIslandApp>> = _discoveredApps.asStateFlow()
+
+    fun registerModalHost(): Long {
+        val id = modalHostIdGen.getAndIncrement()
+        synchronized(activeModalHosts) {
+            activeModalHosts.add(id)
+            _topModalHostId.value = activeModalHosts.lastOrNull()
+        }
+        return id
+    }
+
+    fun unregisterModalHost(hostId: Long) {
+        synchronized(activeModalHosts) {
+            activeModalHosts.remove(hostId)
+            _topModalHostId.value = activeModalHosts.lastOrNull()
+        }
+    }
 
     @Volatile
     private var filterMode: IslandNotificationFilterMode = IslandNotificationFilterMode.ALLOWED_ONLY
@@ -253,6 +278,20 @@ object DynamicIslandEventManager {
                     launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(launch)
                 }
+            }
+        }
+    }
+
+    internal fun onSystemNotificationRemoved(sbn: StatusBarNotification) {
+        val removedKey = sbn.key ?: return
+        mainHandler.post {
+            pendingQueue.removeAll { it.dedupeKey == removedKey }
+            _queuedCount.value = pendingQueue.size
+            if (_activeEvent.value?.dedupeKey == removedKey) {
+                clearRunnable?.let { mainHandler.removeCallbacks(it) }
+                clearRunnable = null
+                _activeEvent.value = null
+                drainNextIfIdle()
             }
         }
     }
@@ -416,12 +455,7 @@ object DynamicIslandEventManager {
         val next = pendingQueue.removeFirstOrNull()
         _queuedCount.value = pendingQueue.size
         if (next != null) {
-            // Brief 140ms pause so the previous zoom-out finishes cleanly before next zoom-in
-            mainHandler.postDelayed({
-                if (_activeEvent.value == null) {
-                    presentNow(next)
-                }
-            }, 140L)
+            presentNow(next)
         }
     }
 
@@ -560,9 +594,12 @@ object DynamicIslandEventManager {
     }
 
     private fun extractAppIconBitmap(context: Context, packageName: String): Bitmap? {
+        appIconCache.get(packageName)?.takeIf { !it.isRecycled }?.let { return it }
         return runCatching {
             val drawable = context.packageManager.getApplicationIcon(packageName)
-            drawableToSmallBitmap(drawable, 72)
+            drawableToSmallBitmap(drawable, 72).also { bmp ->
+                appIconCache.put(packageName, bmp)
+            }
         }.getOrNull()
     }
 
