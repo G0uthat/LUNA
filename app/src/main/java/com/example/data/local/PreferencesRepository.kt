@@ -7,9 +7,12 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.model.AiProviderType
 import com.example.data.model.BookmarkDockSide
+import com.example.data.model.DEFAULT_ISLAND_ALLOWED_PACKAGES
+import com.example.data.model.IslandNotificationFilterMode
 import com.example.data.model.PageAnimationMode
 import com.example.data.model.ReaderFont
 import com.example.data.model.ReaderMenuStyle
@@ -50,6 +53,11 @@ class PreferencesRepository(private val context: Context) {
         val AI_API_KEY = stringPreferencesKey("ai_api_key")
         val AI_MODEL = stringPreferencesKey("ai_model")
         val AI_BASE_URL = stringPreferencesKey("ai_base_url")
+        val ISLAND_FILTER_MODE = stringPreferencesKey("island_filter_mode")
+        val ISLAND_ALLOWED_PACKAGES = stringSetPreferencesKey("island_allowed_packages")
+        val ISLAND_CRITICAL_BATTERY = booleanPreferencesKey("island_critical_battery")
+        val ISLAND_CRITICAL_CONNECTIVITY = booleanPreferencesKey("island_critical_connectivity")
+        val ISLAND_ALLOW_CALLS = booleanPreferencesKey("island_allow_calls")
     }
 
     val preferencesFlow: Flow<ReaderPreferences> = context.readerDataStore.data.map { prefs ->
@@ -78,7 +86,12 @@ class PreferencesRepository(private val context: Context) {
             aiProvider = provider,
             aiApiKey = prefs[Keys.AI_API_KEY].orEmpty(),
             aiModel = prefs[Keys.AI_MODEL]?.takeIf { it.isNotBlank() } ?: provider.defaultModel,
-            aiBaseUrl = prefs[Keys.AI_BASE_URL]?.takeIf { it.isNotBlank() } ?: provider.defaultBaseUrl
+            aiBaseUrl = prefs[Keys.AI_BASE_URL]?.takeIf { it.isNotBlank() } ?: provider.defaultBaseUrl,
+            islandFilterMode = enumOrDefault(prefs[Keys.ISLAND_FILTER_MODE], IslandNotificationFilterMode.ALLOWED_ONLY),
+            islandAllowedPackages = prefs[Keys.ISLAND_ALLOWED_PACKAGES] ?: DEFAULT_ISLAND_ALLOWED_PACKAGES,
+            islandShowCriticalBattery = prefs[Keys.ISLAND_CRITICAL_BATTERY] ?: true,
+            islandShowCriticalConnectivity = prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] ?: true,
+            islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true
         )
     }
 
@@ -109,7 +122,12 @@ class PreferencesRepository(private val context: Context) {
                 aiProvider = provider,
                 aiApiKey = prefs[Keys.AI_API_KEY].orEmpty(),
                 aiModel = prefs[Keys.AI_MODEL] ?: provider.defaultModel,
-                aiBaseUrl = prefs[Keys.AI_BASE_URL] ?: provider.defaultBaseUrl
+                aiBaseUrl = prefs[Keys.AI_BASE_URL] ?: provider.defaultBaseUrl,
+                islandFilterMode = enumOrDefault(prefs[Keys.ISLAND_FILTER_MODE], IslandNotificationFilterMode.ALLOWED_ONLY),
+                islandAllowedPackages = prefs[Keys.ISLAND_ALLOWED_PACKAGES] ?: DEFAULT_ISLAND_ALLOWED_PACKAGES,
+                islandShowCriticalBattery = prefs[Keys.ISLAND_CRITICAL_BATTERY] ?: true,
+                islandShowCriticalConnectivity = prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] ?: true,
+                islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true
             )
             val updated = transform(current)
             prefs[Keys.THEME] = updated.theme.name
@@ -136,6 +154,11 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.AI_API_KEY] = updated.aiApiKey
             prefs[Keys.AI_MODEL] = updated.aiModel
             prefs[Keys.AI_BASE_URL] = updated.aiBaseUrl
+            prefs[Keys.ISLAND_FILTER_MODE] = updated.islandFilterMode.name
+            prefs[Keys.ISLAND_ALLOWED_PACKAGES] = updated.islandAllowedPackages
+            prefs[Keys.ISLAND_CRITICAL_BATTERY] = updated.islandShowCriticalBattery
+            prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] = updated.islandShowCriticalConnectivity
+            prefs[Keys.ISLAND_ALLOW_CALLS] = updated.islandAllowIncomingCalls
         }
     }
 

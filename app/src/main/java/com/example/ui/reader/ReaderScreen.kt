@@ -51,6 +51,7 @@ import com.example.data.local.HighlightNoteEntity
 import com.example.data.model.DocumentFormat
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.ReaderMenuStyle
+import com.example.engine.DynamicIslandEventManager
 import com.example.engine.MergedDocumentExporter
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
@@ -88,7 +89,8 @@ fun ReaderScreen(
     val ocrByPage by viewModel.ocrByPage.collectAsStateWithLifecycle()
     val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
     val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
-    val incomingNotification by SystemMediaController.incomingNotification.collectAsStateWithLifecycle()
+    val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+    val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
     val socialRepo = remember(context) { SocialRepository.getInstance(context) }
 
     var showAppearanceSheet by remember { mutableStateOf(false) }
@@ -320,7 +322,7 @@ fun ReaderScreen(
                 AnimatedVisibility(
                     visible = !state.isDrawingMode &&
                         !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded) &&
-                        incomingNotification == null,
+                        activeIslandEvent == null,
                     enter = fadeIn(tween(180)),
                     exit = fadeOut(tween(140)),
                     modifier = Modifier
@@ -346,7 +348,8 @@ fun ReaderScreen(
                     isProcessingStatus = state.isProcessingOcrOrTranslation,
                     processingStatusText = state.ocrTranslationStatus,
                     mediaInfo = mediaInfo,
-                    incomingNotification = incomingNotification,
+                    activeIslandEvent = activeIslandEvent,
+                    queuedIslandCount = queuedIslandCount,
                     bookTitle = parsed.title,
                     progressLabel = progressSummary,
                     onToggleExpanded = { viewModel.toggleDock() },
@@ -375,8 +378,8 @@ fun ReaderScreen(
                     onMediaPrevious = { SystemMediaController.skipToPrevious(context) },
                     onMediaSeek = { posMs -> SystemMediaController.seekTo(posMs) },
                     onOpenNotificationAccess = { SystemMediaController.openNotificationAccessSettings(context) },
-                    onTapNotification = { notif -> SystemMediaController.openIncomingNotification(context, notif) },
-                    onDismissNotification = { SystemMediaController.dismissIncomingNotification() }
+                    onTapIslandEvent = { event -> DynamicIslandEventManager.openActiveEvent(context, event) },
+                    onDismissIslandEvent = { DynamicIslandEventManager.dismissActiveEvent() }
                 )
 
                 // 4. Floating Drawing Toolbar (only when drawing mode is active)

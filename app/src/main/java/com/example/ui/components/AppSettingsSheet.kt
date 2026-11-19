@@ -16,16 +16,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoFixHigh
+import androidx.compose.material.icons.rounded.BatteryAlert
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.MenuBook
-import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.PhoneInTalk
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -36,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,17 +53,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.DictionarySourceEntity
+import com.example.data.model.IslandNotificationFilterMode
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.ReadingTheme
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
+import com.example.engine.DynamicIslandEventManager
 import com.example.engine.SystemMediaController
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.paletteFor
@@ -132,6 +147,19 @@ fun AppSettingsContent(
     val palette = LocalFolioPalette.current
     val context = LocalContext.current
     val mediaState by SystemMediaController.mediaState.collectAsStateWithLifecycle()
+    val suppressedCount by DynamicIslandEventManager.suppressedCount.collectAsStateWithLifecycle()
+    var showIslandPolicyDialog by remember { mutableStateOf(false) }
+
+    if (showIslandPolicyDialog) {
+        IslandNotificationPolicyDialog(
+            prefs = prefs,
+            isListenerGranted = mediaState.isNotificationAccessGranted,
+            suppressedCount = suppressedCount,
+            onUpdatePrefs = onUpdatePrefs,
+            onOpenSystemAccess = { SystemMediaController.openNotificationAccessSettings(context) },
+            onDismiss = { showIslandPolicyDialog = false }
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -538,44 +566,68 @@ fun AppSettingsContent(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(16.dp))
                             .background(palette.surface)
-                            .border(1.dp, palette.border, RoundedCornerShape(14.dp))
-                            .clickable { SystemMediaController.openNotificationAccessSettings(context) }
-                            .padding(horizontal = 12.dp, vertical = 10.dp)
-                            .testTag("media_listener_settings_row"),
+                            .border(1.dp, palette.accent.copy(alpha = 0.32f), RoundedCornerShape(16.dp))
+                            .clickable { showIslandPolicyDialog = true }
+                            .padding(horizontal = 12.dp, vertical = 11.dp)
+                            .testTag("island_event_manager_settings_row"),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.MusicNote,
-                            contentDescription = null,
-                            tint = if (mediaState.isNotificationAccessGranted) Color(0xFF1DB954) else palette.accent,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (mediaState.isNotificationAccessGranted) {
+                                        Color(0xFF22C55E).copy(alpha = 0.14f)
+                                    } else {
+                                        palette.accentSoft
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Shield,
+                                contentDescription = null,
+                                tint = if (mediaState.isNotificationAccessGranted) Color(0xFF22C55E) else palette.accent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                         Spacer(Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Isla Dinámica: Notificaciones y Música",
+                                text = "Gestor de Isla Dinámica",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = palette.ink
                             )
+                            val modeSummary = when (prefs.islandFilterMode) {
+                                IslandNotificationFilterMode.ALLOWED_ONLY ->
+                                    "Críticos + ${prefs.islandAllowedPackages.size} apps permitidas"
+                                IslandNotificationFilterMode.CRITICAL_ONLY ->
+                                    "Solo estados críticos (apps silenciadas)"
+                                IslandNotificationFilterMode.ALL_APPS ->
+                                    "Estados críticos y todas las apps"
+                            }
                             Text(
                                 text = if (mediaState.isNotificationAccessGranted) {
-                                    "Notificaciones de apps y reproductor activos en la Isla Dinámica"
+                                    "$modeSummary · $suppressedCount bloqueadas"
                                 } else {
-                                    "Activa acceso a notificaciones para ver avisos de apps y música en la isla"
+                                    "$modeSummary · Activa permiso del sistema"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
-                                color = palette.inkMuted
+                                color = palette.inkMuted,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = if (mediaState.isNotificationAccessGranted) "Activo" else "Activar",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = if (mediaState.isNotificationAccessGranted) Color(0xFF1DB954) else palette.accent
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Rounded.ChevronRight,
+                            contentDescription = "Configurar Isla Dinámica",
+                            tint = palette.accent,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -610,3 +662,421 @@ fun AppSettingsContent(
             }
     }
 }
+
+/**
+ * Floating dropdown configuration dialog for the centralized Dynamic Island Event Manager:
+ * controls critical state alerts, notification filter mode, per-app allowlist (curated + auto-discovered),
+ * Android Notification Access shortcut, and instant live previews.
+ */
+@Composable
+private fun IslandNotificationPolicyDialog(
+    prefs: ReaderPreferences,
+    isListenerGranted: Boolean,
+    suppressedCount: Int,
+    onUpdatePrefs: ((ReaderPreferences) -> ReaderPreferences) -> Unit,
+    onOpenSystemAccess: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val context = LocalContext.current
+    val discoveredApps by DynamicIslandEventManager.discoveredApps.collectAsStateWithLifecycle()
+
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.TopCenter,
+        transformOrigin = TransformOrigin(0.5f, 0.08f),
+        maxWidth = 520.dp,
+        maxHeightFraction = 0.86f,
+        testTag = "island_policy_dialog"
+    ) { dismissAnimated ->
+        LumaDropdownHeader(
+            title = "Gestor de Isla Dinámica",
+            subtitle = "Estados críticos y apps permitidas",
+            leadingIcon = Icons.Rounded.Shield,
+            onDismiss = dismissAnimated,
+            closeTestTag = "island_policy_close"
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 1. System Notification Listener Permission Banner + Suppressed counter
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (isListenerGranted) Color(0xFF22C55E).copy(alpha = 0.10f)
+                        else palette.accentSoft.copy(alpha = 0.7f)
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (isListenerGranted) Color(0xFF22C55E).copy(alpha = 0.35f) else palette.accent.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                    .clickable(onClick = onOpenSystemAccess)
+                    .padding(horizontal = 13.dp, vertical = 11.dp)
+                    .testTag("island_system_access_row"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isListenerGranted) Icons.Rounded.NotificationsActive else Icons.Rounded.NotificationsOff,
+                    contentDescription = null,
+                    tint = if (isListenerGranted) Color(0xFF22C55E) else palette.accent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (isListenerGranted) "Puente del sistema activo" else "Activar acceso a notificaciones",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    Text(
+                        text = if (isListenerGranted) {
+                            "Interceptando avisos con filtro estricto ($suppressedCount silenciadas)"
+                        } else {
+                            "Permite a Luma mostrar solo las apps autorizadas en la Isla Dinámica"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (isListenerGranted) "Ajustar" else "Activar",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = if (isListenerGranted) Color(0xFF22C55E) else palette.accent
+                )
+            }
+
+            // 2. Live Preview Triggers (Critical State vs Allowed App)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFFEF4444).copy(alpha = 0.12f))
+                        .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.32f), RoundedCornerShape(14.dp))
+                        .clickable { DynamicIslandEventManager.triggerPreviewCritical() }
+                        .padding(horizontal = 10.dp, vertical = 9.dp)
+                        .testTag("island_preview_critical_btn"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        tint = Color(0xFFEF4444),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "Probar crítico",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFEF4444),
+                        maxLines = 1
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(palette.accentSoft.copy(alpha = 0.72f))
+                        .border(1.dp, palette.accent.copy(alpha = 0.32f), RoundedCornerShape(14.dp))
+                        .clickable { DynamicIslandEventManager.triggerPreviewAllowedApp(context) }
+                        .padding(horizontal = 10.dp, vertical = 9.dp)
+                        .testTag("island_preview_app_btn"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = null,
+                        tint = palette.accent,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "Probar app",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.accent,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            // 3. Filter Policy Mode Selector
+            SectionTitle("Política de filtrado")
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (mode in IslandNotificationFilterMode.entries) {
+                    val selected = prefs.islandFilterMode == mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(if (selected) palette.accentSoft else palette.surfaceAlt.copy(alpha = 0.55f))
+                            .border(
+                                width = if (selected) 1.8.dp else 1.dp,
+                                color = if (selected) palette.accent else palette.border,
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .clickable { onUpdatePrefs { it.copy(islandFilterMode = mode) } }
+                            .padding(horizontal = 13.dp, vertical = 10.dp)
+                            .testTag("island_filter_mode_${mode.name}"),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = mode.displayName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (selected) palette.accent else palette.ink
+                            )
+                            Text(
+                                text = mode.subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 4. Critical Device & System State Monitors
+            SectionTitle("Estados críticos integrados")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(palette.surfaceAlt.copy(alpha = 0.6f))
+                    .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                IslandCriticalToggleRow(
+                    icon = Icons.Rounded.BatteryAlert,
+                    iconTint = Color(0xFFEF4444),
+                    title = "Batería baja y crítica",
+                    subtitle = "Avisa en 15%, 5% y al reconectar el cargador",
+                    checked = prefs.islandShowCriticalBattery,
+                    onCheckedChange = { enabled -> onUpdatePrefs { it.copy(islandShowCriticalBattery = enabled) } },
+                    testTag = "island_toggle_battery"
+                )
+                HorizontalDivider(color = palette.border.copy(alpha = 0.5f))
+                IslandCriticalToggleRow(
+                    icon = Icons.Rounded.WifiOff,
+                    iconTint = Color(0xFFF59E0B),
+                    title = "Pérdida y recuperación de red",
+                    subtitle = "Informa cuando pierdes o recuperas conexión a internet",
+                    checked = prefs.islandShowCriticalConnectivity,
+                    onCheckedChange = { enabled -> onUpdatePrefs { it.copy(islandShowCriticalConnectivity = enabled) } },
+                    testTag = "island_toggle_connectivity"
+                )
+                HorizontalDivider(color = palette.border.copy(alpha = 0.5f))
+                IslandCriticalToggleRow(
+                    icon = Icons.Rounded.PhoneInTalk,
+                    iconTint = Color(0xFF22C55E),
+                    title = "Llamadas y alarmas urgentes",
+                    subtitle = "Prioridad máxima sobre cualquier otra notificación",
+                    checked = prefs.islandAllowIncomingCalls,
+                    onCheckedChange = { enabled -> onUpdatePrefs { it.copy(islandAllowIncomingCalls = enabled) } },
+                    testTag = "island_toggle_calls"
+                )
+            }
+
+            // 5. Explicitly Permitted External Apps Allowlist (Discovered + Curated)
+            if (prefs.islandFilterMode == IslandNotificationFilterMode.ALLOWED_ONLY) {
+                SectionTitle("Apps permitidas (${prefs.islandAllowedPackages.size})")
+
+                val curatedPackages = remember { DynamicIslandEventManager.curatedApps.map { it.packageName }.toSet() }
+                val extraDiscovered = discoveredApps.filter { it.packageName !in curatedPackages }
+
+                if (extraDiscovered.isNotEmpty()) {
+                    Text(
+                        text = "Detectadas recientemente",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.accent
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(palette.surfaceAlt.copy(alpha = 0.6f))
+                            .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        extraDiscovered.forEachIndexed { index, app ->
+                            val isAllowed = app.packageName in prefs.islandAllowedPackages
+                            IslandAppAllowToggleRow(
+                                name = app.appName,
+                                subtitle = if (app.wasBlocked && !isAllowed) "Bloqueada recientemente" else "Detectada en el dispositivo",
+                                allowed = isAllowed,
+                                onToggle = { enable ->
+                                    onUpdatePrefs { current ->
+                                        val next = if (enable) {
+                                            current.islandAllowedPackages + app.packageName
+                                        } else {
+                                            current.islandAllowedPackages - app.packageName
+                                        }
+                                        current.copy(islandAllowedPackages = next)
+                                    }
+                                },
+                                testTag = "island_discovered_${app.packageName}"
+                            )
+                            if (index < extraDiscovered.lastIndex) {
+                                HorizontalDivider(color = palette.border.copy(alpha = 0.45f))
+                            }
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(palette.surfaceAlt.copy(alpha = 0.6f))
+                        .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    DynamicIslandEventManager.curatedApps.forEachIndexed { index, app ->
+                        val isAllowed = app.packageName in prefs.islandAllowedPackages
+                        IslandAppAllowToggleRow(
+                            name = app.displayName,
+                            subtitle = app.category,
+                            allowed = isAllowed,
+                            onToggle = { enable ->
+                                onUpdatePrefs { current ->
+                                    val next = if (enable) {
+                                        current.islandAllowedPackages + app.packageName
+                                    } else {
+                                        current.islandAllowedPackages - app.packageName
+                                    }
+                                    current.copy(islandAllowedPackages = next)
+                                }
+                            },
+                            testTag = "island_curated_${app.packageName}"
+                        )
+                        if (index < DynamicIslandEventManager.curatedApps.lastIndex) {
+                            HorizontalDivider(color = palette.border.copy(alpha = 0.45f))
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
+
+@Composable
+private fun IslandCriticalToggleRow(
+    icon: ImageVector,
+    iconTint: Color,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    testTag: String
+) {
+    val palette = LocalFolioPalette.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(iconTint.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = palette.ink
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.inkMuted
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+            modifier = Modifier.testTag(testTag)
+        )
+    }
+}
+
+@Composable
+private fun IslandAppAllowToggleRow(
+    name: String,
+    subtitle: String,
+    allowed: Boolean,
+    onToggle: (Boolean) -> Unit,
+    testTag: String
+) {
+    val palette = LocalFolioPalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle(!allowed) }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 11.sp,
+                color = palette.inkMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = allowed,
+            onCheckedChange = onToggle,
+            colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+            modifier = Modifier.testTag(testTag)
+        )
+    }
+}
+

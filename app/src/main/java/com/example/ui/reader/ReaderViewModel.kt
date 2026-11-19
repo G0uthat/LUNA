@@ -23,6 +23,7 @@ import com.example.data.model.SearchMatch
 import com.example.data.model.SelectedWordContext
 import com.example.data.model.WikipediaSummary
 import com.example.engine.DocumentParser
+import com.example.engine.DynamicIslandEventManager
 import com.example.engine.MergedDocumentExporter
 import com.example.engine.OcrEngine
 import com.example.engine.TranslationService
@@ -744,6 +745,13 @@ class ReaderViewModel(
     }
 
     private fun emitFeedback(type: LumaActionAnimType, errorDetail: String? = null) {
+        if (type == LumaActionAnimType.ERROR) {
+            DynamicIslandEventManager.postCriticalError(
+                title = "Error en lectura",
+                detail = errorDetail ?: "No se pudo completar la operación"
+            )
+            return
+        }
         _uiState.update { it.copy(feedbackEvent = LumaFeedbackEvent(type = type, errorDetail = errorDetail)) }
     }
 

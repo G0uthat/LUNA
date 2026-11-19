@@ -40,9 +40,10 @@ import com.example.data.local.PreferencesRepository
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
+import com.example.engine.DynamicIslandEventManager
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
-import com.example.ui.components.DynamicIslandNotificationBanner
+import com.example.ui.components.DynamicIslandEventBanner
 import com.example.ui.library.LibraryScreen
 import com.example.ui.library.LibraryViewModel
 import com.example.ui.reader.ReaderScreen
@@ -65,6 +66,7 @@ class MainActivity : ComponentActivity() {
         val repository = FolioRepository(db.folioDao())
         val preferencesRepository = PreferencesRepository(applicationContext)
         SystemMediaController.start(applicationContext)
+        DynamicIslandEventManager.start(applicationContext)
         SocialRepository.getInstance(applicationContext)
 
         setContent {
@@ -72,6 +74,10 @@ class MainActivity : ComponentActivity() {
                 initialValue = ReaderPreferences()
             )
             val palette = paletteFor(prefs.theme)
+
+            LaunchedEffect(prefs) {
+                DynamicIslandEventManager.updatePolicy(prefs)
+            }
 
             LaunchedEffect(prefs.targetFps) {
                 currentTargetFps = prefs.targetFps
@@ -100,7 +106,8 @@ class MainActivity : ComponentActivity() {
 
             FolioTheme(readingTheme = prefs.theme, useSystemFont = prefs.useSystemFont) {
                 var activeDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
-                val incomingNotification by SystemMediaController.incomingNotification.collectAsStateWithLifecycle()
+                val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+                val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
 
                 val libraryViewModel: LibraryViewModel = viewModel(
                     factory = remember {
@@ -115,13 +122,14 @@ class MainActivity : ComponentActivity() {
                             viewModel = libraryViewModel,
                             onOpenDocument = { id -> activeDocumentId = id }
                         )
-                        // Allow testing the Dynamic Island notification banner directly from Library → Ajustes
-                        DynamicIslandNotificationBanner(
-                            notification = incomingNotification?.takeIf { it.isTestPreview },
-                            onTapNotification = { notif ->
-                                SystemMediaController.openIncomingNotification(this@MainActivity, notif)
+                        // Global centralized Dynamic Island events (critical states & permitted apps) on Library
+                        DynamicIslandEventBanner(
+                            event = activeIslandEvent,
+                            queuedCount = queuedIslandCount,
+                            onTapEvent = { event ->
+                                DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
                             },
-                            onDismiss = { SystemMediaController.dismissIncomingNotification() },
+                            onDismiss = { DynamicIslandEventManager.dismissActiveEvent() },
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
                                 .displayCutoutPadding()

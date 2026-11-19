@@ -99,6 +99,25 @@ enum class TargetFpsOption(val label: String, val fps: Float) {
     FPS_240("240", 240f)
 }
 
+enum class IslandNotificationFilterMode(val displayName: String, val subtitle: String) {
+    ALLOWED_ONLY("Solo permitidas", "Estados críticos y únicamente apps que autorices"),
+    CRITICAL_ONLY("Solo críticos", "Silencia apps externas; solo batería, red y llamadas"),
+    ALL_APPS("Todas las apps", "Muestra avisos de cualquier app externa activa")
+}
+
+val DEFAULT_ISLAND_ALLOWED_PACKAGES: Set<String> = setOf(
+    "com.whatsapp",
+    "com.whatsapp.w4b",
+    "org.telegram.messenger",
+    "org.thoughtcrime.securesms",
+    "com.google.android.apps.messaging",
+    "com.samsung.android.messaging",
+    "com.google.android.dialer",
+    "com.android.dialer",
+    "com.samsung.android.dialer",
+    "com.google.android.gm"
+)
+
 data class ReaderPreferences(
     val theme: ReadingTheme = ReadingTheme.LIGHT,
     val useSystemFont: Boolean = false,
@@ -123,7 +142,12 @@ data class ReaderPreferences(
     val aiProvider: AiProviderType = AiProviderType.GEMINI,
     val aiApiKey: String = "",
     val aiModel: String = AiProviderType.GEMINI.defaultModel,
-    val aiBaseUrl: String = AiProviderType.GEMINI.defaultBaseUrl
+    val aiBaseUrl: String = AiProviderType.GEMINI.defaultBaseUrl,
+    val islandFilterMode: IslandNotificationFilterMode = IslandNotificationFilterMode.ALLOWED_ONLY,
+    val islandAllowedPackages: Set<String> = DEFAULT_ISLAND_ALLOWED_PACKAGES,
+    val islandShowCriticalBattery: Boolean = true,
+    val islandShowCriticalConnectivity: Boolean = true,
+    val islandAllowIncomingCalls: Boolean = true
 )
 
 enum class BlockType {

@@ -16,6 +16,7 @@ import com.example.data.model.DocumentFormat
 import com.example.data.model.ReaderPreferences
 import com.example.engine.CoverManager
 import com.example.engine.DocumentParser
+import com.example.engine.DynamicIslandEventManager
 import com.example.engine.SampleLibraryGenerator
 import com.example.ui.components.LumaActionAnimType
 import com.example.ui.components.LumaFeedbackEvent
@@ -94,6 +95,13 @@ class LibraryViewModel(
     }
 
     private fun emitFeedback(type: LumaActionAnimType, errorDetail: String? = null) {
+        if (type == LumaActionAnimType.ERROR) {
+            DynamicIslandEventManager.postCriticalError(
+                title = "Error en biblioteca",
+                detail = errorDetail ?: "No se pudo completar la operación"
+            )
+            return
+        }
         _feedbackEvent.value = LumaFeedbackEvent(type = type, errorDetail = errorDetail)
     }
 

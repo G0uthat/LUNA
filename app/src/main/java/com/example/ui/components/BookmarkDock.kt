@@ -105,7 +105,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.BookmarkDockSide
 import com.example.data.model.MediaPlaybackInfo
 import com.example.data.model.ReaderMenuStyle
-import com.example.engine.IncomingAppNotification
+import com.example.engine.DynamicIslandEvent
 import com.example.ui.theme.LocalFolioPalette
 import kotlin.math.roundToInt
 
@@ -133,7 +133,8 @@ fun BookmarkDockOverlay(
     isProcessingStatus: Boolean = false,
     processingStatusText: String = "",
     mediaInfo: MediaPlaybackInfo = MediaPlaybackInfo(),
-    incomingNotification: IncomingAppNotification? = null,
+    activeIslandEvent: DynamicIslandEvent? = null,
+    queuedIslandCount: Int = 0,
     bookTitle: String,
     progressLabel: String,
     onToggleExpanded: () -> Unit,
@@ -155,8 +156,8 @@ fun BookmarkDockOverlay(
     onMediaPrevious: () -> Unit = {},
     onMediaSeek: (Long) -> Unit = {},
     onOpenNotificationAccess: () -> Unit = {},
-    onTapNotification: (IncomingAppNotification) -> Unit = {},
-    onDismissNotification: () -> Unit = {},
+    onTapIslandEvent: (DynamicIslandEvent) -> Unit = {},
+    onDismissIslandEvent: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (isDrawingMode) return
@@ -190,11 +191,12 @@ fun BookmarkDockOverlay(
                 onBackToLibrary = onBackToLibrary,
                 modifier = Modifier.fillMaxSize()
             )
-            // Route incoming app notifications cleanly via Dynamic Island even in Bookmark Dock mode
-            DynamicIslandNotificationBanner(
-                notification = if (!isExpanded) incomingNotification else null,
-                onTapNotification = onTapNotification,
-                onDismiss = onDismissNotification,
+            // Route centralized critical states & allowed app notifications cleanly via Dynamic Island
+            DynamicIslandEventBanner(
+                event = if (!isExpanded) activeIslandEvent else null,
+                queuedCount = queuedIslandCount,
+                onTapEvent = onTapIslandEvent,
+                onDismiss = onDismissIslandEvent,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .displayCutoutPadding()
@@ -213,7 +215,8 @@ fun BookmarkDockOverlay(
             isProcessingStatus = isProcessingStatus,
             processingStatusText = processingStatusText,
             mediaInfo = mediaInfo,
-            incomingNotification = incomingNotification,
+            activeIslandEvent = activeIslandEvent,
+            queuedIslandCount = queuedIslandCount,
             bookTitle = bookTitle,
             progressLabel = progressLabel,
             onToggleExpanded = onToggleExpanded,
@@ -234,8 +237,8 @@ fun BookmarkDockOverlay(
             onMediaPrevious = onMediaPrevious,
             onMediaSeek = onMediaSeek,
             onOpenNotificationAccess = onOpenNotificationAccess,
-            onTapNotification = onTapNotification,
-            onDismissNotification = onDismissNotification,
+            onTapIslandEvent = onTapIslandEvent,
+            onDismissIslandEvent = onDismissIslandEvent,
             modifier = modifier
         )
 
@@ -263,10 +266,11 @@ fun BookmarkDockOverlay(
                 onBackToLibrary = onBackToLibrary,
                 modifier = Modifier.fillMaxSize()
             )
-            DynamicIslandNotificationBanner(
-                notification = if (!isExpanded) incomingNotification else null,
-                onTapNotification = onTapNotification,
-                onDismiss = onDismissNotification,
+            DynamicIslandEventBanner(
+                event = if (!isExpanded) activeIslandEvent else null,
+                queuedCount = queuedIslandCount,
+                onTapEvent = onTapIslandEvent,
+                onDismiss = onDismissIslandEvent,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .displayCutoutPadding()
@@ -764,7 +768,8 @@ private fun DynamicIslandReaderDock(
     isProcessingStatus: Boolean,
     processingStatusText: String,
     mediaInfo: MediaPlaybackInfo,
-    incomingNotification: IncomingAppNotification?,
+    activeIslandEvent: DynamicIslandEvent?,
+    queuedIslandCount: Int,
     bookTitle: String,
     progressLabel: String,
     onToggleExpanded: () -> Unit,
@@ -785,8 +790,8 @@ private fun DynamicIslandReaderDock(
     onMediaPrevious: () -> Unit,
     onMediaSeek: (Long) -> Unit,
     onOpenNotificationAccess: () -> Unit,
-    onTapNotification: (IncomingAppNotification) -> Unit,
-    onDismissNotification: () -> Unit,
+    onTapIslandEvent: (DynamicIslandEvent) -> Unit,
+    onDismissIslandEvent: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
@@ -834,16 +839,17 @@ private fun DynamicIslandReaderDock(
                 .padding(top = 6.dp, start = 12.dp, end = 12.dp),
             contentAlignment = Alignment.TopCenter
         ) {
-            // 0. Incoming external app notifications routed cleanly via the Dynamic Island!
-            DynamicIslandNotificationBanner(
-                notification = if (!isExpanded) incomingNotification else null,
-                onTapNotification = onTapNotification,
-                onDismiss = onDismissNotification
+            // 0. Centralized critical states & permitted external app notifications via Dynamic Island
+            DynamicIslandEventBanner(
+                event = if (!isExpanded) activeIslandEvent else null,
+                queuedCount = queuedIslandCount,
+                onTapEvent = onTapIslandEvent,
+                onDismiss = onDismissIslandEvent
             )
 
             // 1. Compact Apple/Infinix Dynamic Island Pill (pure Zoom-In / Zoom-Out, zero bounce/square clip)
             AnimatedVisibility(
-                visible = !isExpanded && incomingNotification == null,
+                visible = !isExpanded && activeIslandEvent == null,
                 enter = scaleIn(
                     initialScale = 0.84f,
                     transformOrigin = topOrigin,

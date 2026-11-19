@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +67,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.engine.DynamicIslandEventManager
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LumaBrandFontFamily
 import kotlinx.coroutines.delay
@@ -128,6 +131,9 @@ fun LumaFloatingDropdownDialog(
         val screenHeightDp = LocalConfiguration.current.screenHeightDp.dp
         val maxCardHeight = (screenHeightDp * maxHeightFraction).coerceAtLeast(260.dp)
         val capsuleShape = RoundedCornerShape(32.dp)
+        val dialogContext = LocalContext.current
+        val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+        val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
 
         Box(modifier = Modifier.fillMaxSize()) {
             // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay
@@ -201,6 +207,19 @@ fun LumaFloatingDropdownDialog(
                     }
                 }
             }
+
+            // Keep centralized Dynamic Island alerts visible above open floating dialogs (critical states, allowed apps & previews)
+            DynamicIslandEventBanner(
+                event = activeIslandEvent,
+                queuedCount = queuedIslandCount,
+                onTapEvent = { event -> DynamicIslandEventManager.openActiveEvent(dialogContext, event) },
+                onDismiss = { DynamicIslandEventManager.dismissActiveEvent() },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .displayCutoutPadding()
+                    .statusBarsPadding()
+                    .padding(top = 6.dp, start = 12.dp, end = 12.dp)
+            )
         }
     }
 }
