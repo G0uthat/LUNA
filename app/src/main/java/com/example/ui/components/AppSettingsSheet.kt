@@ -826,7 +826,7 @@ private fun LumaCreditsSettingsContent(
             )
         }
 
-        // 4. GitHub APK Updates Card (fixed to G0uthat/Luma, clean manual check without preview controls)
+        // 4. GitHub APK Updates Card (fixed to G0uthat/LUNA, clean manual check without preview controls)
         val scope = rememberCoroutineScope()
         val updateOutcome by GitHubUpdateManager.checkOutcome.collectAsStateWithLifecycle()
 

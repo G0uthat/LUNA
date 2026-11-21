@@ -11,8 +11,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
+import java.util.zip.Inflater
 
 enum class UpdateEnforcementMode {
     OPTIONAL_SKIPPABLE,
@@ -40,17 +45,26 @@ sealed class UpdateCheckOutcome {
 }
 
 /**
- * In-app GitHub Release + update-policy.json updater for Luma:
- * - Only shows in-app modal dialogs while the user is actively inside Luma (no background system notifications).
- * - Supports TWO enforcement modes controlled directly from GitHub:
- *   1) OPTIONAL_SKIPPABLE: user can update now, remind later, or skip that specific version.
- *   2) MANDATORY_BLOCKING: non-skippable modal (Back & outside tap disabled) that also persists locally
- *      so turning off Wi-Fi / Airplane Mode cannot bypass a required update once detected.
+ * In-app GitHub `Luma.apk` updater for `G0uthat/LUNA`:
+ * - Only shows in-app modal dialogs while the user is actively inside Luma (zero background notifications).
+ * - Reliably discovers `Luma.apk` and its version across ALL GitHub publishing flows:
+ *   1) GitHub Releases (latest AND pre-releases via `/releases?per_page=10`), prioritizing `Luma.apk`.
+ *   2) Direct `Luma.apk` stored in the repository (`Luma.apk`, `releases/Luma.apk`, `apk/Luma.apk`, etc.)
+ *      via Contents API + CDN raw fallback (immune to REST API rate limits).
+ *   3) Lightweight HTTP `Range` inspection of `Luma.apk`'s embedded binary `AndroidManifest.xml`
+ *      (~30–100 KB instead of downloading the full APK) to read its true `versionName` and `versionCode`.
+ *   4) Remote `update-policy.json` and `app/build.gradle.kts` (cache-busted with `?t=timestamp`).
+ *   5) Latest successful GitHub Actions `Build APK` (`Luma-APK`) workflow run fallback.
+ * - Compares installed version (`BuildConfig.VERSION_NAME` / `BuildConfig.VERSION_CODE`) against the
+ *   remote `Luma.apk` version: if they match -> up to date; if they differ -> prompts to update!
+ * - Supports TWO enforcement modes controlled from GitHub:
+ *   - OPTIONAL_SKIPPABLE: update now, remind later, or skip that specific version.
+ *   - MANDATORY_BLOCKING: non-skippable modal + offline lock cache preventing Airplane Mode bypass.
  * - Opens verified HTTPS GitHub APK download URLs via ACTION_VIEW (zero REQUEST_INSTALL_PACKAGES).
  */
 object GitHubUpdateManager {
 
-    const val GITHUB_REPO = "G0uthat/Luma"
+    const val GITHUB_REPO = "G0uthat/LUNA"
 
     private const val PREFS_NAME = "luma_github_updates_v1"
     private const val KEY_SKIPPED_VERSION = "skipped_version"
@@ -67,6 +81,17 @@ object GitHubUpdateManager {
 
     private const val AUTO_CHECK_INTERVAL_MS = 10 * 60 * 1000L // 10 minutes between silent auto-checks
 
+    private val candidateBranches = listOf("main", "master")
+    private val candidateRepoApkPaths = listOf(
+        "Luma.apk",
+        "releases/Luma.apk",
+        "release/Luma.apk",
+        "apk/Luma.apk",
+        "dist/Luma.apk",
+        "app/build/outputs/apk/release/Luma.apk",
+        "app/build/outputs/apk/debug/Luma.apk"
+    )
+
     private val allowedDownloadHosts = setOf(
         "github.com",
         "www.github.com",
@@ -80,6 +105,7 @@ object GitHubUpdateManager {
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .followRedirects(true)
+            .followSslRedirects(true)
             .build()
     }
 
@@ -92,9 +118,9 @@ object GitHubUpdateManager {
     private var dismissedOptionalThisSessionVersion: String? = null
 
     /**
-     * Immediately restores any locally cached mandatory update lock if the installed APK is still
-     * older than the previously required version (prevents Airplane Mode bypass).
-     * Automatically clears the lock once the user installs the newer APK.
+     * Immediately restores any locally cached mandatory update lock if the installed APK has not yet
+     * reached the required version (prevents Airplane Mode bypass). Automatically clears the lock
+     * once the user installs the matching or newer APK.
      */
     fun enforceCachedMandatoryLockIfNeeded(context: Context): Boolean {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -102,22 +128,25 @@ object GitHubUpdateManager {
         val lockedCode = prefs.getInt(KEY_LOCKED_VERSION_CODE, 0)
         if (lockedVer.isEmpty() && lockedCode <= 0) return false
 
-        val stillOutdated = isCurrentAppOutdated(
-            remoteVersionName = lockedVer.ifEmpty { BuildConfig.VERSION_NAME },
-            remoteVersionCode = lockedCode
-        )
-        if (!stillOutdated) {
+        val satisfiedByCode = lockedCode > 0 && BuildConfig.VERSION_CODE >= lockedCode
+        val satisfiedByName = lockedVer.isNotEmpty() &&
+            !isVersionStringDifferent(lockedVer, BuildConfig.VERSION_NAME)
+        val installedNewerBySemver = lockedVer.isNotEmpty() &&
+            cleanVersionString(lockedVer).isNotEmpty() &&
+            compareSemanticVersions(BuildConfig.VERSION_NAME, lockedVer) >= 0
+
+        if (satisfiedByCode || satisfiedByName || (lockedCode <= 0 && installedNewerBySemver)) {
             clearMandatoryLock(context)
             return false
         }
 
-        val fallbackRelease = "https://github.com/$GITHUB_REPO/releases/latest"
+        val fallbackRelease = "https://github.com/$GITHUB_REPO/releases"
         val lockedInfo = AppUpdateInfo(
             versionName = lockedVer.ifEmpty { "v$lockedCode" },
             versionCode = lockedCode,
             title = "Actualización obligatoria",
             changelog = prefs.getString(KEY_LOCKED_CHANGELOG, null).orEmpty()
-                .ifBlank { "Esta versión de Luma requiere actualizar al APK más reciente publicado en GitHub." },
+                .ifBlank { "Esta versión de Luma requiere actualizar al Luma.apk más reciente publicado en GitHub." },
             apkDownloadUrl = prefs.getString(KEY_LOCKED_APK_URL, null).orEmpty().ifBlank { fallbackRelease },
             releasePageUrl = prefs.getString(KEY_LOCKED_RELEASE_URL, null).orEmpty().ifBlank { fallbackRelease },
             apkSizeBytes = prefs.getLong(KEY_LOCKED_APK_SIZE, 0L),
@@ -130,9 +159,9 @@ object GitHubUpdateManager {
     }
 
     /**
-     * Checks GitHub Releases API + optional `update-policy.json` in `main` branch for [GITHUB_REPO].
-     * - [bypassThrottle] = true checks GitHub immediately (used on fresh app launch).
-     * - [manualCheck] = true also ignores previously skipped optional versions.
+     * Checks `G0uthat/LUNA` for `Luma.apk` updates across Releases (including pre-releases),
+     * direct repo `Luma.apk` files, embedded APK `AndroidManifest.xml` version metadata,
+     * `update-policy.json`, `app/build.gradle.kts`, and GitHub Actions `Luma-APK` runs.
      */
     suspend fun checkForUpdates(
         context: Context,
@@ -153,18 +182,59 @@ object GitHubUpdateManager {
 
         _checkOutcome.value = UpdateCheckOutcome.Checking
         val repo = GITHUB_REPO
+        val diagnostics = FetchDiagnostics()
 
-        val releaseData = fetchLatestGitHubRelease(repo)
-        val policyData = fetchRemoteUpdatePolicy(repo)
+        // 1. GitHub Releases (latest OR newest non-draft release / pre-release with Luma.apk)
+        val releaseData = fetchBestGitHubRelease(repo, diagnostics)
 
-        if (releaseData == null && policyData == null) {
+        // 2. Remote update-policy.json (cache-busted)
+        val policyData = fetchRemoteUpdatePolicy(repo, now)
+
+        // 3. Direct Luma.apk committed inside the repository (if no Release APK found)
+        val directApkData = if (releaseData?.hasDirectApk == true) {
+            null
+        } else {
+            fetchDirectRepoApk(repo, now, diagnostics)
+        }
+
+        // 4. Remote app/build.gradle.kts versionCode / versionName (cache-busted)
+        val gradleVersion = fetchRemoteGradleVersion(repo, now)
+
+        // 5. GitHub Actions `Build APK` (`Luma-APK`) fallback when no Release or repo APK exists
+        val actionsBuild = if (releaseData?.hasDirectApk == true || directApkData != null) {
+            null
+        } else {
+            fetchLatestActionsApkRun(repo, diagnostics)
+        }
+
+        // 6. Inspect the actual Luma.apk binary AndroidManifest.xml via lightweight HTTP Range requests
+        val candidateApkUrl = sanitizeGitHubUrl(policyData?.apkUrl.orEmpty())
+            ?.takeIf { it.endsWith(".apk", ignoreCase = true) }
+            ?: releaseData?.takeIf { it.hasDirectApk }?.apkDownloadUrl
+            ?: directApkData?.downloadUrl
+        val inspectedApkVersion = candidateApkUrl?.let { inspectRemoteApkManifest(it) }
+
+        val anySourceFound = releaseData != null ||
+            policyData != null ||
+            directApkData != null ||
+            gradleVersion != null ||
+            actionsBuild != null ||
+            inspectedApkVersion != null
+
+        if (!anySourceFound) {
             val outcome = if (hasCachedLock) {
                 _activeUpdate.value?.let { UpdateCheckOutcome.UpdateFound(it) }
                     ?: UpdateCheckOutcome.Error("Sin conexión para verificar la actualización obligatoria.")
             } else {
-                UpdateCheckOutcome.Error(
-                    "No se pudo consultar actualizaciones en este momento."
-                )
+                val reason = when {
+                    diagnostics.sawNotFound && !diagnostics.sawRateLimit ->
+                        "No se encontró $repo (verifica que el repositorio sea público y tenga Luma.apk)."
+                    diagnostics.sawRateLimit ->
+                        "Límite temporal de GitHub alcanzado. Intenta de nuevo en unos minutos."
+                    else ->
+                        "No se pudo conectar con GitHub ($repo). Verifica tu conexión a internet."
+                }
+                UpdateCheckOutcome.Error(reason)
             }
             _checkOutcome.value = outcome
             return@withContext outcome
@@ -172,12 +242,23 @@ object GitHubUpdateManager {
 
         prefs.edit().putLong(KEY_LAST_CHECK_MS, now).apply()
 
-        val resolved = mergeReleaseAndPolicy(repo, releaseData, policyData)
-        val isUpdateAvailable = isCurrentAppOutdated(resolved.versionName, resolved.versionCode)
+        val resolved = mergeAllSources(
+            repo = repo,
+            release = releaseData,
+            directApk = directApkData,
+            policy = policyData,
+            gradleVersion = gradleVersion,
+            actionsBuild = actionsBuild,
+            inspectedApk = inspectedApkVersion
+        )
+
+        val isDifferentVersion = isVersionDifferentFromInstalled(
+            remoteVersionName = resolved.versionName,
+            remoteVersionCode = resolved.versionCode
+        )
         val isMandatory = resolved.mode == UpdateEnforcementMode.MANDATORY_BLOCKING
 
-        if (!isUpdateAvailable) {
-            // Current build satisfies or exceeds remote version -> clear any old lock!
+        if (!isDifferentVersion) {
             clearMandatoryLock(appCtx)
             _activeUpdate.value = null
             val ok = UpdateCheckOutcome.UpToDate(BuildConfig.VERSION_NAME)
@@ -217,7 +298,7 @@ object GitHubUpdateManager {
         _activeUpdate.value = null
     }
 
-    /** Persists skip for a specific optional version ("Omitir esta versión"). Never skips mandatory updates. */
+    /** Persists skip for a specific optional version ("Omitir versión"). Never skips mandatory updates. */
     fun skipOptionalVersion(context: Context) {
         val current = _activeUpdate.value ?: return
         if (current.mode == UpdateEnforcementMode.MANDATORY_BLOCKING) return
@@ -257,13 +338,44 @@ object GitHubUpdateManager {
         return if (isAllowed) trimmed else null
     }
 
+    private class FetchDiagnostics {
+        var sawNotFound: Boolean = false
+        var sawRateLimit: Boolean = false
+    }
+
     private data class GitHubReleasePayload(
         val tagName: String,
         val title: String,
         val body: String,
         val htmlUrl: String,
         val apkDownloadUrl: String,
-        val apkSizeBytes: Long
+        val apkSizeBytes: Long,
+        val hasDirectApk: Boolean
+    )
+
+    private data class DirectRepoApkPayload(
+        val path: String,
+        val downloadUrl: String,
+        val htmlUrl: String,
+        val sizeBytes: Long,
+        val sha: String
+    )
+
+    private data class RemoteGradleVersion(
+        val versionName: String,
+        val versionCode: Int
+    )
+
+    private data class ActionsApkPayload(
+        val runHtmlUrl: String,
+        val headShaShort: String,
+        val displayTitle: String,
+        val artifactSizeBytes: Long
+    )
+
+    private data class ApkManifestVersion(
+        val versionName: String,
+        val versionCode: Int
     )
 
     private data class RemotePolicyPayload(
@@ -277,55 +389,171 @@ object GitHubUpdateManager {
         val blockMessage: String
     )
 
-    private fun fetchLatestGitHubRelease(repo: String): GitHubReleasePayload? {
-        return runCatching {
+    private fun fetchBestGitHubRelease(repo: String, diag: FetchDiagnostics): GitHubReleasePayload? {
+        // First try /releases/latest (fast path for stable releases)
+        val latest = runCatching {
             val request = Request.Builder()
                 .url("https://api.github.com/repos/$repo/releases/latest")
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
                 .build()
             httpClient.newCall(request).execute().use { response ->
+                when (response.code) {
+                    404 -> diag.sawNotFound = true
+                    403, 429 -> diag.sawRateLimit = true
+                }
                 if (!response.isSuccessful) return@runCatching null
                 val bodyStr = response.body?.string() ?: return@runCatching null
-                val json = JSONObject(bodyStr)
-                val tagName = json.optString("tag_name", "").trim()
-                val title = json.optString("name", "").trim().ifEmpty { "Luma $tagName" }
-                val body = json.optString("body", "").trim()
-                val htmlUrl = json.optString("html_url", "https://github.com/$repo/releases/latest").trim()
+                parseReleaseJson(repo, JSONObject(bodyStr))
+            }
+        }.getOrNull()
 
-                var bestApkUrl = ""
-                var bestApkSize = 0L
-                val assets = json.optJSONArray("assets")
-                if (assets != null) {
-                    for (i in 0 until assets.length()) {
-                        val asset = assets.optJSONObject(i) ?: continue
-                        val name = asset.optString("name", "")
-                        val downloadUrl = asset.optString("browser_download_url", "")
-                        if (name.endsWith(".apk", ignoreCase = true) && downloadUrl.isNotBlank()) {
-                            bestApkUrl = downloadUrl
-                            bestApkSize = asset.optLong("size", 0L)
-                            if (name.contains("luma", ignoreCase = true)) break
+        if (latest != null && latest.hasDirectApk) return latest
+
+        // Fallback to /releases?per_page=10 (catches pre-releases, rolling Luma.apk releases, etc.)
+        val listCandidate = runCatching {
+            val request = Request.Builder()
+                .url("https://api.github.com/repos/$repo/releases?per_page=10")
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                when (response.code) {
+                    404 -> diag.sawNotFound = true
+                    403, 429 -> diag.sawRateLimit = true
+                }
+                if (!response.isSuccessful) return@runCatching null
+                val bodyStr = response.body?.string() ?: return@runCatching null
+                val array = JSONArray(bodyStr)
+                var firstNonDraft: GitHubReleasePayload? = null
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    if (obj.optBoolean("draft", false)) continue
+                    val parsed = parseReleaseJson(repo, obj)
+                    if (firstNonDraft == null) firstNonDraft = parsed
+                    if (parsed.hasDirectApk) return@runCatching parsed
+                }
+                firstNonDraft
+            }
+        }.getOrNull()
+
+        return listCandidate ?: latest
+    }
+
+    private fun parseReleaseJson(repo: String, json: JSONObject): GitHubReleasePayload {
+        val tagName = json.optString("tag_name", "").trim()
+        val title = json.optString("name", "").trim().ifEmpty { "Luma $tagName".trim() }
+        val body = json.optString("body", "").trim()
+        val htmlUrl = json.optString("html_url", "https://github.com/$repo/releases").trim()
+
+        var bestApkUrl = ""
+        var bestApkSize = 0L
+        var matchedExactLuma = false
+        val assets = json.optJSONArray("assets")
+        if (assets != null) {
+            for (i in 0 until assets.length()) {
+                val asset = assets.optJSONObject(i) ?: continue
+                val name = asset.optString("name", "")
+                val downloadUrl = asset.optString("browser_download_url", "")
+                if (name.endsWith(".apk", ignoreCase = true) && downloadUrl.isNotBlank()) {
+                    val isExact = name.equals("Luma.apk", ignoreCase = true)
+                    val containsLuma = name.contains("luma", ignoreCase = true)
+                    if (bestApkUrl.isEmpty() || isExact || (!matchedExactLuma && containsLuma)) {
+                        bestApkUrl = downloadUrl
+                        bestApkSize = asset.optLong("size", 0L)
+                        if (isExact) {
+                            matchedExactLuma = true
+                            break
                         }
                     }
                 }
-                GitHubReleasePayload(
-                    tagName = tagName,
-                    title = title,
-                    body = body,
-                    htmlUrl = htmlUrl,
-                    apkDownloadUrl = bestApkUrl.ifBlank { htmlUrl },
-                    apkSizeBytes = bestApkSize
-                )
             }
-        }.getOrNull()
+        }
+        return GitHubReleasePayload(
+            tagName = tagName,
+            title = title,
+            body = body,
+            htmlUrl = htmlUrl,
+            apkDownloadUrl = bestApkUrl.ifBlank { htmlUrl },
+            apkSizeBytes = bestApkSize,
+            hasDirectApk = bestApkUrl.isNotBlank()
+        )
     }
 
-    private fun fetchRemoteUpdatePolicy(repo: String): RemotePolicyPayload? {
-        val branches = listOf("main", "master")
-        for (branch in branches) {
+    /**
+     * Checks whether `Luma.apk` exists directly inside the repository (via Contents API first,
+     * then direct raw HTTPS HEAD probe immune to GitHub API rate limits).
+     */
+    private fun fetchDirectRepoApk(
+        repo: String,
+        timestamp: Long,
+        diag: FetchDiagnostics
+    ): DirectRepoApkPayload? {
+        // Fast path: raw HTTPS HEAD on main/master for root Luma.apk (zero GitHub API rate-limit usage)
+        for (branch in candidateBranches) {
+            for (path in candidateRepoApkPaths) {
+                val rawUrl = "https://raw.githubusercontent.com/$repo/$branch/$path"
+                val headResult = runCatching {
+                    val req = Request.Builder()
+                        .url("$rawUrl?t=$timestamp")
+                        .head()
+                        .header("Cache-Control", "no-cache")
+                        .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                        .build()
+                    httpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@runCatching null
+                        val contentLength = resp.header("Content-Length")?.toLongOrNull() ?: 0L
+                        val etag = resp.header("ETag").orEmpty().replace("\"", "")
+                        DirectRepoApkPayload(
+                            path = path,
+                            downloadUrl = rawUrl,
+                            htmlUrl = "https://github.com/$repo/blob/$branch/$path",
+                            sizeBytes = contentLength,
+                            sha = etag
+                        )
+                    }
+                }.getOrNull()
+                if (headResult != null) return headResult
+            }
+        }
+
+        // Secondary path: GitHub Contents API (supports custom default branch names)
+        for (path in listOf("Luma.apk", "releases/Luma.apk", "apk/Luma.apk")) {
+            val apiResult = runCatching {
+                val req = Request.Builder()
+                    .url("https://api.github.com/repos/$repo/contents/$path")
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                    .build()
+                httpClient.newCall(req).execute().use { resp ->
+                    when (resp.code) {
+                        404 -> diag.sawNotFound = true
+                        403, 429 -> diag.sawRateLimit = true
+                    }
+                    if (!resp.isSuccessful) return@runCatching null
+                    val bodyStr = resp.body?.string() ?: return@runCatching null
+                    val json = JSONObject(bodyStr)
+                    val dl = json.optString("download_url", "").trim()
+                    if (dl.isEmpty()) return@runCatching null
+                    DirectRepoApkPayload(
+                        path = path,
+                        downloadUrl = dl,
+                        htmlUrl = json.optString("html_url", "https://github.com/$repo"),
+                        sizeBytes = json.optLong("size", 0L),
+                        sha = json.optString("sha", "")
+                    )
+                }
+            }.getOrNull()
+            if (apiResult != null) return apiResult
+        }
+        return null
+    }
+
+    private fun fetchRemoteUpdatePolicy(repo: String, timestamp: Long): RemotePolicyPayload? {
+        for (branch in candidateBranches) {
             val result = runCatching {
                 val request = Request.Builder()
-                    .url("https://raw.githubusercontent.com/$repo/$branch/update-policy.json")
+                    .url("https://raw.githubusercontent.com/$repo/$branch/update-policy.json?t=$timestamp")
                     .header("Cache-Control", "no-cache")
                     .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
                     .build()
@@ -350,20 +578,436 @@ object GitHubUpdateManager {
         return null
     }
 
-    private fun mergeReleaseAndPolicy(
+    /**
+     * Reads `versionCode` and `versionName` directly from the repository's `app/build.gradle.kts`
+     * so pushing a version bump to `G0uthat/LUNA` is immediately detected even before a Release tag exists.
+     */
+    private fun fetchRemoteGradleVersion(repo: String, timestamp: Long): RemoteGradleVersion? {
+        for (branch in candidateBranches) {
+            val result = runCatching {
+                val request = Request.Builder()
+                    .url("https://raw.githubusercontent.com/$repo/$branch/app/build.gradle.kts?t=$timestamp")
+                    .header("Cache-Control", "no-cache")
+                    .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                    .build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@runCatching null
+                    val text = response.body?.string() ?: return@runCatching null
+                    val vCode = Regex("""versionCode\s*=\s*(\d+)""")
+                        .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                    val vName = Regex("""versionName\s*=\s*"([^"]+)"""")
+                        .find(text)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                    if (vName.isEmpty() && vCode <= 0) return@runCatching null
+                    RemoteGradleVersion(versionName = vName, versionCode = vCode)
+                }
+            }.getOrNull()
+            if (result != null) return result
+        }
+        return null
+    }
+
+    /**
+     * Checks the latest successful GitHub Actions workflow run (e.g. `Build APK` -> `Luma-APK`)
+     * so users can be directed right to the freshly built `Luma.apk` artifact when no Release exists.
+     */
+    private fun fetchLatestActionsApkRun(repo: String, diag: FetchDiagnostics): ActionsApkPayload? {
+        return runCatching {
+            val req = Request.Builder()
+                .url("https://api.github.com/repos/$repo/actions/runs?status=success&per_page=5")
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                .build()
+            val runsJson = httpClient.newCall(req).execute().use { resp ->
+                when (resp.code) {
+                    404 -> diag.sawNotFound = true
+                    403, 429 -> diag.sawRateLimit = true
+                }
+                if (!resp.isSuccessful) return@runCatching null
+                JSONObject(resp.body?.string() ?: return@runCatching null)
+            }
+            val runs = runsJson.optJSONArray("workflow_runs") ?: return@runCatching null
+            for (i in 0 until runs.length()) {
+                val run = runs.optJSONObject(i) ?: continue
+                val runId = run.optLong("id", 0L)
+                if (runId <= 0L) continue
+                val runHtmlUrl = run.optString("html_url", "").trim()
+                val sha = run.optString("head_sha", "").take(7)
+                val title = run.optString("display_title", "").trim()
+
+                val artReq = Request.Builder()
+                    .url("https://api.github.com/repos/$repo/actions/runs/$runId/artifacts")
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                    .build()
+                val artifactSize = httpClient.newCall(artReq).execute().use { artResp ->
+                    if (!artResp.isSuccessful) return@use -1L
+                    val artJson = JSONObject(artResp.body?.string() ?: return@use -1L)
+                    val artifacts = artJson.optJSONArray("artifacts") ?: return@use -1L
+                    for (j in 0 until artifacts.length()) {
+                        val art = artifacts.optJSONObject(j) ?: continue
+                        if (art.optBoolean("expired", false)) continue
+                        val name = art.optString("name", "")
+                        if (name.contains("luma", ignoreCase = true) || name.contains("apk", ignoreCase = true)) {
+                            return@use art.optLong("size_in_bytes", 0L)
+                        }
+                    }
+                    -1L
+                }
+                if (artifactSize >= 0L && runHtmlUrl.isNotBlank()) {
+                    return@runCatching ActionsApkPayload(
+                        runHtmlUrl = runHtmlUrl,
+                        headShaShort = sha,
+                        displayTitle = title,
+                        artifactSizeBytes = artifactSize
+                    )
+                }
+            }
+            null
+        }.getOrNull()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Lightweight Remote APK Inspection (HTTP Range -> ZIP Central Directory -> Binary AXML Parser)
+    // Reads the true `android:versionName` and `android:versionCode` embedded inside `Luma.apk`
+    // using only ~30–100 KB of network data instead of downloading the full APK.
+    // ---------------------------------------------------------------------------------------------
+
+    private fun inspectRemoteApkManifest(apkUrl: String): ApkManifestVersion? {
+        return runCatching {
+            val tailFetch = fetchRangeBytes(apkUrl, "bytes=-65536") ?: return@runCatching null
+            val tailBytes = tailFetch.bytes
+            val totalSize = tailFetch.totalLength
+            val tailStartOffset = tailFetch.rangeStart
+
+            // Locate ZIP End of Central Directory signature: 0x06054b50 ("PK\x05\x06")
+            var eocdPos = -1
+            for (i in (tailBytes.size - 22) downTo 0) {
+                if (tailBytes[i] == 0x50.toByte() &&
+                    tailBytes[i + 1] == 0x4B.toByte() &&
+                    tailBytes[i + 2] == 0x05.toByte() &&
+                    tailBytes[i + 3] == 0x06.toByte()
+                ) {
+                    eocdPos = i
+                    break
+                }
+            }
+            if (eocdPos < 0) return@runCatching null
+
+            val eocdBuf = ByteBuffer.wrap(tailBytes, eocdPos, tailBytes.size - eocdPos)
+                .order(ByteOrder.LITTLE_ENDIAN)
+            val cdSize = eocdBuf.getInt(12).toLong() and 0xFFFFFFFFL
+            val cdOffset = eocdBuf.getInt(16).toLong() and 0xFFFFFFFFL
+            if (cdSize <= 0L || cdSize > 4_000_000L || cdOffset < 0L) return@runCatching null
+            if (totalSize > 0L && cdOffset + cdSize > totalSize) return@runCatching null
+
+            val cdBytes = if (cdOffset >= tailStartOffset &&
+                (cdOffset - tailStartOffset + cdSize) <= tailBytes.size
+            ) {
+                val relStart = (cdOffset - tailStartOffset).toInt()
+                tailBytes.copyOfRange(relStart, relStart + cdSize.toInt())
+            } else {
+                fetchRangeBytes(apkUrl, "bytes=$cdOffset-${cdOffset + cdSize - 1}")?.bytes
+                    ?: return@runCatching null
+            }
+
+            // Walk Central Directory entries to locate "AndroidManifest.xml"
+            val manifestEntry = findManifestEntryInCentralDirectory(cdBytes) ?: return@runCatching null
+            if (manifestEntry.compressedSize <= 0L || manifestEntry.compressedSize > 2_000_000L) {
+                return@runCatching null
+            }
+
+            // Fetch Local File Header + compressed AndroidManifest.xml payload
+            val localFetchEnd = manifestEntry.localHeaderOffset + 30L + 512L + manifestEntry.compressedSize
+            val clampedEnd = if (totalSize > 0L) minOf(localFetchEnd, totalSize - 1L) else localFetchEnd
+            val entryBytes = fetchRangeBytes(
+                apkUrl,
+                "bytes=${manifestEntry.localHeaderOffset}-$clampedEnd"
+            )?.bytes ?: return@runCatching null
+
+            if (entryBytes.size < 30) return@runCatching null
+            val lfh = ByteBuffer.wrap(entryBytes).order(ByteOrder.LITTLE_ENDIAN)
+            if (lfh.getInt(0) != 0x04034b50) return@runCatching null
+            val lfhNameLen = lfh.getShort(26).toInt() and 0xFFFF
+            val lfhExtraLen = lfh.getShort(28).toInt() and 0xFFFF
+            val dataOffset = 30 + lfhNameLen + lfhExtraLen
+            val compLen = manifestEntry.compressedSize.toInt()
+            if (dataOffset + compLen > entryBytes.size) return@runCatching null
+
+            val rawManifestBytes = when (manifestEntry.compressionMethod) {
+                0 -> entryBytes.copyOfRange(dataOffset, dataOffset + compLen)
+                8 -> inflateRawDeflate(entryBytes, dataOffset, compLen)
+                else -> return@runCatching null
+            }
+
+            parseBinaryAndroidManifest(rawManifestBytes)
+        }.getOrNull()
+    }
+
+    private data class RangeFetchResult(
+        val bytes: ByteArray,
+        val rangeStart: Long,
+        val totalLength: Long
+    )
+
+    private data class ZipManifestEntry(
+        val compressionMethod: Int,
+        val compressedSize: Long,
+        val localHeaderOffset: Long
+    )
+
+    private fun fetchRangeBytes(url: String, rangeHeader: String): RangeFetchResult? {
+        val request = Request.Builder()
+            .url(url)
+            .header("Range", rangeHeader)
+            .header("Accept-Encoding", "identity")
+            .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+            .build()
+        return httpClient.newCall(request).execute().use { response ->
+            if (response.code != 206 && response.code != 200) return@use null
+            val bytes = response.body?.bytes() ?: return@use null
+            val contentRange = response.header("Content-Range").orEmpty()
+            var start = 0L
+            var total = bytes.size.toLong()
+            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(contentRange)
+            if (match != null) {
+                start = match.groupValues[1].toLongOrNull() ?: 0L
+                total = match.groupValues[3].toLongOrNull() ?: -1L
+            } else if (response.code == 200) {
+                start = 0L
+                total = bytes.size.toLong()
+            }
+            RangeFetchResult(bytes = bytes, rangeStart = start, totalLength = total)
+        }
+    }
+
+    private fun findManifestEntryInCentralDirectory(cdBytes: ByteArray): ZipManifestEntry? {
+        val buf = ByteBuffer.wrap(cdBytes).order(ByteOrder.LITTLE_ENDIAN)
+        var pos = 0
+        while (pos + 46 <= cdBytes.size) {
+            if (buf.getInt(pos) != 0x02014b50) break
+            val method = buf.getShort(pos + 10).toInt() and 0xFFFF
+            val compSize = buf.getInt(pos + 20).toLong() and 0xFFFFFFFFL
+            val nameLen = buf.getShort(pos + 28).toInt() and 0xFFFF
+            val extraLen = buf.getShort(pos + 30).toInt() and 0xFFFF
+            val commentLen = buf.getShort(pos + 32).toInt() and 0xFFFF
+            val localOffset = buf.getInt(pos + 42).toLong() and 0xFFFFFFFFL
+            if (pos + 46 + nameLen > cdBytes.size) break
+            val name = String(cdBytes, pos + 46, nameLen, Charsets.UTF_8)
+            if (name == "AndroidManifest.xml") {
+                return ZipManifestEntry(
+                    compressionMethod = method,
+                    compressedSize = compSize,
+                    localHeaderOffset = localOffset
+                )
+            }
+            pos += 46 + nameLen + extraLen + commentLen
+        }
+        return null
+    }
+
+    private fun inflateRawDeflate(src: ByteArray, offset: Int, length: Int): ByteArray {
+        val inflater = Inflater(true)
+        return try {
+            inflater.setInput(src, offset, length)
+            val out = ByteArrayOutputStream(length * 2)
+            val chunk = ByteArray(8192)
+            while (!inflater.finished()) {
+                val count = inflater.inflate(chunk)
+                if (count > 0) {
+                    out.write(chunk, 0, count)
+                } else if (inflater.needsInput() || inflater.needsDictionary()) {
+                    break
+                }
+            }
+            out.toByteArray()
+        } finally {
+            inflater.end()
+        }
+    }
+
+    private fun parseBinaryAndroidManifest(data: ByteArray): ApkManifestVersion? {
+        if (data.size < 8) return null
+        val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val rootType = buf.getShort(0).toInt() and 0xFFFF
+        if (rootType != 0x0003) return null // RES_XML_TYPE
+        val rootHeaderSize = buf.getShort(2).toInt() and 0xFFFF
+
+        var strings = emptyList<String>()
+        var resourceIds = IntArray(0)
+        var pos = rootHeaderSize
+
+        while (pos + 8 <= data.size) {
+            val chunkType = buf.getShort(pos).toInt() and 0xFFFF
+            val headerSize = buf.getShort(pos + 2).toInt() and 0xFFFF
+            val chunkSize = buf.getInt(pos + 4)
+            if (chunkSize <= 0 || pos + chunkSize > data.size) break
+
+            when (chunkType) {
+                0x0001 -> { // RES_STRING_POOL_TYPE
+                    strings = parseAxmlStringPool(data, buf, pos, chunkSize)
+                }
+                0x0180 -> { // RES_XML_RESOURCE_MAP_TYPE
+                    val count = (chunkSize - headerSize) / 4
+                    if (count > 0) {
+                        resourceIds = IntArray(count) { idx ->
+                            buf.getInt(pos + headerSize + idx * 4)
+                        }
+                    }
+                }
+                0x0102 -> { // RES_XML_START_ELEMENT_TYPE
+                    if (pos + headerSize + 20 <= data.size) {
+                        val nameIdx = buf.getInt(pos + headerSize + 4)
+                        val elemName = strings.getOrNull(nameIdx).orEmpty()
+                        if (elemName == "manifest") {
+                            val attrStart = buf.getShort(pos + headerSize + 8).toInt() and 0xFFFF
+                            val attrSize = buf.getShort(pos + headerSize + 10).toInt() and 0xFFFF
+                            val attrCount = buf.getShort(pos + headerSize + 12).toInt() and 0xFFFF
+                            var versionCode = 0
+                            var versionName = ""
+                            val attrBase = pos + headerSize + attrStart
+                            for (i in 0 until attrCount) {
+                                val aPos = attrBase + i * attrSize
+                                if (aPos + 20 > data.size) break
+                                val aNameIdx = buf.getInt(aPos + 4)
+                                val rawValueIdx = buf.getInt(aPos + 8)
+                                val dataType = data[aPos + 15].toInt() and 0xFF
+                                val attrData = buf.getInt(aPos + 16)
+                                val resId = resourceIds.getOrNull(aNameIdx) ?: 0
+                                val attrName = strings.getOrNull(aNameIdx).orEmpty()
+
+                                if (resId == 0x0101021b || attrName == "versionCode") {
+                                    versionCode = when (dataType) {
+                                        0x10, 0x11 -> attrData
+                                        0x03 -> strings.getOrNull(attrData)?.toIntOrNull() ?: 0
+                                        else -> strings.getOrNull(rawValueIdx)?.toIntOrNull() ?: attrData
+                                    }
+                                } else if (resId == 0x0101021c || attrName == "versionName") {
+                                    versionName = when {
+                                        rawValueIdx >= 0 -> strings.getOrNull(rawValueIdx).orEmpty()
+                                        dataType == 0x03 -> strings.getOrNull(attrData).orEmpty()
+                                        else -> ""
+                                    }.trim()
+                                }
+                            }
+                            if (versionName.isNotEmpty() || versionCode > 0) {
+                                return ApkManifestVersion(
+                                    versionName = versionName,
+                                    versionCode = versionCode
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            pos += chunkSize
+        }
+        return null
+    }
+
+    private fun parseAxmlStringPool(
+        data: ByteArray,
+        buf: ByteBuffer,
+        chunkStart: Int,
+        chunkSize: Int
+    ): List<String> {
+        if (chunkStart + 28 > data.size) return emptyList()
+        val stringCount = buf.getInt(chunkStart + 8)
+        val flags = buf.getInt(chunkStart + 16)
+        val stringsStart = buf.getInt(chunkStart + 20)
+        val isUtf8 = (flags and (1 shl 8)) != 0
+        if (stringCount <= 0 || stringCount > 50_000) return emptyList()
+
+        val offsetsBase = chunkStart + 28
+        val dataBase = chunkStart + stringsStart
+        val chunkEnd = chunkStart + chunkSize
+        val result = ArrayList<String>(stringCount)
+
+        for (i in 0 until stringCount) {
+            val offsetPos = offsetsBase + i * 4
+            if (offsetPos + 4 > chunkEnd) break
+            val relOffset = buf.getInt(offsetPos)
+            var p = dataBase + relOffset
+            if (p < dataBase || p >= chunkEnd) {
+                result.add("")
+                continue
+            }
+            if (isUtf8) {
+                // Skip UTF-16 character length varint
+                val c1 = data[p++].toInt() and 0xFF
+                if ((c1 and 0x80) != 0 && p < chunkEnd) p++
+                // Read UTF-8 byte length varint
+                if (p >= chunkEnd) {
+                    result.add("")
+                    continue
+                }
+                val b1 = data[p++].toInt() and 0xFF
+                val byteLen = if ((b1 and 0x80) != 0 && p < chunkEnd) {
+                    ((b1 and 0x7F) shl 8) or (data[p++].toInt() and 0xFF)
+                } else {
+                    b1
+                }
+                if (p + byteLen <= chunkEnd && byteLen >= 0) {
+                    result.add(String(data, p, byteLen, Charsets.UTF_8))
+                } else {
+                    result.add("")
+                }
+            } else {
+                if (p + 2 > chunkEnd) {
+                    result.add("")
+                    continue
+                }
+                val u1 = buf.getShort(p).toInt() and 0xFFFF
+                p += 2
+                val charLen = if ((u1 and 0x8000) != 0 && p + 2 <= chunkEnd) {
+                    val u2 = buf.getShort(p).toInt() and 0xFFFF
+                    p += 2
+                    ((u1 and 0x7FFF) shl 16) or u2
+                } else {
+                    u1
+                }
+                val byteLen = charLen * 2
+                if (p + byteLen <= chunkEnd && byteLen >= 0) {
+                    result.add(String(data, p, byteLen, Charsets.UTF_16LE))
+                } else {
+                    result.add("")
+                }
+            }
+        }
+        return result
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Source Resolution & Version Difference Logic
+    // ---------------------------------------------------------------------------------------------
+
+    private fun mergeAllSources(
         repo: String,
         release: GitHubReleasePayload?,
-        policy: RemotePolicyPayload?
+        directApk: DirectRepoApkPayload?,
+        policy: RemotePolicyPayload?,
+        gradleVersion: RemoteGradleVersion?,
+        actionsBuild: ActionsApkPayload?,
+        inspectedApk: ApkManifestVersion?
     ): AppUpdateInfo {
-        val fallbackPage = "https://github.com/$repo/releases/latest"
-        val releaseVersion = release?.tagName?.let { cleanVersionString(it) }.orEmpty()
-        val policyVersion = policy?.latestVersion?.let { cleanVersionString(it) }.orEmpty()
+        val fallbackPage = "https://github.com/$repo/releases"
+        val apkVersionName = inspectedApk?.versionName?.trim().orEmpty()
+        val releaseTagRaw = release?.tagName?.trim().orEmpty()
+        val releaseVersion = cleanVersionString(releaseTagRaw).ifEmpty {
+            releaseTagRaw.removePrefix("v").removePrefix("V")
+        }
+        val policyVersion = policy?.latestVersion?.trim().orEmpty()
+            .let { cleanVersionString(it).ifEmpty { it.removePrefix("v").removePrefix("V") } }
+        val gradleVersionName = gradleVersion?.versionName?.trim().orEmpty()
 
+        // Priority: actual version inside Luma.apk > update-policy.json / release tag > app/build.gradle.kts
         val chosenVersion = when {
-            releaseVersion.isNotEmpty() && policyVersion.isNotEmpty() ->
+            apkVersionName.isNotEmpty() -> apkVersionName
+            policyVersion.isNotEmpty() && releaseVersion.isNotEmpty() -> {
                 if (compareSemanticVersions(policyVersion, releaseVersion) > 0) policyVersion else releaseVersion
+            }
             releaseVersion.isNotEmpty() -> releaseVersion
             policyVersion.isNotEmpty() -> policyVersion
+            gradleVersionName.isNotEmpty() -> gradleVersionName
             else -> BuildConfig.VERSION_NAME
         }
 
@@ -376,10 +1020,14 @@ object GitHubUpdateManager {
         val bodyMinVersionCode = extractIntMarker(combinedText, "min_version_code")
         val bodyMinVersion = extractStringMarker(combinedText, "min_version")
 
-        val chosenVersionCode = maxOf(
-            policy?.latestVersionCode ?: 0,
-            bodyVersionCode
-        )
+        val chosenVersionCode = when {
+            (inspectedApk?.versionCode ?: 0) > 0 -> inspectedApk!!.versionCode
+            else -> maxOf(
+                policy?.latestVersionCode ?: 0,
+                bodyVersionCode,
+                gradleVersion?.versionCode ?: 0
+            )
+        }
 
         val hasForceMarkerInRelease = containsForceMarker(combinedText)
         val belowPolicyMinVersion = !policy?.minRequiredVersion.isNullOrBlank() &&
@@ -400,16 +1048,33 @@ object GitHubUpdateManager {
             when {
                 bodyText.isNotBlank() -> bodyText
                 !policy?.releaseNotes.isNullOrBlank() -> policy!!.releaseNotes
-                else -> "Nueva actualización de Luma lista para descargar desde GitHub."
+                actionsBuild != null && actionsBuild.displayTitle.isNotBlank() ->
+                    "Compilación reciente de Luma.apk (${actionsBuild.displayTitle})."
+                directApk != null ->
+                    "Se detectó una versión distinta de Luma.apk en $repo (${directApk.path})."
+                else ->
+                    "Nueva versión de Luma.apk disponible en $repo."
             }
         )
 
         val chosenApkUrl = sanitizeGitHubUrl(policy?.apkUrl.orEmpty())
-            ?: sanitizeGitHubUrl(release?.apkDownloadUrl.orEmpty())
+            ?: sanitizeGitHubUrl(release?.takeIf { it.hasDirectApk }?.apkDownloadUrl.orEmpty())
+            ?: sanitizeGitHubUrl(directApk?.downloadUrl.orEmpty())
+            ?: sanitizeGitHubUrl(actionsBuild?.runHtmlUrl.orEmpty())
             ?: sanitizeGitHubUrl(release?.htmlUrl.orEmpty())
             ?: fallbackPage
 
-        val releasePageUrl = sanitizeGitHubUrl(release?.htmlUrl.orEmpty()) ?: fallbackPage
+        val releasePageUrl = sanitizeGitHubUrl(release?.htmlUrl.orEmpty())
+            ?: sanitizeGitHubUrl(directApk?.htmlUrl.orEmpty())
+            ?: sanitizeGitHubUrl(actionsBuild?.runHtmlUrl.orEmpty())
+            ?: fallbackPage
+
+        val apkSize = when {
+            (release?.apkSizeBytes ?: 0L) > 0L -> release!!.apkSizeBytes
+            (directApk?.sizeBytes ?: 0L) > 0L -> directApk!!.sizeBytes
+            (actionsBuild?.artifactSizeBytes ?: 0L) > 0L -> actionsBuild!!.artifactSizeBytes
+            else -> 0L
+        }
 
         return AppUpdateInfo(
             versionName = chosenVersion,
@@ -417,12 +1082,12 @@ object GitHubUpdateManager {
             title = if (isMandatory) {
                 "Actualización obligatoria"
             } else {
-                titleText.ifBlank { "Nueva versión v$chosenVersion" }
+                titleText.ifBlank { "Luma v$chosenVersion" }
             },
             changelog = cleanChangelog,
             apkDownloadUrl = chosenApkUrl,
             releasePageUrl = releasePageUrl,
-            apkSizeBytes = release?.apkSizeBytes ?: 0L,
+            apkSizeBytes = apkSize,
             mode = if (isMandatory) UpdateEnforcementMode.MANDATORY_BLOCKING else UpdateEnforcementMode.OPTIONAL_SKIPPABLE,
             blockMessage = policy?.blockMessage.orEmpty()
         )
@@ -460,11 +1125,37 @@ object GitHubUpdateManager {
             .trim()
     }
 
-    fun isCurrentAppOutdated(remoteVersionName: String, remoteVersionCode: Int): Boolean {
-        if (remoteVersionCode > BuildConfig.VERSION_CODE) return true
-        val cleanedRemote = cleanVersionString(remoteVersionName)
-        if (cleanedRemote.isEmpty()) return false
-        return compareSemanticVersions(cleanedRemote, BuildConfig.VERSION_NAME) > 0
+    /**
+     * Checks whether the remote `Luma.apk` version differs from the currently installed APK:
+     * - If `remoteVersionCode > 0` and differs from `BuildConfig.VERSION_CODE` -> update available!
+     * - If `remoteVersionName` differs from `BuildConfig.VERSION_NAME` -> update available!
+     * - If both match -> up to date.
+     */
+    fun isVersionDifferentFromInstalled(remoteVersionName: String, remoteVersionCode: Int): Boolean {
+        if (remoteVersionCode > 0 && remoteVersionCode != BuildConfig.VERSION_CODE) {
+            return true
+        }
+        return isVersionStringDifferent(remoteVersionName, BuildConfig.VERSION_NAME)
+    }
+
+    fun isCurrentAppOutdated(remoteVersionName: String, remoteVersionCode: Int): Boolean =
+        isVersionDifferentFromInstalled(remoteVersionName, remoteVersionCode)
+
+    private fun isVersionStringDifferent(remoteRaw: String, installedRaw: String): Boolean {
+        val remoteNorm = remoteRaw.trim().removePrefix("v").removePrefix("V").trim()
+        val installedNorm = installedRaw.trim().removePrefix("v").removePrefix("V").trim()
+        if (remoteNorm.isEmpty()) return false
+        if (remoteNorm.equals(installedNorm, ignoreCase = true)) return false
+
+        val remoteClean = cleanVersionString(remoteNorm)
+        val installedClean = cleanVersionString(installedNorm)
+        // If both are pure numeric semantic versions (e.g., "1.0" vs "1.0.0"), compare numerically
+        val remoteIsPureSemver = remoteClean.isNotEmpty() && remoteClean == remoteNorm
+        val installedIsPureSemver = installedClean.isNotEmpty() && installedClean == installedNorm
+        if (remoteIsPureSemver && installedIsPureSemver) {
+            return compareSemanticVersions(remoteClean, installedClean) != 0
+        }
+        return true
     }
 
     fun cleanVersionString(raw: String): String {

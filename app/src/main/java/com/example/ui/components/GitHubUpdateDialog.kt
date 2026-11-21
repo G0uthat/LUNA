@@ -63,8 +63,6 @@ import java.util.Locale
  * - Version B: [UpdateEnforcementMode.MANDATORY_BLOCKING]
  *   Strict non-skippable gate (Back key blocked, outside-tap blocked, no close button)
  *   requiring the user to download & install the newer GitHub APK before continuing.
- *   (When launched via Settings preview with [AppUpdateInfo.isPreview] = true, shows a
- *   clearly labeled preview exit button so the owner can inspect the screen safely.)
  */
 @Composable
 fun GitHubUpdateDialog(
@@ -90,7 +88,7 @@ fun GitHubUpdateDialog(
             val mb = updateInfo.apkSizeBytes / (1024.0 * 1024.0)
             String.format(Locale.US, "%.1f MB", mb)
         } else {
-            "APK · GitHub"
+            "Luma.apk · GitHub"
         }
     }
 
@@ -112,7 +110,7 @@ fun GitHubUpdateDialog(
             subtitle = if (isMandatory) {
                 "Requerida para continuar usando Luma"
             } else {
-                "Descarga directa desde GitHub Releases"
+                "Descarga directa de Luma.apk desde GitHub"
             },
             leadingIcon = if (isMandatory) Icons.Rounded.Lock else Icons.Rounded.SystemUpdate,
             onDismiss = {

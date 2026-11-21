@@ -714,6 +714,7 @@ private fun EmbeddedDictionaryWebView(
     onOpenExternal: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     var progress by remember(url) { mutableIntStateOf(15) }
     var failed by remember(url) { mutableStateOf(false) }
     var retryNonce by remember(url) { mutableIntStateOf(0) }
@@ -832,9 +833,44 @@ private fun EmbeddedDictionaryWebView(
             if (progress < 95) {
                 LinearProgressIndicator(
                     progress = { progress / 100f },
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
-                    color = palette.accent
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .align(Alignment.TopCenter),
+                    color = palette.accent,
+                    trackColor = Color.Transparent
                 )
+            }
+            AnimatedVisibility(
+                visible = progress < 85,
+                enter = fadeIn(tween(motion.duration(200), easing = LumaEaseInOutCurve)),
+                exit = fadeOut(tween(motion.duration(260), easing = LumaEaseInOutCurve)),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(palette.surface.copy(alpha = 0.92f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LumaDictionaryPulseLottie(
+                            tint = palette.accent,
+                            modifier = Modifier
+                                .size(width = 76.dp, height = 34.dp)
+                                .testTag("dict_webview_lottie_loader")
+                        )
+                        Text(
+                            text = "Cargando definición…",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.inkMuted
+                        )
+                    }
+                }
             }
             Box(
                 modifier = Modifier

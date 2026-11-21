@@ -2,14 +2,12 @@ package com.example.ui.components
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -175,7 +173,7 @@ fun LumaPermissionsOnboardingDialog(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Welcoming brand banner
+            // Welcoming brand banner with EaseInOut Lottie accents
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -186,6 +184,35 @@ fun LumaPermissionsOnboardingDialog(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(palette.accentSoft.copy(alpha = 0.72f))
+                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    LumaSparkRevealLottie(
+                        replayKey = "onboarding_welcome",
+                        tint = palette.accent,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .testTag("onboarding_lottie_spark")
+                    )
+                    Text(
+                        text = "BIENVENIDO A LUMA",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = palette.accent,
+                        letterSpacing = 0.8.sp
+                    )
+                    LumaTourBeaconLottie(
+                        tint = palette.accent,
+                        modifier = Modifier
+                            .size(18.dp)
+                            .testTag("onboarding_lottie_beacon")
+                    )
+                }
                 LumaCalligraphicLogo(
                     modifier = Modifier
                         .fillMaxWidth(0.68f)
@@ -486,8 +513,8 @@ fun LumaInteractiveTourOverlay(
 
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn(motion.emphasizedTween(255)),
-        exit = fadeOut(motion.exitTween(205))
+        enter = fadeIn(tween(motion.duration(280), easing = LumaEaseInOutCurve)),
+        exit = fadeOut(tween(motion.duration(220), easing = LumaEaseInOutCurve))
     ) {
         BoxWithConstraints(
             modifier = Modifier
@@ -517,20 +544,23 @@ fun LumaInteractiveTourOverlay(
             val targetRight = (rawTarget.right + padPx).coerceIn(targetLeft + 32f, screenW - 8f)
             val targetBottom = (rawTarget.bottom + padPx).coerceIn(targetTop + 32f, screenH - 8f)
 
-            val spotlightSpec = motion.glideSpring<Float>()
+            val spotlightSpec = tween<Float>(
+                durationMillis = motion.duration(380),
+                easing = LumaEaseInOutCurve
+            )
             val animLeft by animateFloatAsState(targetLeft, spotlightSpec, label = "tour_left")
             val animTop by animateFloatAsState(targetTop, spotlightSpec, label = "tour_top")
             val animRight by animateFloatAsState(targetRight, spotlightSpec, label = "tour_right")
             val animBottom by animateFloatAsState(targetBottom, spotlightSpec, label = "tour_bottom")
             val animCorner by animateFloatAsState(cornerPx, spotlightSpec, label = "tour_corner")
 
-            // Soft XLNR-style luminous breathing halo around the spotlight cutout
+            // Soft XLNR-style luminous breathing halo using custom EaseInOut interpolation
             val infiniteTransition = rememberInfiniteTransition(label = "tour_pulse")
             val pulseProgress by infiniteTransition.animateFloat(
                 initialValue = 0f,
                 targetValue = 1f,
                 animationSpec = infiniteRepeatable(
-                    animation = tween(motion.ambientDuration(1350), easing = FastOutSlowInEasing),
+                    animation = tween(motion.ambientDuration(1400), easing = LumaEaseInOutCurve),
                     repeatMode = RepeatMode.Reverse
                 ),
                 label = "tour_pulse_val"
@@ -604,7 +634,10 @@ fun LumaInteractiveTourOverlay(
             }
             val animatedCardY by animateFloatAsState(
                 targetValue = cardYTargetPx,
-                animationSpec = motion.glideSpring(),
+                animationSpec = tween(
+                    durationMillis = motion.duration(380),
+                    easing = LumaEaseInOutCurve
+                ),
                 label = "tour_card_y"
             )
 
@@ -679,15 +712,15 @@ fun LumaInteractiveTourOverlay(
                         )
                     }
 
-                    // Smoothly animated step title + concise copy
+                    // Smoothly animated step title + concise copy with custom EaseInOut curve
                     AnimatedContent(
                         targetState = currentStep,
                         transitionSpec = {
-                            (fadeIn(motion.emphasizedTween(220)) +
-                                slideInHorizontally(motion.emphasizedTween(220)) { it / 10 })
+                            (fadeIn(tween(motion.duration(260), easing = LumaEaseInOutCurve)) +
+                                slideInHorizontally(tween(motion.duration(280), easing = LumaEaseInOutCurve)) { it / 10 })
                                 .togetherWith(
-                                    fadeOut(motion.exitTween(160)) +
-                                        slideOutHorizontally(motion.exitTween(160)) { -it / 12 }
+                                    fadeOut(tween(motion.duration(180), easing = LumaEaseInOutCurve)) +
+                                        slideOutHorizontally(tween(motion.duration(200), easing = LumaEaseInOutCurve)) { -it / 12 }
                                 )
                         },
                         label = "tour_step_copy"
@@ -717,10 +750,18 @@ fun LumaInteractiveTourOverlay(
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                             activeSteps.forEachIndexed { idx, _ ->
                                 val isCurrent = idx == safeIndex
+                                val dotWidth by animateDpAsState(
+                                    targetValue = if (isCurrent) 20.dp else 6.dp,
+                                    animationSpec = tween(
+                                        durationMillis = motion.duration(280),
+                                        easing = LumaEaseInOutCurve
+                                    ),
+                                    label = "tour_dot_w_$idx"
+                                )
                                 Box(
                                     modifier = Modifier
                                         .height(6.dp)
-                                        .width(if (isCurrent) 20.dp else 6.dp)
+                                        .width(dotWidth)
                                         .clip(CircleShape)
                                         .background(
                                             if (isCurrent) palette.accent
