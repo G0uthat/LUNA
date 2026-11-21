@@ -6,6 +6,7 @@ import android.util.LruCache
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -44,11 +46,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Notes
 import androidx.compose.material.icons.rounded.Slideshow
-import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -68,19 +70,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.BlockType
@@ -93,6 +101,10 @@ import com.example.data.model.ParsedDocument
 import com.example.data.model.ParsedSlide
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
+import com.example.data.model.SlideElement
+import com.example.data.model.SlideShapeGeometry
+import com.example.data.model.SlideTextAlign
+import com.example.data.model.SlideVerticalAlign
 import com.example.data.model.StandardPageFormat
 import com.example.ui.components.DrawingCanvasOverlay
 import com.example.ui.theme.LocalFolioPalette
@@ -460,7 +472,7 @@ fun StandardPageDocumentReader(
                 }
             }
 
-            // Quick 1-tap toggle back to Adapted Text mode
+            // Quick 1-tap toggle back to Adapted EPUB mode
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
@@ -473,13 +485,13 @@ fun StandardPageDocumentReader(
                 horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.ViewAgenda,
-                    contentDescription = "Cambiar a vista adaptada",
+                    imageVector = Icons.Rounded.AutoStories,
+                    contentDescription = "Cambiar a modo adaptado EPUB",
                     tint = palette.ink,
                     modifier = Modifier.size(12.dp)
                 )
                 Text(
-                    text = "Adaptar",
+                    text = "Modo EPUB",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = palette.ink
@@ -817,6 +829,16 @@ private fun PptxSlideSurface(
     accent: Color,
     fontFamily: androidx.compose.ui.text.font.FontFamily
 ) {
+    if (slide.elements.isNotEmpty()) {
+        AuthenticPptxCanvasSurface(
+            slide = slide,
+            ptScale = ptScale,
+            fontFamily = fontFamily
+        )
+        return
+    }
+
+    // Structured fallback for minimal/unpositioned slides
     val padX = (44f * ptScale).coerceIn(12f, 32f).dp
     val padY = (32f * ptScale).coerceIn(10f, 24f).dp
     val titleSp = (26f * ptScale).coerceIn(11f, 22f).sp
@@ -830,7 +852,6 @@ private fun PptxSlideSurface(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Subtle PowerPoint top accent bar
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -941,7 +962,6 @@ private fun PptxSlideSurface(
                 }
             }
 
-            // Crisp PowerPoint slide footer
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -959,6 +979,271 @@ private fun PptxSlideSurface(
                     fontWeight = FontWeight.Bold,
                     color = paperMuted.copy(alpha = 0.85f)
                 )
+            }
+        }
+    }
+}
+
+/**
+ * High-fidelity original-layout PowerPoint canvas renderer.
+ * Draws the authentic slide background (image, vertical gradient, or solid fill) and places every
+ * OOXML shape, text box, picture, and table at its exact normalized slide coordinates.
+ */
+@Composable
+private fun AuthenticPptxCanvasSurface(
+    slide: ParsedSlide,
+    ptScale: Float,
+    fontFamily: androidx.compose.ui.text.font.FontFamily
+) {
+    val bgStart = Color(slide.backgroundColorArgb.toInt())
+    val bgEnd = slide.backgroundGradientEndArgb?.let { Color(it.toInt()) }
+    val bgBitmap by produceState<Bitmap?>(initialValue = null, key1 = slide.backgroundImagePath) {
+        value = slide.backgroundImagePath?.let { SlideBitmapCache.load(it) }
+    }
+    val defaultSlideInk = if (bgStart.luminance() < 0.36f) Color(0xFFF5F7FA) else Color(0xFF141B29)
+
+    val bgModifier = when {
+        bgEnd != null -> Modifier.background(Brush.verticalGradient(listOf(bgStart, bgEnd)))
+        else -> Modifier.background(bgStart)
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(bgModifier)
+    ) {
+        val canvasW = maxWidth
+        val canvasH = maxHeight
+
+        // Optional slide master/slide background image
+        if (bgBitmap != null) {
+            Image(
+                bitmap = bgBitmap!!.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        for (element in slide.elements) {
+            val elX = canvasW * element.left.coerceIn(-0.08f, 1.05f)
+            val elY = canvasH * element.top.coerceIn(-0.08f, 1.05f)
+            val elW = (canvasW * element.width.coerceIn(0.008f, 1.15f)).coerceAtLeast(2.dp)
+            val elH = (canvasH * element.height.coerceIn(0.006f, 1.15f)).coerceAtLeast(2.dp)
+
+            when (element) {
+                is SlideElement.Picture -> {
+                    val picBitmap by produceState<Bitmap?>(initialValue = null, key1 = element.imagePath) {
+                        value = SlideBitmapCache.load(element.imagePath)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .offset(x = elX, y = elY)
+                            .size(width = elW, height = elH)
+                            .graphicsLayer { rotationZ = element.rotationDeg },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (picBitmap != null) {
+                            Image(
+                                bitmap = picBitmap!!.asImageBitmap(),
+                                contentDescription = "Imagen de diapositiva",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+
+                is SlideElement.ShapeBox -> {
+                    val shape = when (element.geometry) {
+                        SlideShapeGeometry.ROUND_RECT -> RoundedCornerShape((8f * ptScale).coerceIn(3f, 12f).dp)
+                        SlideShapeGeometry.ELLIPSE -> CircleShape
+                        else -> RectangleShape
+                    }
+                    val fillMod = when {
+                        element.fillColorArgb != null && element.gradientEndColorArgb != null -> {
+                            Modifier.background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color(element.fillColorArgb.toInt()),
+                                        Color(element.gradientEndColorArgb.toInt())
+                                    )
+                                ),
+                                shape = shape
+                            )
+                        }
+                        element.fillColorArgb != null -> {
+                            Modifier.background(Color(element.fillColorArgb.toInt()), shape = shape)
+                        }
+                        else -> Modifier
+                    }
+                    val borderMod = if (element.borderColorArgb != null && element.borderWidthPt > 0f && element.geometry != SlideShapeGeometry.LINE) {
+                        Modifier.border(
+                            width = (element.borderWidthPt * ptScale).coerceIn(0.5f, 3.5f).dp,
+                            color = Color(element.borderColorArgb.toInt()),
+                            shape = shape
+                        )
+                    } else {
+                        Modifier
+                    }
+
+                    val localInk = element.fillColorArgb?.let { fillArgb ->
+                        val fc = Color(fillArgb.toInt())
+                        if (fc.alpha > 0.45f) {
+                            if (fc.luminance() < 0.38f) Color(0xFFF5F7FA) else Color(0xFF141B29)
+                        } else {
+                            defaultSlideInk
+                        }
+                    } ?: defaultSlideInk
+
+                    Box(
+                        modifier = Modifier
+                            .offset(x = elX, y = elY)
+                            .size(width = elW, height = elH)
+                            .graphicsLayer { rotationZ = element.rotationDeg }
+                            .then(if (element.geometry != SlideShapeGeometry.LINE) Modifier.clip(shape) else Modifier)
+                            .then(if (element.geometry != SlideShapeGeometry.LINE) fillMod else Modifier)
+                            .then(borderMod),
+                        contentAlignment = when (element.verticalAlign) {
+                            SlideVerticalAlign.TOP -> Alignment.TopStart
+                            SlideVerticalAlign.MIDDLE -> Alignment.CenterStart
+                            SlideVerticalAlign.BOTTOM -> Alignment.BottomStart
+                        }
+                    ) {
+                        if (element.geometry == SlideShapeGeometry.LINE) {
+                            val lineColor = Color((element.borderColorArgb ?: element.fillColorArgb ?: 0xFF64748BL).toInt())
+                            val strokeDp = (element.borderWidthPt.coerceAtLeast(1f) * ptScale).coerceIn(0.8f, 3.5f)
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val midY = size.height * 0.5f
+                                drawLine(
+                                    color = lineColor,
+                                    start = Offset(0f, midY),
+                                    end = Offset(size.width, midY),
+                                    strokeWidth = strokeDp.dp.toPx()
+                                )
+                            }
+                        } else if (element.paragraphs.isNotEmpty()) {
+                            val padH = (5f * ptScale).coerceIn(2f, 8f).dp
+                            val padV = (3f * ptScale).coerceIn(1f, 6f).dp
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = padH, vertical = padV),
+                                verticalArrangement = Arrangement.spacedBy((3f * ptScale).coerceIn(1f, 5f).dp)
+                            ) {
+                                for (para in element.paragraphs) {
+                                    val textAlign = when (para.align) {
+                                        SlideTextAlign.LEFT -> TextAlign.Start
+                                        SlideTextAlign.CENTER -> TextAlign.Center
+                                        SlideTextAlign.RIGHT -> TextAlign.End
+                                        SlideTextAlign.JUSTIFY -> TextAlign.Justify
+                                    }
+                                    val maxRunPt = para.runs.maxOfOrNull { it.fontSizePt } ?: 14f
+                                    val lineHeightSp = (maxRunPt * ptScale * 1.20f).coerceIn(6.8f, 44f).sp
+                                    val annotated = buildAnnotatedString {
+                                        if (para.bulletPrefix.isNotEmpty()) {
+                                            val firstColor = para.runs.firstOrNull()?.colorArgb
+                                                ?.let { Color(it.toInt()) } ?: localInk
+                                            val bulletSp = (maxRunPt * ptScale).coerceIn(5.5f, 36f).sp
+                                            withStyle(SpanStyle(fontSize = bulletSp, color = firstColor)) {
+                                                append(para.bulletPrefix)
+                                            }
+                                        }
+                                        for (run in para.runs) {
+                                            val sp = (run.fontSizePt * ptScale).coerceIn(5.5f, 36f).sp
+                                            val col = run.colorArgb?.let { Color(it.toInt()) } ?: localInk
+                                            withStyle(
+                                                SpanStyle(
+                                                    fontSize = sp,
+                                                    fontWeight = if (run.isBold) FontWeight.Bold else FontWeight.Normal,
+                                                    fontStyle = if (run.isItalic) FontStyle.Italic else FontStyle.Normal,
+                                                    textDecoration = if (run.isUnderline) TextDecoration.Underline else TextDecoration.None,
+                                                    color = col
+                                                )
+                                            ) {
+                                                append(run.text)
+                                            }
+                                        }
+                                    }
+                                    val indentDp = (para.level * 10f * ptScale).coerceIn(0f, 24f).dp
+                                    Text(
+                                        text = annotated,
+                                        fontFamily = fontFamily,
+                                        lineHeight = lineHeightSp,
+                                        textAlign = textAlign,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = indentDp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                is SlideElement.Table -> {
+                    val gridBorder = if (bgStart.luminance() < 0.36f) {
+                        Color.White.copy(alpha = 0.25f)
+                    } else {
+                        Color(0xFFCBD5E1)
+                    }
+                    Column(
+                        modifier = Modifier
+                            .offset(x = elX, y = elY)
+                            .size(width = elW, height = elH)
+                            .border(0.6.dp, gridBorder)
+                    ) {
+                        for (row in element.rows) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            ) {
+                                row.forEachIndexed { colIdx, cell ->
+                                    val weight = element.colWeights.getOrElse(colIdx) {
+                                        1f / row.size.coerceAtLeast(1)
+                                    }.coerceAtLeast(0.05f)
+                                    val cellBg = cell.fillColorArgb?.let { Color(it.toInt()) } ?: Color.Transparent
+                                    val cellInk = cell.textColorArgb?.let { Color(it.toInt()) } ?: if (cellBg.alpha > 0.45f) {
+                                        if (cellBg.luminance() < 0.38f) Color.White else Color(0xFF141B29)
+                                    } else {
+                                        defaultSlideInk
+                                    }
+                                    val cellSp = (cell.fontSizePt * ptScale).coerceIn(5.2f, 16f).sp
+                                    val cellAlign = when (cell.align) {
+                                        SlideTextAlign.LEFT -> TextAlign.Start
+                                        SlideTextAlign.CENTER -> TextAlign.Center
+                                        SlideTextAlign.RIGHT -> TextAlign.End
+                                        SlideTextAlign.JUSTIFY -> TextAlign.Justify
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(weight)
+                                            .fillMaxHeight()
+                                            .background(cellBg)
+                                            .border(0.4.dp, gridBorder)
+                                            .padding(horizontal = (3f * ptScale).coerceIn(1.5f, 5f).dp, vertical = 1.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        Text(
+                                            text = cell.text,
+                                            fontFamily = fontFamily,
+                                            fontSize = cellSp,
+                                            lineHeight = (cellSp.value * 1.15f).sp,
+                                            fontWeight = if (cell.isBold) FontWeight.Bold else FontWeight.Normal,
+                                            color = cellInk,
+                                            textAlign = cellAlign,
+                                            maxLines = 3,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

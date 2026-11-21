@@ -13,11 +13,18 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateIntOffsetAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -63,6 +70,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -100,7 +108,7 @@ val HighlightSwatches = listOf(
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun ContextualDictionaryPopover(
-    selection: SelectedWordContext,
+    selection: SelectedWordContext?,
     sources: List<DictionarySourceEntity>,
     instantTranslation: String?,
     isTranslatingWord: Boolean,
@@ -119,22 +127,34 @@ fun ContextualDictionaryPopover(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val enabledSources = remember(sources) { sources.filter { it.isEnabled } }
-    var selectedTabIndex by remember(selection.locationKey, selection.blockIndex, selection.wordStartChar) {
+
+    // Retain the last active selection briefly during exit so the close animation plays smoothly!
+    var cachedSelection by remember { mutableStateOf(selection) }
+    if (selection != null) {
+        cachedSelection = selection
+    }
+    val activeSelection = cachedSelection ?: return
+    val isVisible = selection != null
+
+    var selectedTabIndex by remember(
+        activeSelection.locationKey,
+        activeSelection.blockIndex,
+        activeSelection.wordStartChar
+    ) {
         mutableIntStateOf(0)
     }
-    val initialOcrWord = remember(selection.locationKey, selection.blockIndex, selection.anchorXFraction, selection.anchorYFraction) {
-        selection.word
+    val initialOcrWord = remember(
+        activeSelection.locationKey,
+        activeSelection.blockIndex,
+        activeSelection.anchorXFraction,
+        activeSelection.anchorYFraction
+    ) {
+        activeSelection.word
     }
 
-    BoxWithConstraints(
-        modifier = modifier
-            .fillMaxSize()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onDismiss
-            )
-    ) {
+    val smoothEaseOut = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val maxW = constraints.maxWidth
         val maxH = constraints.maxHeight
         val density = androidx.compose.ui.platform.LocalDensity.current
@@ -145,12 +165,12 @@ fun ContextualDictionaryPopover(
         val marginPx = with(density) { 12.dp.toPx().roundToInt() }
         val clearancePx = with(density) { 36.dp.toPx().roundToInt() }
 
-        val anchorX = (selection.anchorXFraction * maxW).roundToInt()
-        val anchorY = (selection.anchorYFraction * maxH).roundToInt()
+        val anchorX = (activeSelection.anchorXFraction * maxW).roundToInt()
+        val anchorY = (activeSelection.anchorYFraction * maxH).roundToInt()
 
         val targetX = (anchorX - popW / 2).coerceIn(marginPx, (maxW - popW - marginPx).coerceAtLeast(marginPx))
 
-        val placeBelow = selection.anchorYFraction < 0.46f
+        val placeBelow = activeSelection.anchorYFraction < 0.46f
         val rawY = if (placeBelow) {
             anchorY + clearancePx
         } else {
@@ -158,32 +178,88 @@ fun ContextualDictionaryPopover(
         }
         val targetY = rawY.coerceIn(marginPx + 40, (maxH - popH - marginPx - 24).coerceAtLeast(marginPx))
 
-        AnimatedVisibility(
-            visible = true,
-            enter = fadeIn() + scaleIn(
-                initialScale = 0.94f,
-                animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMedium)
+        val animatedOffset by animateIntOffsetAsState(
+            targetValue = IntOffset(targetX, targetY),
+            animationSpec = spring(
+                dampingRatio = 0.84f,
+                stiffness = 380f
             ),
-            exit = fadeOut(),
+            label = "dictionary_popover_offset"
+        )
+
+        val pivotX = ((anchorX - targetX).toFloat() / popW.coerceAtLeast(1)).coerceIn(0.12f, 0.88f)
+        val pivotY = if (placeBelow) 0.04f else 0.96f
+        val glidePx = with(density) { 14.dp.toPx().roundToInt() }
+
+        // Soft fading backdrop scrim — only intercepts taps while visible
+        AnimatedVisibility(
+            visible = isVisible,
+            enter = fadeIn(animationSpec = tween(220, easing = smoothEaseOut)),
+            exit = fadeOut(animationSpec = tween(175, easing = smoothEaseOut))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.10f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss
+                    )
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isVisible,
+            enter = fadeIn(animationSpec = tween(210, easing = smoothEaseOut)) +
+                scaleIn(
+                    initialScale = 0.84f,
+                    transformOrigin = TransformOrigin(pivotX, pivotY),
+                    animationSpec = spring(
+                        dampingRatio = 0.80f,
+                        stiffness = 350f
+                    )
+                ) +
+                slideInVertically(
+                    initialOffsetY = { if (placeBelow) -glidePx else glidePx },
+                    animationSpec = spring(
+                        dampingRatio = 0.84f,
+                        stiffness = 360f
+                    )
+                ),
+            exit = fadeOut(animationSpec = tween(165, easing = smoothEaseOut)) +
+                scaleOut(
+                    targetScale = 0.88f,
+                    transformOrigin = TransformOrigin(pivotX, pivotY),
+                    animationSpec = tween(175, easing = smoothEaseOut)
+                ) +
+                slideOutVertically(
+                    targetOffsetY = { if (placeBelow) -glidePx / 2 else glidePx / 2 },
+                    animationSpec = tween(175, easing = smoothEaseOut)
+                ),
             modifier = Modifier
-                .offset { IntOffset(targetX, targetY) }
+                .offset { animatedOffset }
                 .size(
                     width = with(density) { popW.toDp() },
                     height = with(density) { popH.toDp() }
                 )
         ) {
-            val shape = RoundedCornerShape(24.dp)
+            val shape = RoundedCornerShape(26.dp)
+            val selection = activeSelection
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = 0.28f))
+                    .shadow(22.dp, shape, ambientColor = Color.Black.copy(alpha = 0.26f))
                     .clip(shape)
-                    .background(palette.surface)
-                    .border(1.5.dp, palette.border, shape)
+                    .background(palette.surface.copy(alpha = 0.99f))
+                    .border(1.2.dp, palette.border, shape)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                         onClick = {}
+                    )
+                    .animateContentSize(
+                        animationSpec = spring(dampingRatio = 0.85f, stiffness = 420f)
                     )
                     .padding(12.dp)
                     .testTag("contextual_dictionary_popover")

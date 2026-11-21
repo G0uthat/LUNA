@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.local.BookmarkEntity
 import com.example.data.local.HighlightNoteEntity
 import com.example.data.model.BookmarkDockSide
+import com.example.data.model.DocumentFormat
 import com.example.data.model.PageAnimationMode
 import com.example.data.model.ReaderFont
 import com.example.data.model.ReaderPreferences
@@ -74,11 +75,15 @@ import com.example.ui.theme.paletteFor
 @Composable
 fun AppearanceSettingsSheet(
     prefs: ReaderPreferences,
-    isPdf: Boolean,
+    documentFormat: DocumentFormat,
+    isOriginalFormatView: Boolean,
+    onSetOriginalFormatView: (Boolean) -> Unit,
     onUpdatePrefs: ((ReaderPreferences) -> ReaderPreferences) -> Unit,
     onDismiss: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val isEpub = documentFormat == DocumentFormat.EPUB
+    val isPdf = documentFormat == DocumentFormat.PDF
 
     LumaFloatingDropdownDialog(
         onDismiss = onDismiss,
@@ -101,129 +106,95 @@ fun AppearanceSettingsSheet(
                 .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 0. Standard Physical Page Format (A4, Carta, Oficio, A3, A5, 16:9, 4:3) for Work & Signing
-            SectionTitle("Formato de hoja (Trabajo y Firma)")
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(palette.surfaceAlt.copy(alpha = 0.72f))
-                    .border(1.dp, palette.border, RoundedCornerShape(18.dp))
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Ver en hoja estándar",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = palette.ink
-                        )
-                        Text(
-                            text = "Muestra el archivo a escala real (A4, Carta, A3, PPTX) sin adaptarlo al ancho, ideal para revisar y firmar.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = palette.inkMuted
-                        )
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Switch(
-                        checked = prefs.useStandardPageView,
-                        onCheckedChange = { checked -> onUpdatePrefs { it.copy(useStandardPageView = checked) } },
-                        colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
-                        modifier = Modifier.testTag("appearance_standard_page_switch")
-                    )
-                }
-
-                Row(
+            // 0. Original Format vs Adapted EPUB & Physical Sheet Size (only for non-EPUB documents)
+            if (!isEpub) {
+                SectionTitle("Modo de visualización (${documentFormat.label} / EPUB)")
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(palette.surfaceAlt.copy(alpha = 0.72f))
+                        .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    for (pageFmt in StandardPageFormat.entries) {
-                        val selected = prefs.standardPageFormat == pageFmt
-                        Column(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(if (selected) palette.accentSoft else palette.surface)
-                                .border(
-                                    width = if (selected) 2.dp else 1.dp,
-                                    color = if (selected) palette.accent else palette.border,
-                                    shape = RoundedCornerShape(14.dp)
-                                )
-                                .clickable {
-                                    onUpdatePrefs {
-                                        it.copy(
-                                            useStandardPageView = true,
-                                            standardPageFormat = pageFmt
-                                        )
-                                    }
-                                }
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                                .testTag("std_page_fmt_${pageFmt.name}")
-                        ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = pageFmt.displayName,
-                                style = MaterialTheme.typography.labelLarge,
+                                text = "Ver en formato original (${documentFormat.label})",
+                                style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = if (selected) palette.accent else palette.ink
+                                color = palette.ink
                             )
                             Text(
-                                text = pageFmt.dimensionsLabel,
-                                style = MaterialTheme.typography.labelSmall,
+                                text = "Desactívalo para adaptar el contenido como libro EPUB con las fuentes de Luma.",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = palette.inkMuted
                             )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Switch(
+                            checked = isOriginalFormatView,
+                            onCheckedChange = onSetOriginalFormatView,
+                            colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+                            modifier = Modifier.testTag("appearance_standard_page_switch")
+                        )
+                    }
+
+                    if (!isPdf) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            for (pageFmt in StandardPageFormat.entries) {
+                                val selected = prefs.standardPageFormat == pageFmt
+                                Column(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (selected) palette.accentSoft else palette.surface)
+                                        .border(
+                                            width = if (selected) 2.dp else 1.dp,
+                                            color = if (selected) palette.accent else palette.border,
+                                            shape = RoundedCornerShape(14.dp)
+                                        )
+                                        .clickable {
+                                            onSetOriginalFormatView(true)
+                                            onUpdatePrefs {
+                                                it.copy(standardPageFormat = pageFmt)
+                                            }
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                        .testTag("std_page_fmt_${pageFmt.name}")
+                                ) {
+                                    Text(
+                                        text = pageFmt.displayName,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (selected) palette.accent else palette.ink
+                                    )
+                                    Text(
+                                        text = pageFmt.dimensionsLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.inkMuted
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // 1. Reading Themes (7 soft themes including Azul Marino)
-            SectionTitle("Tema de lectura (${ReadingTheme.entries.size} estilos)")
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                for (theme in ReadingTheme.entries) {
-                    val tp = paletteFor(theme)
-                    val selected = prefs.theme == theme
-                    Column(
-                        modifier = Modifier
-                            .width(82.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(tp.background)
-                            .border(
-                                width = if (selected) 2.5.dp else 1.dp,
-                                color = if (selected) palette.accent else tp.border,
-                                shape = RoundedCornerShape(18.dp)
-                            )
-                            .clickable { onUpdatePrefs { it.copy(theme = theme) } }
-                            .padding(vertical = 12.dp, horizontal = 6.dp)
-                            .testTag("theme_option_${theme.name}"),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Aa",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = tp.ink
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = theme.displayName,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = tp.inkMuted,
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
+            // 1. Soft Visual Themes, Warm Light Filter & Configurable Night Reading Mode
+            SoftThemeAndNightModePanel(
+                prefs = prefs,
+                onUpdatePrefs = onUpdatePrefs,
+                compactMode = true
+            )
 
             // 2. Page Turn Animations (Libro, Tinta electrónica, Diapositiva, Tarjeta, Desvanecer, Scroll)
             SectionTitle("Animación de paso de página")
@@ -263,8 +234,8 @@ fun AppearanceSettingsSheet(
                 }
             }
 
-            // 3. Typography (for fluid formats EPUB/DOCX/TXT/FB2)
-            if (!isPdf) {
+            // 3. Typography (always shown in EPUB / Adapted EPUB mode, or for text-based formats)
+            if (!isPdf || !isOriginalFormatView) {
                 SectionTitle("Tipografía de lectura")
                 Row(
                     modifier = Modifier
@@ -341,7 +312,9 @@ fun AppearanceSettingsSheet(
                         )
                     }
                 }
-            } else {
+            }
+
+            if (isPdf) {
                 // PDF OCR Auto Toggle
                 Row(
                     modifier = Modifier

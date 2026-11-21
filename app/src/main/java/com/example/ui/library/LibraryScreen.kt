@@ -49,6 +49,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QueueMusic
@@ -69,6 +70,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -81,6 +83,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -88,6 +91,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
@@ -107,14 +111,18 @@ import com.example.ui.components.AppSettingsSheet
 import com.example.ui.components.FriendsChatDialog
 import com.example.ui.components.LibraryFilterDropdownOverlay
 import com.example.ui.components.LumaActionFeedbackOverlay
+import com.example.ui.components.LumaAppGuideDialog
 import com.example.ui.components.LumaCapsuleOptionRow
 import com.example.ui.components.LumaFloatingDropdownDialog
+import com.example.ui.components.LumaInteractiveTourOverlay
+import com.example.ui.components.LumaPermissionsOnboardingDialog
 import com.example.ui.components.LumaWideWordmark
 import com.example.ui.components.ProfileDropdownCapsuleOverlay
 import com.example.ui.components.QuickProfileSetupDialog
 import com.example.ui.components.TactileButton
 import com.example.ui.components.TactileCard
 import com.example.ui.components.TactileProgressBar
+import com.example.ui.components.TourTargetBounds
 import com.example.ui.components.UserAvatarCircle
 import com.example.ui.theme.LocalFolioPalette
 import kotlinx.coroutines.Dispatchers
@@ -153,6 +161,7 @@ fun LibraryScreen(
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val playlistRefs by viewModel.playlistRefs.collectAsStateWithLifecycle()
     val prefs by viewModel.preferences.collectAsStateWithLifecycle()
+    val preferencesLoaded by viewModel.preferencesLoaded.collectAsStateWithLifecycle()
     val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
     val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
     val feedbackEvent by viewModel.feedbackEvent.collectAsStateWithLifecycle()
@@ -167,12 +176,36 @@ fun LibraryScreen(
     var showAccountDialog by remember { mutableStateOf(false) }
     var showFriendsDialog by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var showAppGuide by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
 
-    // Measured Y coordinates so floating capsule menus align seamlessly to their anchor buttons
+    // First-launch Permissions popup -> XLNR-style interactive spotlight tour flow
+    var showPermissionsOnboarding by remember { mutableStateOf(false) }
+    var showInteractiveTour by remember { mutableStateOf(false) }
+    var onboardingAutoChecked by remember { mutableStateOf(false) }
+
+    LaunchedEffect(preferencesLoaded, prefs.hasCompletedOnboarding) {
+        if (preferencesLoaded && !onboardingAutoChecked) {
+            onboardingAutoChecked = true
+            if (!prefs.hasCompletedOnboarding) {
+                showPermissionsOnboarding = true
+            }
+        }
+    }
+
+    // Measured root coordinates & live spotlight target bounds
+    var rootLeftWindowPx by remember { mutableFloatStateOf(0f) }
     var rootTopWindowPx by remember { mutableFloatStateOf(0f) }
     var profileSphereTopInRootPx by remember { mutableFloatStateOf(0f) }
     var filterButtonBottomInRootPx by remember { mutableFloatStateOf(0f) }
+    var tourTargets by remember { mutableStateOf(TourTargetBounds()) }
+
+    fun Rect.toRootRelative(): Rect = Rect(
+        left = (left - rootLeftWindowPx).coerceAtLeast(0f),
+        top = (top - rootTopWindowPx).coerceAtLeast(0f),
+        right = (right - rootLeftWindowPx).coerceAtLeast(0f),
+        bottom = (bottom - rootTopWindowPx).coerceAtLeast(0f)
+    )
 
     // Long-press floating book menu & sub-modals
     var optionsBook by remember { mutableStateOf<DocumentEntity?>(null) }
@@ -182,21 +215,28 @@ fun LibraryScreen(
 
     // Soft 18% frosted blur on library content whenever ANY floating dropdown menu is open
     val anyFloatingMenuOpen = showProfileMenu || filterMenuExpanded ||
-        showAccountDialog || showFriendsDialog || showSettingsSheet || optionsBook != null
+        showAccountDialog || showFriendsDialog || showSettingsSheet || showAppGuide ||
+        showPermissionsOnboarding || optionsBook != null
     val backgroundBlurRadius by animateDpAsState(
         targetValue = if (anyFloatingMenuOpen) 6.dp else 0.dp,
-        animationSpec = tween(200),
+        animationSpec = tween(220),
         label = "library_menu_blur"
     )
 
+    // Back handler when interactive spotlight tour is active
+    BackHandler(enabled = showInteractiveTour) {
+        showInteractiveTour = false
+        viewModel.updatePreferences { it.copy(hasCompletedOnboarding = true) }
+    }
+
     // Back handler when floating profile or filter dropdown capsule is open
-    BackHandler(enabled = showProfileMenu || filterMenuExpanded) {
+    BackHandler(enabled = !showInteractiveTour && (showProfileMenu || filterMenuExpanded)) {
         showProfileMenu = false
         filterMenuExpanded = false
     }
 
     // Back handler when inside a specific Series detail view
-    BackHandler(enabled = !showProfileMenu && !filterMenuExpanded && activeTab == LibraryViewTab.SERIES && openedSeriesId != null) {
+    BackHandler(enabled = !showInteractiveTour && !showProfileMenu && !filterMenuExpanded && activeTab == LibraryViewTab.SERIES && openedSeriesId != null) {
         openedSeriesId = null
     }
 
@@ -290,7 +330,9 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .onGloballyPositioned { coords ->
-                    rootTopWindowPx = coords.positionInWindow().y
+                    val pos = coords.positionInWindow()
+                    rootLeftWindowPx = pos.x
+                    rootTopWindowPx = pos.y
                 }
         ) {
             val gridMod = Modifier
@@ -316,10 +358,49 @@ fun LibraryScreen(
                         LumaWideWordmark(
                             bookCount = documents.size,
                             seriesCount = playlists.size,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .onGloballyPositioned { coords ->
+                                    tourTargets = tourTargets.copy(
+                                        headerRect = coords.boundsInWindow().toRootRelative()
+                                    )
+                                }
                         )
 
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(8.dp))
+
+                        // Discreet 48.dp quick-access Guide button for beginners
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .onGloballyPositioned { coords ->
+                                    tourTargets = tourTargets.copy(
+                                        guideButtonRect = coords.boundsInWindow().toRootRelative()
+                                    )
+                                }
+                                .clip(CircleShape)
+                                .clickable { showAppGuide = true }
+                                .testTag("library_guide_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(palette.surfaceAlt.copy(alpha = 0.85f))
+                                    .border(1.dp, palette.border, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.HelpOutline,
+                                    contentDescription = "Abrir guía de uso de Luma",
+                                    tint = palette.accent,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.width(4.dp))
 
                         // Profile Sphere: measured in root coords so the dropdown capsule aligns pixel-exact!
                         Box(
@@ -328,6 +409,9 @@ fun LibraryScreen(
                                 .onGloballyPositioned { coords ->
                                     profileSphereTopInRootPx = (coords.positionInWindow().y - rootTopWindowPx)
                                         .coerceAtLeast(0f)
+                                    tourTargets = tourTargets.copy(
+                                        profileSphereRect = coords.boundsInWindow().toRootRelative()
+                                    )
                                 }
                                 .clip(CircleShape)
                                 .clickable { showProfileMenu = !showProfileMenu }
@@ -356,10 +440,18 @@ fun LibraryScreen(
             // 2. Soft Continue Reading Banner — stays fixed across Libros/Series switches so the layout never jumps!
             if (continueDoc != null) {
                 item(key = "lib_continue_reading", span = { GridItemSpan(maxLineSpan) }, contentType = "continue") {
-                    ContinueReadingSoftBanner(
-                        doc = continueDoc,
-                        onClick = { onOpenDocument(continueDoc.id) }
-                    )
+                    Box(
+                        modifier = Modifier.onGloballyPositioned { coords ->
+                            tourTargets = tourTargets.copy(
+                                continueRect = coords.boundsInWindow().toRootRelative()
+                            )
+                        }
+                    ) {
+                        ContinueReadingSoftBanner(
+                            doc = continueDoc,
+                            onClick = { onOpenDocument(continueDoc.id) }
+                        )
+                    }
                 }
             }
 
@@ -370,6 +462,11 @@ fun LibraryScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onGloballyPositioned { coords ->
+                                tourTargets = tourTargets.copy(
+                                    tabsRect = coords.boundsInWindow().toRootRelative()
+                                )
+                            }
                             .clip(RoundedCornerShape(14.dp))
                             .background(palette.surfaceAlt.copy(alpha = 0.75f))
                             .border(1.dp, palette.border, RoundedCornerShape(14.dp))
@@ -404,7 +501,13 @@ fun LibraryScreen(
 
                     // Search Bar + Square Filter Button on the right (replaces permanent format chip strip!)
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { coords ->
+                                tourTargets = tourTargets.copy(
+                                    searchFilterRect = coords.boundsInWindow().toRootRelative()
+                                )
+                            },
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -708,6 +811,7 @@ fun LibraryScreen(
                 onOpenAccount = { showAccountDialog = true },
                 onOpenFriends = { showFriendsDialog = true },
                 onOpenSettings = { showSettingsSheet = true },
+                onOpenGuide = { showAppGuide = true },
                 onImportDocument = launchImport
             )
 
@@ -724,6 +828,16 @@ fun LibraryScreen(
             LumaActionFeedbackOverlay(
                 event = feedbackEvent,
                 onConsumed = viewModel::clearFeedbackEvent
+            )
+
+            // XLNR-style interactive live-UI spotlight coach-mark tour (launched right after Permissions modal)
+            LumaInteractiveTourOverlay(
+                visible = showInteractiveTour,
+                targets = tourTargets,
+                onFinish = {
+                    showInteractiveTour = false
+                    viewModel.updatePreferences { it.copy(hasCompletedOnboarding = true) }
+                }
             )
         }
     }
@@ -790,7 +904,7 @@ fun LibraryScreen(
         )
     }
 
-    // 3. Standalone App Settings Sheet (ONLY Themes, Typography, Reader & Sources)
+    // 3. Standalone App Settings Sheet (Themes, Typography, Reader, Dictionary, Credits & Tour Replay)
     if (showSettingsSheet) {
         AppSettingsSheet(
             prefs = prefs,
@@ -800,12 +914,56 @@ fun LibraryScreen(
             onToggleSource = viewModel::toggleDictionarySource,
             onDeleteSource = viewModel::deleteDictionarySource,
             onRegenerateCovers = viewModel::regenerateMissingCovers,
+            onReplayOnboarding = {
+                showSettingsSheet = false
+                showPermissionsOnboarding = true
+            },
             onDismiss = { showSettingsSheet = false }
         )
     }
 
-    // Optional first-launch local profile setup (asks ONLY for name & photo — zero accounts/database)
-    if (!userProfile.profileConfigured && !showAccountDialog && !showFriendsDialog && !showSettingsSheet) {
+    // 4. Interactive Illustrated Step-by-Step Guide
+    if (showAppGuide) {
+        LumaAppGuideDialog(
+            documents = documents,
+            onOpenSampleDocument = { docId ->
+                showAppGuide = false
+                viewModel.updatePreferences { it.copy(hasSeenGuide = true) }
+                onOpenDocument(docId)
+            },
+            onDismiss = {
+                showAppGuide = false
+                viewModel.updatePreferences { it.copy(hasSeenGuide = true) }
+            }
+        )
+    }
+
+    // 5. Upfront Permissions Explanation Modal -> seamlessly hands off to XLNR-style Interactive Tour
+    if (showPermissionsOnboarding) {
+        LumaPermissionsOnboardingDialog(
+            onStartTour = {
+                showPermissionsOnboarding = false
+                showInteractiveTour = true
+            },
+            onSkipAll = {
+                showPermissionsOnboarding = false
+                showInteractiveTour = false
+                viewModel.updatePreferences { it.copy(hasCompletedOnboarding = true) }
+            }
+        )
+    }
+
+    // Optional first-launch local profile setup (only after onboarding & spotlight tour have completed)
+    if (preferencesLoaded &&
+        prefs.hasCompletedOnboarding &&
+        !showPermissionsOnboarding &&
+        !showInteractiveTour &&
+        !userProfile.profileConfigured &&
+        !showAccountDialog &&
+        !showFriendsDialog &&
+        !showSettingsSheet &&
+        !showAppGuide
+    ) {
         QuickProfileSetupDialog(
             profile = userProfile,
             onPickAvatar = {

@@ -25,19 +25,32 @@ enum class DocumentFormat(val label: String, val extension: String, val mimeType
     }
 }
 
-enum class ReadingTheme(val displayName: String) {
-    LIGHT("Papel"),
-    SEPIA("Sepia"),
-    SAGE("Salvia"),
-    LAVENDER("Lavanda"),
-    PEACH("Durazno"),
-    SKY("Cielo"),
-    ROSE("Rosa"),
-    LEMON("Limón"),
-    NAVY_MID("Azul marino"),
-    MIDNIGHT("Medianoche"),
-    DARK("Grafito"),
-    AMOLED("AMOLED")
+enum class ReadingTheme(
+    val displayName: String,
+    val isDark: Boolean = false,
+    val isWarmSoft: Boolean = false,
+    val comfortTag: String = ""
+) {
+    // Warm & Soft Daytime Palettes (low eye strain)
+    WARM_CREAM("Crema cálida", isDark = false, isWarmSoft = true, comfortTag = "Papel orgánico"),
+    SEPIA("Sepia", isDark = false, isWarmSoft = true, comfortTag = "Clásico cálido"),
+    SAND("Arena suave", isDark = false, isWarmSoft = true, comfortTag = "Bajo reflejo"),
+    AMBER_SOFT("Ámbar", isDark = false, isWarmSoft = true, comfortTag = "Filtro azul natural"),
+    PEACH("Durazno", isDark = false, isWarmSoft = true, comfortTag = "Pastel tibio"),
+    SAGE("Salvia", isDark = false, isWarmSoft = true, comfortTag = "Descanso visual"),
+    LEMON("Mantequilla", isDark = false, isWarmSoft = true, comfortTag = "Suave solar"),
+    LIGHT("Papel", isDark = false, isWarmSoft = false, comfortTag = "Neutro limpio"),
+    LAVENDER("Lavanda", isDark = false, isWarmSoft = false, comfortTag = "Pastel sereno"),
+    SKY("Cielo", isDark = false, isWarmSoft = false, comfortTag = "Fresco suave"),
+    ROSE("Rosa", isDark = false, isWarmSoft = false, comfortTag = "Rubor suave"),
+
+    // Night Reading Modes (low-glare nocturnal palettes)
+    WARM_NIGHT("Noche cálida", isDark = true, isWarmSoft = true, comfortTag = "Ámbar sin fatiga"),
+    FOREST_NIGHT("Bosque noche", isDark = true, isWarmSoft = true, comfortTag = "Verde sereno"),
+    NAVY_MID("Azul marino", isDark = true, isWarmSoft = false, comfortTag = "Suave nocturno"),
+    MIDNIGHT("Medianoche", isDark = true, isWarmSoft = false, comfortTag = "Bajo brillo"),
+    DARK("Grafito", isDark = true, isWarmSoft = false, comfortTag = "Oscuro neutro"),
+    AMOLED("AMOLED", isDark = true, isWarmSoft = false, comfortTag = "Negro puro")
 }
 
 enum class ReaderFont(val displayName: String, val subtitle: String) {
@@ -174,7 +187,19 @@ data class ReaderPreferences(
     val islandShowCriticalConnectivity: Boolean = true,
     val islandAllowIncomingCalls: Boolean = true,
     val useStandardPageView: Boolean = false,
-    val standardPageFormat: StandardPageFormat = StandardPageFormat.AUTO
+    val standardPageFormat: StandardPageFormat = StandardPageFormat.AUTO,
+    // Soft Visual Comfort & Configurable Night Reading Modes
+    val warmFilterStrength: Float = 0f,
+    val nightModeEnabled: Boolean = false,
+    val nightAutoSchedule: Boolean = false,
+    val nightStartHour: Int = 20,
+    val nightEndHour: Int = 7,
+    val preferredDayTheme: ReadingTheme = ReadingTheme.WARM_CREAM,
+    val preferredNightTheme: ReadingTheme = ReadingTheme.WARM_NIGHT,
+    val nightTextDimming: Float = 0f,
+    val hasSeenGuide: Boolean = false,
+    val hasCompletedOnboarding: Boolean = false,
+    val seededSampleVersion: Int = 0
 )
 
 enum class BlockType {
@@ -206,13 +231,86 @@ data class TocEntry(
     val level: Int = 0
 )
 
+enum class SlideTextAlign { LEFT, CENTER, RIGHT, JUSTIFY }
+enum class SlideVerticalAlign { TOP, MIDDLE, BOTTOM }
+enum class SlideShapeGeometry { RECT, ROUND_RECT, ELLIPSE, LINE }
+
+data class SlideTextRun(
+    val text: String,
+    val fontSizePt: Float = 16f,
+    val isBold: Boolean = false,
+    val isItalic: Boolean = false,
+    val isUnderline: Boolean = false,
+    val colorArgb: Long? = null
+)
+
+data class SlideParagraph(
+    val runs: List<SlideTextRun>,
+    val align: SlideTextAlign = SlideTextAlign.LEFT,
+    val bulletPrefix: String = "",
+    val level: Int = 0
+)
+
+data class SlideTableCell(
+    val text: String,
+    val fillColorArgb: Long? = null,
+    val textColorArgb: Long? = null,
+    val isBold: Boolean = false,
+    val fontSizePt: Float = 11f,
+    val align: SlideTextAlign = SlideTextAlign.LEFT
+)
+
+sealed interface SlideElement {
+    val left: Float
+    val top: Float
+    val width: Float
+    val height: Float
+
+    data class ShapeBox(
+        override val left: Float,
+        override val top: Float,
+        override val width: Float,
+        override val height: Float,
+        val rotationDeg: Float = 0f,
+        val geometry: SlideShapeGeometry = SlideShapeGeometry.RECT,
+        val fillColorArgb: Long? = null,
+        val gradientEndColorArgb: Long? = null,
+        val borderColorArgb: Long? = null,
+        val borderWidthPt: Float = 0f,
+        val verticalAlign: SlideVerticalAlign = SlideVerticalAlign.TOP,
+        val paragraphs: List<SlideParagraph> = emptyList()
+    ) : SlideElement
+
+    data class Picture(
+        override val left: Float,
+        override val top: Float,
+        override val width: Float,
+        override val height: Float,
+        val rotationDeg: Float = 0f,
+        val imagePath: String
+    ) : SlideElement
+
+    data class Table(
+        override val left: Float,
+        override val top: Float,
+        override val width: Float,
+        override val height: Float,
+        val colWeights: List<Float>,
+        val rows: List<List<SlideTableCell>>
+    ) : SlideElement
+}
+
 data class ParsedSlide(
     val index: Int,
     val title: String,
     val subtitle: String = "",
     val bodyBlocks: List<ParsedBlock> = emptyList(),
     val notes: String = "",
-    val imagePaths: List<String> = emptyList()
+    val imagePaths: List<String> = emptyList(),
+    val backgroundColorArgb: Long = 0xFFFFFFFFL,
+    val backgroundGradientEndArgb: Long? = null,
+    val backgroundImagePath: String? = null,
+    val elements: List<SlideElement> = emptyList()
 )
 
 data class ParsedDocument(

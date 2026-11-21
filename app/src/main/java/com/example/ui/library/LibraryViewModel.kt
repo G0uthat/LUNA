@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,6 +71,9 @@ class LibraryViewModel(
     private val _isImporting = MutableStateFlow(false)
     val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
 
+    private val _preferencesLoaded = MutableStateFlow(false)
+    val preferencesLoaded: StateFlow<Boolean> = _preferencesLoaded.asStateFlow()
+
     private val _feedbackEvent = MutableStateFlow<LumaFeedbackEvent?>(null)
     val feedbackEvent: StateFlow<LumaFeedbackEvent?> = _feedbackEvent.asStateFlow()
 
@@ -85,7 +89,16 @@ class LibraryViewModel(
     init {
         viewModelScope.launch {
             repository.ensureDefaultDictionarySources()
-            SampleLibraryGenerator.ensureSampleDocuments(getApplication(), repository)
+            val currentPrefs = preferencesRepository.preferencesFlow.first()
+            _preferencesLoaded.value = true
+            if (repository.getDocumentCount() == 0 ||
+                currentPrefs.seededSampleVersion < SampleLibraryGenerator.CURRENT_SAMPLE_VERSION
+            ) {
+                SampleLibraryGenerator.ensureSampleDocuments(getApplication(), repository)
+                preferencesRepository.updatePreferences {
+                    it.copy(seededSampleVersion = SampleLibraryGenerator.CURRENT_SAMPLE_VERSION)
+                }
+            }
             ensureAllCoversExist(silent = true)
         }
     }

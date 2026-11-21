@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -61,6 +62,17 @@ class PreferencesRepository(private val context: Context) {
         val ISLAND_ALLOW_CALLS = booleanPreferencesKey("island_allow_calls")
         val USE_STANDARD_PAGE_VIEW = booleanPreferencesKey("use_standard_page_view")
         val STANDARD_PAGE_FORMAT = stringPreferencesKey("standard_page_format")
+        val WARM_FILTER_STRENGTH = floatPreferencesKey("warm_filter_strength")
+        val NIGHT_MODE_ENABLED = booleanPreferencesKey("night_mode_enabled")
+        val NIGHT_AUTO_SCHEDULE = booleanPreferencesKey("night_auto_schedule")
+        val NIGHT_START_HOUR = intPreferencesKey("night_start_hour")
+        val NIGHT_END_HOUR = intPreferencesKey("night_end_hour")
+        val PREFERRED_DAY_THEME = stringPreferencesKey("preferred_day_theme")
+        val PREFERRED_NIGHT_THEME = stringPreferencesKey("preferred_night_theme")
+        val NIGHT_TEXT_DIMMING = floatPreferencesKey("night_text_dimming")
+        val HAS_SEEN_GUIDE = booleanPreferencesKey("has_seen_guide")
+        val HAS_COMPLETED_ONBOARDING = booleanPreferencesKey("has_completed_onboarding")
+        val SEEDED_SAMPLE_VERSION = intPreferencesKey("seeded_sample_version")
     }
 
     val preferencesFlow: Flow<ReaderPreferences> = context.readerDataStore.data.map { prefs ->
@@ -96,7 +108,18 @@ class PreferencesRepository(private val context: Context) {
             islandShowCriticalConnectivity = prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] ?: true,
             islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true,
             useStandardPageView = prefs[Keys.USE_STANDARD_PAGE_VIEW] ?: false,
-            standardPageFormat = enumOrDefault(prefs[Keys.STANDARD_PAGE_FORMAT], StandardPageFormat.AUTO)
+            standardPageFormat = enumOrDefault(prefs[Keys.STANDARD_PAGE_FORMAT], StandardPageFormat.AUTO),
+            warmFilterStrength = (prefs[Keys.WARM_FILTER_STRENGTH] ?: 0f).coerceIn(0f, 0.45f),
+            nightModeEnabled = prefs[Keys.NIGHT_MODE_ENABLED] ?: false,
+            nightAutoSchedule = prefs[Keys.NIGHT_AUTO_SCHEDULE] ?: false,
+            nightStartHour = (prefs[Keys.NIGHT_START_HOUR] ?: 20).coerceIn(0, 23),
+            nightEndHour = (prefs[Keys.NIGHT_END_HOUR] ?: 7).coerceIn(0, 23),
+            preferredDayTheme = enumOrDefault(prefs[Keys.PREFERRED_DAY_THEME], ReadingTheme.WARM_CREAM),
+            preferredNightTheme = enumOrDefault(prefs[Keys.PREFERRED_NIGHT_THEME], ReadingTheme.WARM_NIGHT),
+            nightTextDimming = (prefs[Keys.NIGHT_TEXT_DIMMING] ?: 0f).coerceIn(0f, 0.38f),
+            hasSeenGuide = prefs[Keys.HAS_SEEN_GUIDE] ?: false,
+            hasCompletedOnboarding = prefs[Keys.HAS_COMPLETED_ONBOARDING] ?: false,
+            seededSampleVersion = prefs[Keys.SEEDED_SAMPLE_VERSION] ?: 0
         )
     }
 
@@ -134,7 +157,18 @@ class PreferencesRepository(private val context: Context) {
                 islandShowCriticalConnectivity = prefs[Keys.ISLAND_CRITICAL_CONNECTIVITY] ?: true,
                 islandAllowIncomingCalls = prefs[Keys.ISLAND_ALLOW_CALLS] ?: true,
                 useStandardPageView = prefs[Keys.USE_STANDARD_PAGE_VIEW] ?: false,
-                standardPageFormat = enumOrDefault(prefs[Keys.STANDARD_PAGE_FORMAT], StandardPageFormat.AUTO)
+                standardPageFormat = enumOrDefault(prefs[Keys.STANDARD_PAGE_FORMAT], StandardPageFormat.AUTO),
+                warmFilterStrength = (prefs[Keys.WARM_FILTER_STRENGTH] ?: 0f).coerceIn(0f, 0.45f),
+                nightModeEnabled = prefs[Keys.NIGHT_MODE_ENABLED] ?: false,
+                nightAutoSchedule = prefs[Keys.NIGHT_AUTO_SCHEDULE] ?: false,
+                nightStartHour = (prefs[Keys.NIGHT_START_HOUR] ?: 20).coerceIn(0, 23),
+                nightEndHour = (prefs[Keys.NIGHT_END_HOUR] ?: 7).coerceIn(0, 23),
+                preferredDayTheme = enumOrDefault(prefs[Keys.PREFERRED_DAY_THEME], ReadingTheme.WARM_CREAM),
+                preferredNightTheme = enumOrDefault(prefs[Keys.PREFERRED_NIGHT_THEME], ReadingTheme.WARM_NIGHT),
+                nightTextDimming = (prefs[Keys.NIGHT_TEXT_DIMMING] ?: 0f).coerceIn(0f, 0.38f),
+                hasSeenGuide = prefs[Keys.HAS_SEEN_GUIDE] ?: false,
+                hasCompletedOnboarding = prefs[Keys.HAS_COMPLETED_ONBOARDING] ?: false,
+                seededSampleVersion = prefs[Keys.SEEDED_SAMPLE_VERSION] ?: 0
             )
             val updated = transform(current)
             prefs[Keys.THEME] = updated.theme.name
@@ -168,6 +202,17 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.ISLAND_ALLOW_CALLS] = updated.islandAllowIncomingCalls
             prefs[Keys.USE_STANDARD_PAGE_VIEW] = updated.useStandardPageView
             prefs[Keys.STANDARD_PAGE_FORMAT] = updated.standardPageFormat.name
+            prefs[Keys.WARM_FILTER_STRENGTH] = updated.warmFilterStrength.coerceIn(0f, 0.45f)
+            prefs[Keys.NIGHT_MODE_ENABLED] = updated.nightModeEnabled
+            prefs[Keys.NIGHT_AUTO_SCHEDULE] = updated.nightAutoSchedule
+            prefs[Keys.NIGHT_START_HOUR] = updated.nightStartHour.coerceIn(0, 23)
+            prefs[Keys.NIGHT_END_HOUR] = updated.nightEndHour.coerceIn(0, 23)
+            prefs[Keys.PREFERRED_DAY_THEME] = updated.preferredDayTheme.name
+            prefs[Keys.PREFERRED_NIGHT_THEME] = updated.preferredNightTheme.name
+            prefs[Keys.NIGHT_TEXT_DIMMING] = updated.nightTextDimming.coerceIn(0f, 0.38f)
+            prefs[Keys.HAS_SEEN_GUIDE] = updated.hasSeenGuide
+            prefs[Keys.HAS_COMPLETED_ONBOARDING] = updated.hasCompletedOnboarding
+            prefs[Keys.SEEDED_SAMPLE_VERSION] = updated.seededSampleVersion
         }
     }
 

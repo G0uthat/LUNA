@@ -9,6 +9,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Group
+import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Slideshow
@@ -66,21 +69,412 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextGeometricTransform
 import com.example.data.model.UserProfile
+import kotlin.math.PI
+import kotlin.math.pow
+import kotlin.math.sin
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LumaBrandFontFamily
 import com.example.ui.theme.LumaLetteringFontFamily
 
 /**
- * Wide, extended medium-bold brush-lettering logotype for "Luma" using Kaushan Script,
- * horizontally elongated across the top header with a sleek tapered ink flourish
- * and high-contrast luminous tuning for dark themes.
+ * Vectorized calligraphic "Luma" brush-lettering wordmark faithful to the custom signature:
+ * - Flowing cursive capital 'L' with upper-left curl, upper-right loop, bold diagonal downstroke,
+ *   and horizontal lower-left figure-8 loop sweeping seamlessly into 'u'.
+ * - Connected brush-lettered 'u', 'm', 'a' with tapered thick downstrokes and hairline upstrokes.
+ * - Long trailing swash exiting 'a' into a playful circular loop-de-loop and tilted 5-pointed star.
+ */
+@Composable
+fun LumaCalligraphicLogo(
+    modifier: Modifier = Modifier,
+    tintOverride: Color? = null,
+    accentOverride: Color? = null
+) {
+    val palette = LocalFolioPalette.current
+    val primaryInk = tintOverride ?: if (palette.isDark) Color.White else palette.ink
+    val accentInk = accentOverride ?: if (palette.isDark) {
+        lerp(palette.accent, Color.White, 0.34f)
+    } else {
+        palette.accent
+    }
+    val midInk = remember(primaryInk, accentInk, palette.isDark) {
+        if (palette.isDark) lerp(Color.White, palette.ink, 0.14f)
+        else lerp(primaryInk, accentInk, 0.22f)
+    }
+
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        if (w <= 4f || h <= 4f) return@Canvas
+
+        // Fit 1000 x 340 normalized calligraphic viewbox preserving exact aspect ratio
+        val vbW = 1000f
+        val vbH = 340f
+        val scale = minOf(w / vbW, h / vbH)
+        val dx = (w - vbW * scale) * 0.08f
+        val dy = (h - vbH * scale) * 0.5f
+
+        fun pt(x: Float, y: Float): Offset = Offset(dx + x * scale, dy + y * scale)
+
+        val wordBrush = Brush.horizontalGradient(
+            colors = listOf(primaryInk, primaryInk, midInk, accentInk),
+            startX = dx,
+            endX = dx + vbW * scale
+        )
+        val starBrush = Brush.linearGradient(
+            colors = listOf(lerp(primaryInk, accentInk, 0.55f), accentInk),
+            start = pt(860f, 220f),
+            end = pt(985f, 100f)
+        )
+
+        val baseStroke = (scale * 9.8f).coerceAtLeast(1.6f)
+        val boldDownstroke = (scale * 22.5f).coerceAtLeast(3.4f)
+        val mediumDownstroke = (scale * 17.5f).coerceAtLeast(2.7f)
+        val swashAccentStroke = (scale * 13.5f).coerceAtLeast(2.2f)
+
+        // 1. Continuous flowing cursive skeleton: L -> u -> m -> a -> trailing swash -> mini-loop
+        val cursivePath = Path().apply {
+            // Capital L: tiny upper-left curl -> graceful wave -> upper-right oval loop
+            moveTo(pt(72f, 152f).x, pt(72f, 152f).y)
+            cubicTo(
+                pt(56f, 146f).x, pt(56f, 146f).y,
+                pt(64f, 114f).x, pt(64f, 114f).y,
+                pt(104f, 118f).x, pt(104f, 118f).y
+            )
+            cubicTo(
+                pt(154f, 124f).x, pt(154f, 124f).y,
+                pt(204f, 174f).x, pt(204f, 174f).y,
+                pt(254f, 166f).x, pt(254f, 166f).y
+            )
+            cubicTo(
+                pt(292f, 158f).x, pt(292f, 158f).y,
+                pt(292f, 116f).x, pt(292f, 116f).y,
+                pt(262f, 116f).x, pt(262f, 116f).y
+            )
+            // Diagonal L stem sweeping down-left into bottom-left figure-8 loop
+            cubicTo(
+                pt(226f, 116f).x, pt(226f, 116f).y,
+                pt(178f, 186f).x, pt(178f, 186f).y,
+                pt(118f, 242f).x, pt(118f, 242f).y
+            )
+            cubicTo(
+                pt(82f, 276f).x, pt(82f, 276f).y,
+                pt(44f, 274f).x, pt(44f, 274f).y,
+                pt(40f, 248f).x, pt(40f, 248f).y
+            )
+            cubicTo(
+                pt(36f, 224f).x, pt(36f, 224f).y,
+                pt(66f, 222f).x, pt(66f, 222f).y,
+                pt(102f, 250f).x, pt(102f, 250f).y
+            )
+            // Baseline wave out of L flowing smoothly into 'u'
+            cubicTo(
+                pt(142f, 280f).x, pt(142f, 280f).y,
+                pt(212f, 274f).x, pt(212f, 274f).y,
+                pt(284f, 200f).x, pt(284f, 200f).y
+            )
+            // 'u' first downstroke & trough
+            cubicTo(
+                pt(268f, 222f).x, pt(268f, 222f).y,
+                pt(250f, 260f).x, pt(250f, 260f).y,
+                pt(276f, 270f).x, pt(276f, 270f).y
+            )
+            cubicTo(
+                pt(304f, 280f).x, pt(304f, 280f).y,
+                pt(334f, 246f).x, pt(334f, 246f).y,
+                pt(352f, 208f).x, pt(352f, 208f).y
+            )
+            // 'u' second downstroke & exit connector to 'm'
+            cubicTo(
+                pt(340f, 238f).x, pt(340f, 238f).y,
+                pt(338f, 270f).x, pt(338f, 270f).y,
+                pt(368f, 272f).x, pt(368f, 272f).y
+            )
+            cubicTo(
+                pt(404f, 274f).x, pt(404f, 274f).y,
+                pt(436f, 236f).x, pt(436f, 236f).y,
+                pt(456f, 204f).x, pt(456f, 204f).y
+            )
+            // 'm' first leg down
+            cubicTo(
+                pt(444f, 232f).x, pt(444f, 232f).y,
+                pt(432f, 256f).x, pt(432f, 256f).y,
+                pt(424f, 270f).x, pt(424f, 270f).y
+            )
+            // 'm' retrace up + first arch + second leg down
+            cubicTo(
+                pt(446f, 236f).x, pt(446f, 236f).y,
+                pt(474f, 198f).x, pt(474f, 198f).y,
+                pt(502f, 206f).x, pt(502f, 206f).y
+            )
+            cubicTo(
+                pt(520f, 212f).x, pt(520f, 212f).y,
+                pt(502f, 248f).x, pt(502f, 248f).y,
+                pt(486f, 272f).x, pt(486f, 272f).y
+            )
+            // 'm' retrace up + second arch + third leg down
+            cubicTo(
+                pt(508f, 236f).x, pt(508f, 236f).y,
+                pt(540f, 198f).x, pt(540f, 198f).y,
+                pt(562f, 210f).x, pt(562f, 210f).y
+            )
+            cubicTo(
+                pt(578f, 220f).x, pt(578f, 220f).y,
+                pt(546f, 266f).x, pt(546f, 266f).y,
+                pt(572f, 276f).x, pt(572f, 276f).y
+            )
+            // Connector into 'a' crest
+            cubicTo(
+                pt(602f, 284f).x, pt(602f, 284f).y,
+                pt(636f, 212f).x, pt(636f, 212f).y,
+                pt(688f, 204f).x, pt(688f, 204f).y
+            )
+            // 'a' round bowl (counter-clockwise)
+            cubicTo(
+                pt(648f, 198f).x, pt(648f, 198f).y,
+                pt(614f, 234f).x, pt(614f, 234f).y,
+                pt(626f, 264f).x, pt(626f, 264f).y
+            )
+            cubicTo(
+                pt(638f, 286f).x, pt(638f, 286f).y,
+                pt(676f, 272f).x, pt(676f, 272f).y,
+                pt(692f, 234f).x, pt(692f, 234f).y
+            )
+            // 'a' right stem down into long graceful trailing swash
+            cubicTo(
+                pt(682f, 260f).x, pt(682f, 260f).y,
+                pt(698f, 286f).x, pt(698f, 286f).y,
+                pt(746f, 284f).x, pt(746f, 284f).y
+            )
+            // Sweeping rise into the playful little circular loop-de-loop
+            cubicTo(
+                pt(796f, 282f).x, pt(796f, 282f).y,
+                pt(832f, 212f).x, pt(832f, 212f).y,
+                pt(872f, 210f).x, pt(872f, 210f).y
+            )
+            cubicTo(
+                pt(892f, 210f).x, pt(892f, 210f).y,
+                pt(892f, 242f).x, pt(892f, 242f).y,
+                pt(878f, 242f).x, pt(878f, 242f).y
+            )
+            cubicTo(
+                pt(864f, 242f).x, pt(864f, 242f).y,
+                pt(866f, 216f).x, pt(866f, 216f).y,
+                pt(892f, 206f).x, pt(892f, 206f).y
+            )
+            // Final flick up-right right under the star
+            cubicTo(
+                pt(918f, 198f).x, pt(918f, 198f).y,
+                pt(932f, 184f).x, pt(932f, 184f).y,
+                pt(938f, 166f).x, pt(938f, 166f).y
+            )
+        }
+
+        // 2. Crisp tilted 5-pointed calligraphic star (continuous hand-lettered star)
+        val starPath = Path().apply {
+            val sBottomLeft = pt(912f, 174f)
+            val sTop = pt(942f, 108f)
+            val sBottomRight = pt(964f, 164f)
+            val sUpperLeft = pt(898f, 138f)
+            val sUpperRight = pt(984f, 104f)
+            moveTo(sBottomLeft.x, sBottomLeft.y)
+            lineTo(sTop.x, sTop.y)
+            lineTo(sBottomRight.x, sBottomRight.y)
+            lineTo(sUpperLeft.x, sUpperLeft.y)
+            lineTo(sUpperRight.x, sUpperRight.y)
+            lineTo(sBottomLeft.x, sBottomLeft.y)
+        }
+
+        // Subtle luminous dark-mode halo behind the lettering
+        if (palette.isDark) {
+            drawPath(
+                path = cursivePath,
+                color = accentInk.copy(alpha = 0.20f),
+                style = Stroke(
+                    width = boldDownstroke * 1.32f,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+            drawPath(
+                path = starPath,
+                color = accentInk.copy(alpha = 0.24f),
+                style = Stroke(
+                    width = baseStroke * 2.1f,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+        }
+
+        // Base flowing hairline-to-medium skeleton
+        drawPath(
+            path = cursivePath,
+            brush = wordBrush,
+            style = Stroke(
+                width = baseStroke,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
+        )
+
+        // 3. Tapered thick brush-lettering downstrokes ("toques gruesos como lettering")
+        // Capital L: sweeping diagonal main downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(258f, 120f),
+            p1 = pt(218f, 138f),
+            p2 = pt(174f, 192f),
+            p3 = pt(116f, 244f),
+            brush = wordBrush,
+            maxWidth = boldDownstroke
+        )
+        // Capital L: subtle calligraphic swell on upper crest
+        drawTaperedCubicStroke(
+            p0 = pt(80f, 120f),
+            p1 = pt(124f, 116f),
+            p2 = pt(172f, 146f),
+            p3 = pt(220f, 162f),
+            brush = wordBrush,
+            maxWidth = swashAccentStroke
+        )
+        // Capital L: bold bottom-left flourish swell
+        drawTaperedCubicStroke(
+            p0 = pt(56f, 232f),
+            p1 = pt(92f, 242f),
+            p2 = pt(136f, 276f),
+            p3 = pt(196f, 266f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+
+        // 'u' 1st downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(282f, 202f),
+            p1 = pt(268f, 224f),
+            p2 = pt(256f, 256f),
+            p3 = pt(276f, 270f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+        // 'u' 2nd downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(350f, 210f),
+            p1 = pt(342f, 236f),
+            p2 = pt(342f, 264f),
+            p3 = pt(364f, 272f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+
+        // 'm' 1st downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(454f, 206f),
+            p1 = pt(444f, 228f),
+            p2 = pt(434f, 252f),
+            p3 = pt(424f, 270f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+        // 'm' 2nd downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(504f, 208f),
+            p1 = pt(512f, 222f),
+            p2 = pt(498f, 250f),
+            p3 = pt(486f, 272f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+        // 'm' 3rd downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(562f, 212f),
+            p1 = pt(570f, 228f),
+            p2 = pt(552f, 262f),
+            p3 = pt(570f, 275f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+
+        // 'a' left curved belly downstroke
+        drawTaperedCubicStroke(
+            p0 = pt(676f, 204f),
+            p1 = pt(644f, 204f),
+            p2 = pt(616f, 236f),
+            p3 = pt(632f, 268f),
+            brush = wordBrush,
+            maxWidth = mediumDownstroke
+        )
+        // 'a' right stem downstroke flowing into swash
+        drawTaperedCubicStroke(
+            p0 = pt(691f, 235f),
+            p1 = pt(684f, 258f),
+            p2 = pt(698f, 282f),
+            p3 = pt(744f, 284f),
+            brush = wordBrush,
+            maxWidth = swashAccentStroke
+        )
+
+        // 4. Crisp 5-pointed calligraphic star with brush emphasis on primary diagonals
+        drawPath(
+            path = starPath,
+            brush = starBrush,
+            style = Stroke(
+                width = baseStroke * 0.94f,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
+        )
+        drawTaperedCubicStroke(
+            p0 = pt(942f, 108f),
+            p1 = pt(948f, 126f),
+            p2 = pt(956f, 146f),
+            p3 = pt(964f, 164f),
+            brush = starBrush,
+            maxWidth = swashAccentStroke * 0.92f
+        )
+    }
+}
+
+/**
+ * Draws a pressure-sensitive tapered brush stroke along a cubic Bezier curve using
+ * smooth sine-bell width modulation (hairline entry -> thick calligraphic belly -> hairline exit).
+ */
+private fun DrawScope.drawTaperedCubicStroke(
+    p0: Offset,
+    p1: Offset,
+    p2: Offset,
+    p3: Offset,
+    brush: Brush,
+    maxWidth: Float,
+    steps: Int = 20
+) {
+    var prev = p0
+    for (i in 1..steps) {
+        val t = i.toFloat() / steps
+        val u = 1f - t
+        val x = u * u * u * p0.x + 3f * u * u * t * p1.x + 3f * u * t * t * p2.x + t * t * t * p3.x
+        val y = u * u * u * p0.y + 3f * u * u * t * p1.y + 3f * u * t * t * p2.y + t * t * t * p3.y
+        val curr = Offset(x, y)
+        val midT = (i - 0.5f) / steps
+        val pressure = sin(midT * PI).toFloat().coerceAtLeast(0f).pow(0.78f)
+        val segWidth = (maxWidth * pressure).coerceAtLeast(1.2f)
+        drawLine(
+            brush = brush,
+            start = prev,
+            end = curr,
+            strokeWidth = segWidth,
+            cap = StrokeCap.Round
+        )
+        prev = curr
+    }
+}
+
+/**
+ * Wide calligraphic header wordmark for "Luma" paired with the live library counter subtitle.
  */
 @Composable
 fun LumaWideWordmark(
@@ -89,133 +483,29 @@ fun LumaWideWordmark(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
-    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
 
-    BoxWithConstraints(modifier = modifier) {
-        val availDp = maxWidth.value
-        val targetFontSp = ((availDp * 0.165f) / fontScale.coerceAtMost(1.25f)).coerceIn(36f, 46f)
-        // Extended horizontal brush-lettering stretch proportional to available bar width
-        val horizontalStretch = (availDp / 215f).coerceIn(1.22f, 1.42f)
-        val letterTrackingSp = ((availDp - 200f) * 0.025f).coerceIn(1.6f, 4.2f)
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        LumaCalligraphicLogo(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp)
+                .padding(end = 6.dp)
+                .testTag("luma_brand_wordmark")
+        )
 
-        val wordmarkBrush = remember(palette.ink, palette.accent, palette.isDark) {
-            if (palette.isDark) {
-                // High-contrast luminous ink for Dark / Midnight / Navy / AMOLED
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        Color.White,
-                        lerp(Color.White, palette.ink, 0.20f),
-                        lerp(Color.White, palette.accent, 0.34f)
-                    )
-                )
-            } else {
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        palette.ink,
-                        palette.ink,
-                        lerp(palette.ink, palette.accent, 0.44f)
-                    )
-                )
-            }
-        }
-
-        val wordmarkShadow = remember(palette.accent, palette.isDark) {
-            if (palette.isDark) {
-                Shadow(
-                    color = palette.accent.copy(alpha = 0.34f),
-                    offset = Offset(0f, 1.5f),
-                    blurRadius = 11f
-                )
-            } else {
-                Shadow(
-                    color = Color.Black.copy(alpha = 0.08f),
-                    offset = Offset(0f, 1.5f),
-                    blurRadius = 3f
-                )
-            }
-        }
-
-        val swashStart = if (palette.isDark) {
-            lerp(palette.accent, Color.White, 0.32f).copy(alpha = 0.90f)
-        } else {
-            palette.accent.copy(alpha = 0.85f)
-        }
-        val swashMid = if (palette.isDark) {
-            Color.White.copy(alpha = 0.48f)
-        } else {
-            palette.ink.copy(alpha = 0.36f)
-        }
-
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
-        ) {
-            Text(
-                text = "Luma",
-                style = TextStyle(
-                    brush = wordmarkBrush,
-                    shadow = wordmarkShadow,
-                    fontFamily = LumaLetteringFontFamily,
-                    fontWeight = FontWeight.Normal,
-                    fontSize = targetFontSp.sp,
-                    lineHeight = (targetFontSp * 1.18f).sp,
-                    letterSpacing = letterTrackingSp.sp,
-                    textGeometricTransform = TextGeometricTransform(scaleX = horizontalStretch)
-                ),
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Visible,
-                modifier = Modifier
-                    .padding(start = 2.dp, end = 10.dp)
-                    .testTag("luma_brand_wordmark")
-            )
-
-            // Sleek extended calligraphic flourish spanning across the header
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .height(7.dp)
-                    .padding(start = 2.dp)
-            ) {
-                val w = size.width
-                val h = size.height
-                val swashPath = Path().apply {
-                    moveTo(0f, h * 0.62f)
-                    cubicTo(
-                        w * 0.28f, h * 0.08f,
-                        w * 0.66f, h * 0.95f,
-                        w, h * 0.26f
-                    )
-                }
-                drawPath(
-                    path = swashPath,
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            swashStart,
-                            swashMid,
-                            Color.Transparent
-                        )
-                    ),
-                    style = Stroke(
-                        width = 2.1.dp.toPx(),
-                        cap = StrokeCap.Round
-                    )
-                )
-            }
-
-            Spacer(Modifier.height(2.dp))
-
-            Text(
-                text = "$bookCount libros · $seriesCount series",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.5.sp,
-                color = palette.inkMuted.copy(alpha = if (palette.isDark) 0.88f else 0.80f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 3.dp)
-            )
-        }
+        Text(
+            text = "$bookCount libros · $seriesCount series",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.5.sp,
+            color = palette.inkMuted.copy(alpha = if (palette.isDark) 0.88f else 0.80f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 6.dp)
+        )
     }
 }
 
@@ -236,6 +526,7 @@ fun ProfileDropdownCapsuleOverlay(
     onOpenAccount: () -> Unit,
     onOpenFriends: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenGuide: () -> Unit,
     onImportDocument: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
@@ -244,13 +535,13 @@ fun ProfileDropdownCapsuleOverlay(
     val innerPadPx = with(density) { 10.dp.toPx() }
     val capsuleTopOffsetPx = (anchorTopPx - innerPadPx).coerceAtLeast(0f).roundToInt()
 
-    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
+    val smoothEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
     Box(modifier = Modifier.fillMaxSize()) {
         // Gentle 15% dim + subtle frosted veil (pairs with the 18% background blur in LibraryScreen)
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = tween(190, easing = smoothEasing)),
-            exit = fadeOut(animationSpec = tween(155, easing = smoothEasing))
+            enter = fadeIn(animationSpec = tween(220, easing = smoothEasing)),
+            exit = fadeOut(animationSpec = tween(175, easing = smoothEasing))
         ) {
             Box(
                 modifier = Modifier
@@ -275,17 +566,23 @@ fun ProfileDropdownCapsuleOverlay(
                 .padding(end = 8.dp),
             enter = scaleIn(
                 initialScale = 0.88f,
-                transformOrigin = TransformOrigin(0.88f, 0.08f),
+                transformOrigin = TransformOrigin(0.88f, 0.06f),
                 animationSpec = spring(
-                    dampingRatio = 0.86f,
-                    stiffness = 440f
+                    dampingRatio = 0.84f,
+                    stiffness = 380f
                 )
-            ) + fadeIn(animationSpec = tween(175, easing = smoothEasing)),
+            ) + slideInVertically(
+                initialOffsetY = { -10 },
+                animationSpec = spring(dampingRatio = 0.86f, stiffness = 380f)
+            ) + fadeIn(animationSpec = tween(200, easing = smoothEasing)),
             exit = scaleOut(
-                targetScale = 0.90f,
-                transformOrigin = TransformOrigin(0.88f, 0.08f),
-                animationSpec = tween(155, easing = smoothEasing)
-            ) + fadeOut(animationSpec = tween(135, easing = smoothEasing))
+                targetScale = 0.91f,
+                transformOrigin = TransformOrigin(0.88f, 0.06f),
+                animationSpec = tween(175, easing = smoothEasing)
+            ) + slideOutVertically(
+                targetOffsetY = { -8 },
+                animationSpec = tween(165, easing = smoothEasing)
+            ) + fadeOut(animationSpec = tween(155, easing = smoothEasing))
         ) {
             val capsuleShape = RoundedCornerShape(32.dp)
             val accountSubtitle = remember(userProfile.username) {
@@ -415,7 +712,24 @@ fun ProfileDropdownCapsuleOverlay(
                     testTag = "profile_menu_settings_item"
                 )
 
-                // 3. IMPORTAR (EPUB, PDF, DOCX, TXT)
+                // 2b. GUÍA (Guía ilustrada paso a paso)
+                ProfileCapsuleActionRow(
+                    title = "GUÍA",
+                    subtitle = "Cómo usar Luma",
+                    subtitleHighlight = false,
+                    icon = Icons.Rounded.MenuBook,
+                    iconContentDescription = "Abrir guía de uso de Luma",
+                    badgeCount = 0,
+                    isAccentPrimary = false,
+                    isLoading = false,
+                    onClick = {
+                        onDismiss()
+                        onOpenGuide()
+                    },
+                    testTag = "profile_menu_guide_item"
+                )
+
+                // 3. IMPORTAR (EPUB, PDF, DOCX, PPTX, TXT, FB2)
                 ProfileCapsuleActionRow(
                     title = "IMPORTAR",
                     subtitle = if (isImporting) "Importando…" else "EPUB · PDF · DOCX · PPTX",
@@ -590,12 +904,12 @@ fun LibraryFilterDropdownOverlay(
         )
     }
 
-    val smoothFilterEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
+    val smoothFilterEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = tween(190, easing = smoothFilterEasing)),
-            exit = fadeOut(animationSpec = tween(155, easing = smoothFilterEasing))
+            enter = fadeIn(animationSpec = tween(220, easing = smoothFilterEasing)),
+            exit = fadeOut(animationSpec = tween(175, easing = smoothFilterEasing))
         ) {
             Box(
                 modifier = Modifier
@@ -621,15 +935,21 @@ fun LibraryFilterDropdownOverlay(
                 initialScale = 0.88f,
                 transformOrigin = TransformOrigin(0.90f, 0.05f),
                 animationSpec = spring(
-                    dampingRatio = 0.86f,
-                    stiffness = 440f
+                    dampingRatio = 0.84f,
+                    stiffness = 380f
                 )
-            ) + fadeIn(animationSpec = tween(175, easing = smoothFilterEasing)),
+            ) + slideInVertically(
+                initialOffsetY = { -10 },
+                animationSpec = spring(dampingRatio = 0.86f, stiffness = 380f)
+            ) + fadeIn(animationSpec = tween(200, easing = smoothFilterEasing)),
             exit = scaleOut(
-                targetScale = 0.90f,
+                targetScale = 0.91f,
                 transformOrigin = TransformOrigin(0.90f, 0.05f),
-                animationSpec = tween(155, easing = smoothFilterEasing)
-            ) + fadeOut(animationSpec = tween(135, easing = smoothFilterEasing))
+                animationSpec = tween(175, easing = smoothFilterEasing)
+            ) + slideOutVertically(
+                targetOffsetY = { -8 },
+                animationSpec = tween(165, easing = smoothFilterEasing)
+            ) + fadeOut(animationSpec = tween(155, easing = smoothFilterEasing))
         ) {
             val capsuleShape = RoundedCornerShape(32.dp)
             Column(

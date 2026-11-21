@@ -9,6 +9,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -111,7 +113,7 @@ fun LumaFloatingDropdownDialog(
             isDismissing = true
             isVisible = false
             scope.launch {
-                delay(165L)
+                delay(185L)
                 onDismiss()
             }
         }
@@ -124,7 +126,7 @@ fun LumaFloatingDropdownDialog(
         }
     }
 
-    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
+    val smoothEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
 
     Dialog(
         onDismissRequest = { if (dismissOnScrimClick) triggerDismiss() },
@@ -184,15 +186,24 @@ fun LumaFloatingDropdownDialog(
                         initialScale = 0.88f,
                         transformOrigin = transformOrigin,
                         animationSpec = spring(
-                            dampingRatio = 0.86f,
-                            stiffness = 430f
+                            dampingRatio = 0.84f,
+                            stiffness = 380f
                         )
-                    ) + fadeIn(animationSpec = tween(175, easing = smoothEasing)),
+                    ) + slideInVertically(
+                        initialOffsetY = { -16 },
+                        animationSpec = spring(
+                            dampingRatio = 0.86f,
+                            stiffness = 390f
+                        )
+                    ) + fadeIn(animationSpec = tween(210, easing = smoothEasing)),
                     exit = scaleOut(
-                        targetScale = 0.90f,
+                        targetScale = 0.91f,
                         transformOrigin = transformOrigin,
-                        animationSpec = tween(155, easing = smoothEasing)
-                    ) + fadeOut(animationSpec = tween(140, easing = smoothEasing))
+                        animationSpec = tween(175, easing = smoothEasing)
+                    ) + slideOutVertically(
+                        targetOffsetY = { -10 },
+                        animationSpec = tween(175, easing = smoothEasing)
+                    ) + fadeOut(animationSpec = tween(160, easing = smoothEasing))
                 ) {
                     Column(
                         modifier = Modifier

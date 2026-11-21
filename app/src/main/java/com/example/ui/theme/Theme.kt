@@ -186,6 +186,78 @@ fun paletteFor(theme: ReadingTheme): FolioPalette = when (theme) {
         border = DarkBorder,
         borderShadow = DarkBorderShadow
     )
+    ReadingTheme.WARM_CREAM -> FolioPalette(
+        theme = theme,
+        isDark = false,
+        background = WarmCreamBg,
+        surface = WarmCreamSurface,
+        surfaceAlt = WarmCreamSurfaceAlt,
+        ink = WarmCreamInk,
+        inkMuted = WarmCreamInkMuted,
+        accent = WarmCreamAccent,
+        accentShadow = WarmCreamAccentShadow,
+        accentSoft = Color(0xFFF4E1D2),
+        border = WarmCreamBorder,
+        borderShadow = WarmCreamBorderShadow
+    )
+    ReadingTheme.SAND -> FolioPalette(
+        theme = theme,
+        isDark = false,
+        background = SandBg,
+        surface = SandSurface,
+        surfaceAlt = SandSurfaceAlt,
+        ink = SandInk,
+        inkMuted = SandInkMuted,
+        accent = SandAccent,
+        accentShadow = SandAccentShadow,
+        accentSoft = Color(0xFFEBDDD0),
+        border = SandBorder,
+        borderShadow = SandBorderShadow
+    )
+    ReadingTheme.AMBER_SOFT -> FolioPalette(
+        theme = theme,
+        isDark = false,
+        background = AmberSoftBg,
+        surface = AmberSoftSurface,
+        surfaceAlt = AmberSoftSurfaceAlt,
+        ink = AmberSoftInk,
+        inkMuted = AmberSoftInkMuted,
+        accent = AmberSoftAccent,
+        accentShadow = AmberSoftAccentShadow,
+        accentSoft = Color(0xFFF1DCBE),
+        border = AmberSoftBorder,
+        borderShadow = AmberSoftBorderShadow
+    )
+    ReadingTheme.WARM_NIGHT -> FolioPalette(
+        theme = theme,
+        isDark = true,
+        background = WarmNightBg,
+        surface = WarmNightSurface,
+        surfaceAlt = WarmNightSurfaceAlt,
+        ink = WarmNightInk,
+        inkMuted = WarmNightInkMuted,
+        accent = WarmNightAccent,
+        accentShadow = WarmNightAccentShadow,
+        accentSoft = Color(0xFF3A2A1B),
+        border = WarmNightBorder,
+        borderShadow = WarmNightBorderShadow,
+        onAccent = Color(0xFF1F160E)
+    )
+    ReadingTheme.FOREST_NIGHT -> FolioPalette(
+        theme = theme,
+        isDark = true,
+        background = ForestNightBg,
+        surface = ForestNightSurface,
+        surfaceAlt = ForestNightSurfaceAlt,
+        ink = ForestNightInk,
+        inkMuted = ForestNightInkMuted,
+        accent = ForestNightAccent,
+        accentShadow = ForestNightAccentShadow,
+        accentSoft = Color(0xFF1C352B),
+        border = ForestNightBorder,
+        borderShadow = ForestNightBorderShadow,
+        onAccent = Color(0xFF0D1D17)
+    )
     ReadingTheme.AMOLED -> FolioPalette(
         theme = theme,
         isDark = true,
@@ -202,7 +274,51 @@ fun paletteFor(theme: ReadingTheme): FolioPalette = when (theme) {
     )
 }
 
-val LocalFolioPalette = staticCompositionLocalOf { paletteFor(ReadingTheme.LIGHT) }
+/**
+ * Gently softens ink luminance on dark themes to eliminate text halation / glare in dark rooms.
+ */
+fun FolioPalette.withSoftNightDimming(dimming: Float): FolioPalette {
+    val clamped = dimming.coerceIn(0f, 0.40f)
+    if (!isDark || clamped <= 0.01f) return this
+    return copy(
+        ink = androidx.compose.ui.graphics.lerp(ink, background, clamped * 0.45f),
+        inkMuted = androidx.compose.ui.graphics.lerp(inkMuted, background, clamped * 0.35f)
+    )
+}
+
+/**
+ * Resolves whether the current clock hour falls inside the configured night reading window.
+ */
+fun isHourInNightWindow(currentHour: Int, startHour: Int, endHour: Int): Boolean {
+    val h = currentHour.coerceIn(0, 23)
+    val start = startHour.coerceIn(0, 23)
+    val end = endHour.coerceIn(0, 23)
+    return when {
+        start == end -> false
+        start > end -> h >= start || h < end
+        else -> h in start until end
+    }
+}
+
+/**
+ * Resolves the active visual theme respecting manual night mode or automatic sunset-to-sunrise schedule.
+ */
+fun resolveEffectiveTheme(
+    prefs: com.example.data.model.ReaderPreferences,
+    currentHour: Int
+): ReadingTheme {
+    if (prefs.nightAutoSchedule) {
+        val shouldBeNight = isHourInNightWindow(currentHour, prefs.nightStartHour, prefs.nightEndHour)
+        return if (shouldBeNight) {
+            if (prefs.theme.isDark) prefs.theme else prefs.preferredNightTheme.takeIf { it.isDark } ?: ReadingTheme.WARM_NIGHT
+        } else {
+            if (!prefs.theme.isDark) prefs.theme else prefs.preferredDayTheme.takeIf { !it.isDark } ?: ReadingTheme.WARM_CREAM
+        }
+    }
+    return prefs.theme
+}
+
+val LocalFolioPalette = staticCompositionLocalOf { paletteFor(ReadingTheme.WARM_CREAM) }
 
 val FolioShapes = Shapes(
     small = RoundedCornerShape(16.dp),
@@ -213,11 +329,14 @@ val FolioShapes = Shapes(
 
 @Composable
 fun FolioTheme(
-    readingTheme: ReadingTheme = ReadingTheme.LIGHT,
+    readingTheme: ReadingTheme = ReadingTheme.WARM_CREAM,
     useSystemFont: Boolean = false,
+    softNightDimming: Float = 0f,
     content: @Composable () -> Unit
 ) {
-    val palette = paletteFor(readingTheme)
+    val palette = remember(readingTheme, softNightDimming) {
+        paletteFor(readingTheme).withSoftNightDimming(softNightDimming)
+    }
     val typography = remember(useSystemFont) { buildFolioTypography(useSystemFont) }
     val colorScheme = if (palette.isDark) {
         darkColorScheme(

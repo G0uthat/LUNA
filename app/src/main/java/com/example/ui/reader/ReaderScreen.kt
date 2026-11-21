@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,8 +49,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.HighlightNoteEntity
+import com.example.data.model.BlockType
 import com.example.data.model.DocumentFormat
 import com.example.data.model.ExportFormatOption
+import com.example.data.model.ParsedBlock
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.StandardPageFormat
 import com.example.engine.DynamicIslandEventManager
@@ -107,17 +110,20 @@ fun ReaderScreen(
     var pendingExportOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
     var showTempProgressOverlay by remember { mutableStateOf(false) }
 
-    // Apply direct screen brightness inside the reader & restore system auto-brightness on exit
-    LaunchedEffect(prefs.readerBrightness) {
-        val window = (context as? Activity)?.window ?: return@LaunchedEffect
-        val lp = window.attributes
-        lp.screenBrightness = if (prefs.readerBrightness < 0f) -1f else prefs.readerBrightness.coerceIn(0.05f, 1f)
-        window.attributes = lp
+    // Live absolute phone brightness synchronized 1:1 with Android's system brightness slider
+    val activity = context as? Activity
+    var liveBrightness by remember {
+        mutableFloatStateOf(com.example.engine.SystemBrightnessController.readSystemBrightnessFraction(context))
+    }
+    LaunchedEffect(context) {
+        com.example.engine.SystemBrightnessController.observeSystemBrightness(context).collect { systemFrac ->
+            liveBrightness = systemFrac
+        }
     }
 
     // Hide Android system status bar icons during reading (shows ONLY battery indicator + Dynamic Island alerts)
     DisposableEffect(view) {
-        val window = (context as? Activity)?.window
+        val window = activity?.window
         val insetsController = window?.let { WindowCompat.getInsetsController(it, view) }
         insetsController?.apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -126,11 +132,7 @@ fun ReaderScreen(
         onDispose {
             insetsController?.show(WindowInsetsCompat.Type.statusBars())
             socialRepo.clearReadingPresence()
-            if (window != null) {
-                val lp = window.attributes
-                lp.screenBrightness = -1f
-                window.attributes = lp
-            }
+            com.example.engine.SystemBrightnessController.clearWindowOverride(activity)
         }
     }
 
@@ -207,22 +209,56 @@ fun ReaderScreen(
             else -> {
                 val doc = state.document!!
                 val parsed = state.parsed!!
+                val isEpub = parsed.format == DocumentFormat.EPUB
                 val isPdf = parsed.format == DocumentFormat.PDF
                 val isPptx = parsed.format == DocumentFormat.PPTX
-                val isShowingStandardView = if (isPptx) !state.pptxForceAdaptedText else prefs.useStandardPageView
+                val showOriginalView = !isEpub && state.viewAsOriginalFormat
+                val isShowingPdfNative = isPdf && showOriginalView
+                val isShowingStandardSheet = !isPdf && showOriginalView
+
                 val resolvedFormatLabel = if (prefs.standardPageFormat == StandardPageFormat.AUTO) {
                     parsed.detectedFormatLabel
                 } else {
                     prefs.standardPageFormat.shortLabel
                 }
-                val totalUnits = (if (isPdf) parsed.pdfPageCount else state.totalSheetCount).coerceAtLeast(1)
-                val currentDisplayIndex = if (isPdf) state.currentUnitIndex else state.currentSheetIndex
+                val totalUnits = (if (isShowingPdfNative) parsed.pdfPageCount else state.totalSheetCount).coerceAtLeast(1)
+                val currentDisplayIndex = if (isShowingPdfNative) state.currentUnitIndex else state.currentSheetIndex
                 val progress = ((currentDisplayIndex + 1).toFloat() / totalUnits.toFloat()).coerceIn(0f, 1f)
                 val remainingWords = (parsed.totalWords * (1f - progress)).roundToInt().coerceAtLeast(0)
                 val minsLeft = max(1, remainingWords / 210)
                 val progressSummary = "${(progress * 100).roundToInt()}% · ~$minsLeft min restantes"
                 val currentLocKey = viewModel.currentLocationKey()
                 val isBookmarkedHere = bookmarks.any { it.locationKey == currentLocKey }
+
+                // Enrich PDF adapted chapters with ML Kit OCR text on scanned/manhwa pages when available
+                val effectiveChapters = remember(parsed, ocrByPage, isPdf, state.showTranslatedManhwaOverlay) {
+                    if (!isPdf) {
+                        parsed.chapters
+                    } else {
+                        parsed.chapters.map { ch ->
+                            val nativeText = parsed.pdfPageTexts.getOrNull(ch.index).orEmpty()
+                            val ocrPage = ocrByPage[ch.index]
+                            if (nativeText.isBlank() && ocrPage != null && ocrPage.blocks.isNotEmpty()) {
+                                val ocrBlocks = buildList {
+                                    add(ParsedBlock(0, BlockType.HEADING_2, "Página ${ch.index + 1} (OCR)"))
+                                    ocrPage.blocks.forEach { ob ->
+                                        val txt = if (state.showTranslatedManhwaOverlay && !ob.translatedText.isNullOrBlank()) {
+                                            ob.translatedText
+                                        } else {
+                                            ob.originalText
+                                        }.trim()
+                                        if (txt.isNotEmpty()) {
+                                            add(ParsedBlock(size, BlockType.PARAGRAPH, txt))
+                                        }
+                                    }
+                                }
+                                ch.copy(blocks = ocrBlocks)
+                            } else {
+                                ch
+                            }
+                        }
+                    }
+                }
 
                 // Share live reading status with connected P2P friends (respects privacy toggles)
                 val progressPctInt = (progress * 100).roundToInt()
@@ -245,9 +281,9 @@ fun ReaderScreen(
                     Modifier.fillMaxSize()
                 }
 
-                // 1. Distraction-Free Reading Surface (PDF/Manhwa, Standard Physical Sheet/PPTX, or Adapted Fluid Book)
+                // 1. Distraction-Free Reading Surface (Native PDF, Standard Physical Sheet/PPTX, or Adapted EPUB Book)
                 when {
-                    isPdf -> {
+                    isShowingPdfNative -> {
                         PdfManhwaReader(
                             filePath = doc.filePath,
                             pageCount = parsed.pdfPageCount,
@@ -275,7 +311,7 @@ fun ReaderScreen(
                             modifier = readerSurfaceMod
                         )
                     }
-                    isShowingStandardView -> {
+                    isShowingStandardSheet -> {
                         StandardPageDocumentReader(
                             parsed = parsed,
                             currentUnitIndex = state.currentUnitIndex,
@@ -300,7 +336,7 @@ fun ReaderScreen(
                     }
                     else -> {
                         FluidBookReader(
-                            chapters = parsed.chapters,
+                            chapters = effectiveChapters,
                             currentChapterIndex = state.currentUnitIndex,
                             jumpToChapterTrigger = state.jumpToChapterTrigger,
                             prefs = prefs,
@@ -340,9 +376,10 @@ fun ReaderScreen(
                     ) {
                         Text(
                             text = when {
-                                isPdf -> "Pág. ${currentDisplayIndex + 1} / $totalUnits"
-                                isPptx -> "Diapositiva ${currentDisplayIndex + 1} / $totalUnits"
-                                isShowingStandardView -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · $resolvedFormatLabel"
+                                isShowingPdfNative -> "Pág. ${currentDisplayIndex + 1} / $totalUnits · PDF"
+                                isPptx && showOriginalView -> "Diapositiva ${currentDisplayIndex + 1} / $totalUnits"
+                                isShowingStandardSheet -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · $resolvedFormatLabel"
+                                !isEpub -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · Modo EPUB"
                                 else -> "Hoja ${currentDisplayIndex + 1} / $totalUnits"
                             },
                             style = MaterialTheme.typography.labelSmall,
@@ -378,13 +415,14 @@ fun ReaderScreen(
                     side = prefs.dockSide,
                     dockYFraction = prefs.dockYFraction,
                     dockScale = prefs.dockScale,
-                    brightnessValue = prefs.readerBrightness,
+                    brightnessValue = liveBrightness,
                     isExpanded = state.isDockExpanded,
                     isBookmarkedHere = isBookmarkedHere,
                     isDrawingMode = state.isDrawingMode,
-                    isPdfDocument = isPdf,
-                    isStandardPageView = if (isPdf) prefs.useStandardPageView else isShowingStandardView,
-                    standardPageFormatLabel = resolvedFormatLabel,
+                    isPdfDocument = isShowingPdfNative,
+                    documentFormat = parsed.format,
+                    showFormatModeToggle = !isEpub,
+                    isOriginalFormatView = showOriginalView,
                     isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
                     isProcessingStatus = state.isProcessingOcrOrTranslation,
                     processingStatusText = state.ocrTranslationStatus,
@@ -399,13 +437,15 @@ fun ReaderScreen(
                         viewModel.updatePreferences { it.copy(dockSide = newSide, dockYFraction = newY) }
                     },
                     onBrightnessChanged = { b ->
-                        viewModel.updatePreferences { it.copy(readerBrightness = b) }
+                        val clamped = b.coerceIn(0.01f, 1f)
+                        liveBrightness = clamped
+                        com.example.engine.SystemBrightnessController.applyAbsoluteBrightness(context, activity, clamped)
                     },
                     onToggleBookmarkHere = viewModel::toggleBookmarkCurrentPage,
                     onOpenAppearance = { showAppearanceSheet = true },
                     onOpenToc = { showTocSheet = true },
                     onToggleDrawing = { viewModel.toggleDrawingMode() },
-                    onToggleStandardPageView = viewModel::toggleStandardPageViewForCurrentDoc,
+                    onSetOriginalFormatView = viewModel::setViewAsOriginalFormat,
                     onTriggerOcrTranslate = viewModel::toggleOrRunManhwaPageTranslation,
                     onOpenAnnotations = { showAnnotationsSheet = true },
                     onOpenSearch = { showSearchSheet = true },
@@ -432,10 +472,10 @@ fun ReaderScreen(
                         activeWidthNorm = state.activeWidthNorm,
                         canUndo = state.canUndo,
                         canRedo = state.canRedo,
-                        isStandardPageView = if (isPdf) true else isShowingStandardView,
-                        standardFormatLabel = resolvedFormatLabel,
-                        showStandardViewToggle = !isPdf,
-                        canTogglePanZoom = isPdf || isShowingStandardView,
+                        isStandardPageView = showOriginalView,
+                        standardFormatLabel = if (isPdf) "PDF" else resolvedFormatLabel,
+                        showStandardViewToggle = !isEpub,
+                        canTogglePanZoom = showOriginalView,
                         isPanZoomMode = state.isPanZoomWhileDrawing,
                         onSelectTool = viewModel::setDrawingTool,
                         onSelectColor = viewModel::setDrawingColor,
@@ -451,33 +491,33 @@ fun ReaderScreen(
                     )
                 }
 
-                // 5. Dynamic Contextual Dictionary & EN->ES Translation Popover
-                state.selectedWord?.let { selection ->
-                    ContextualDictionaryPopover(
-                        selection = selection,
-                        sources = dictSources,
-                        instantTranslation = state.instantTranslation,
-                        isTranslatingWord = state.isTranslatingWord,
-                        translationStatusText = state.wordTranslationStatus,
-                        wikiSummary = state.wikiSummary,
-                        wikiError = state.wikiError,
-                        isWikiLoading = state.isWikiLoading,
-                        onHighlight = { colorArgb -> viewModel.addHighlightFromSelection(colorArgb) },
-                        onAddNote = { showNewNoteDialog = true },
-                        onUpdateSelection = viewModel::updateSelection,
-                        onOpenDictionarySettings = {
-                            settingsInitialTab = 1
-                            showSettingsSheet = true
-                        },
-                        onDismiss = viewModel::dismissWordPopover
-                    )
-                }
+                // 5. Dynamic Contextual Dictionary & EN->ES Translation Popover (kept mounted for silky enter/exit)
+                ContextualDictionaryPopover(
+                    selection = state.selectedWord,
+                    sources = dictSources,
+                    instantTranslation = state.instantTranslation,
+                    isTranslatingWord = state.isTranslatingWord,
+                    translationStatusText = state.wordTranslationStatus,
+                    wikiSummary = state.wikiSummary,
+                    wikiError = state.wikiError,
+                    isWikiLoading = state.isWikiLoading,
+                    onHighlight = { colorArgb -> viewModel.addHighlightFromSelection(colorArgb) },
+                    onAddNote = { showNewNoteDialog = true },
+                    onUpdateSelection = viewModel::updateSelection,
+                    onOpenDictionarySettings = {
+                        settingsInitialTab = 1
+                        showSettingsSheet = true
+                    },
+                    onDismiss = viewModel::dismissWordPopover
+                )
 
                 // 6. Modal Bottom Sheets & Dialogs
                 if (showAppearanceSheet) {
                     AppearanceSettingsSheet(
                         prefs = prefs,
-                        isPdf = isPdf,
+                        documentFormat = parsed.format,
+                        isOriginalFormatView = showOriginalView,
+                        onSetOriginalFormatView = viewModel::setViewAsOriginalFormat,
                         onUpdatePrefs = viewModel::updatePreferences,
                         onDismiss = { showAppearanceSheet = false }
                     )

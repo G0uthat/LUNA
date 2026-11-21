@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -60,11 +61,13 @@ import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Slideshow
 import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.CircularProgressIndicator
@@ -105,6 +108,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.BookmarkDockSide
+import com.example.data.model.DocumentFormat
 import com.example.data.model.MediaPlaybackInfo
 import com.example.data.model.ReaderMenuStyle
 import com.example.engine.DynamicIslandEvent
@@ -131,8 +135,9 @@ fun BookmarkDockOverlay(
     isBookmarkedHere: Boolean,
     isDrawingMode: Boolean,
     isPdfDocument: Boolean,
-    isStandardPageView: Boolean = false,
-    standardPageFormatLabel: String = "Auto",
+    documentFormat: DocumentFormat = DocumentFormat.EPUB,
+    showFormatModeToggle: Boolean = false,
+    isOriginalFormatView: Boolean = false,
     isPageTranslated: Boolean,
     isProcessingStatus: Boolean = false,
     processingStatusText: String = "",
@@ -149,7 +154,7 @@ fun BookmarkDockOverlay(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
-    onToggleStandardPageView: () -> Unit = {},
+    onSetOriginalFormatView: (Boolean) -> Unit = {},
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -177,8 +182,9 @@ fun BookmarkDockOverlay(
                 isExpanded = isExpanded,
                 isBookmarkedHere = isBookmarkedHere,
                 isPdfDocument = isPdfDocument,
-                isStandardPageView = isStandardPageView,
-                standardPageFormatLabel = standardPageFormatLabel,
+                documentFormat = documentFormat,
+                showFormatModeToggle = showFormatModeToggle,
+                isOriginalFormatView = isOriginalFormatView,
                 isPageTranslated = isPageTranslated,
                 bookTitle = bookTitle,
                 progressLabel = progressLabel,
@@ -190,7 +196,7 @@ fun BookmarkDockOverlay(
                 onOpenAppearance = onOpenAppearance,
                 onOpenToc = onOpenToc,
                 onToggleDrawing = onToggleDrawing,
-                onToggleStandardPageView = onToggleStandardPageView,
+                onSetOriginalFormatView = onSetOriginalFormatView,
                 onTriggerOcrTranslate = onTriggerOcrTranslate,
                 onOpenAnnotations = onOpenAnnotations,
                 onOpenSearch = onOpenSearch,
@@ -219,7 +225,9 @@ fun BookmarkDockOverlay(
             isExpanded = isExpanded,
             isBookmarkedHere = isBookmarkedHere,
             isPdfDocument = isPdfDocument,
-            isStandardPageView = isStandardPageView,
+            documentFormat = documentFormat,
+            showFormatModeToggle = showFormatModeToggle,
+            isOriginalFormatView = isOriginalFormatView,
             isPageTranslated = isPageTranslated,
             isProcessingStatus = isProcessingStatus,
             processingStatusText = processingStatusText,
@@ -235,7 +243,7 @@ fun BookmarkDockOverlay(
             onOpenAppearance = onOpenAppearance,
             onOpenToc = onOpenToc,
             onToggleDrawing = onToggleDrawing,
-            onToggleStandardPageView = onToggleStandardPageView,
+            onSetOriginalFormatView = onSetOriginalFormatView,
             onTriggerOcrTranslate = onTriggerOcrTranslate,
             onOpenAnnotations = onOpenAnnotations,
             onOpenSearch = onOpenSearch,
@@ -259,7 +267,9 @@ fun BookmarkDockOverlay(
                 isExpanded = isExpanded,
                 isBookmarkedHere = isBookmarkedHere,
                 isPdfDocument = isPdfDocument,
-                isStandardPageView = isStandardPageView,
+                documentFormat = documentFormat,
+                showFormatModeToggle = showFormatModeToggle,
+                isOriginalFormatView = isOriginalFormatView,
                 isPageTranslated = isPageTranslated,
                 bookTitle = bookTitle,
                 progressLabel = progressLabel,
@@ -269,7 +279,7 @@ fun BookmarkDockOverlay(
                 onOpenAppearance = onOpenAppearance,
                 onOpenToc = onOpenToc,
                 onToggleDrawing = onToggleDrawing,
-                onToggleStandardPageView = onToggleStandardPageView,
+                onSetOriginalFormatView = onSetOriginalFormatView,
                 onTriggerOcrTranslate = onTriggerOcrTranslate,
                 onOpenAnnotations = onOpenAnnotations,
                 onOpenSearch = onOpenSearch,
@@ -302,8 +312,9 @@ private fun DraggableSoftBookmarkDock(
     isExpanded: Boolean,
     isBookmarkedHere: Boolean,
     isPdfDocument: Boolean,
-    isStandardPageView: Boolean,
-    standardPageFormatLabel: String,
+    documentFormat: DocumentFormat,
+    showFormatModeToggle: Boolean,
+    isOriginalFormatView: Boolean,
     isPageTranslated: Boolean,
     bookTitle: String,
     progressLabel: String,
@@ -315,7 +326,7 @@ private fun DraggableSoftBookmarkDock(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
-    onToggleStandardPageView: () -> Unit,
+    onSetOriginalFormatView: (Boolean) -> Unit,
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -683,6 +694,18 @@ private fun DraggableSoftBookmarkDock(
                     onBrightnessChanged = onBrightnessChanged
                 )
 
+                // Dedicated View Mode Switcher ONLY for non-EPUB files (PDF, PPTX, DOCX, TXT, FB2)
+                if (showFormatModeToggle) {
+                    FormatViewModeSegmentedToggle(
+                        documentFormat = documentFormat,
+                        isOriginalFormatView = isOriginalFormatView,
+                        onSelectOriginalFormat = { original ->
+                            onSetOriginalFormatView(original)
+                            onDismiss()
+                        }
+                    )
+                }
+
                 // Objective Reading Tools in Luma floating capsule style (circular icon badges aligned to thumb edge)
                 DockToolRow(
                     icon = if (isBookmarkedHere) Icons.Rounded.BookmarkAdded else Icons.Rounded.BookmarkAdd,
@@ -708,15 +731,6 @@ private fun DraggableSoftBookmarkDock(
                     scale = dockScale,
                     onClick = { onDismiss(); onOpenToc() },
                     testTag = "dock_toc"
-                )
-                DockToolRow(
-                    icon = Icons.Rounded.Description,
-                    label = if (isStandardPageView) "HOJA · ${standardPageFormatLabel.uppercase()}" else "HOJA ESTÁNDAR",
-                    highlighted = isStandardPageView,
-                    iconOnRight = isRight,
-                    scale = dockScale,
-                    onClick = { onToggleStandardPageView(); onDismiss() },
-                    testTag = "dock_toggle_standard_view"
                 )
                 DockToolRow(
                     icon = Icons.Rounded.Draw,
@@ -796,7 +810,9 @@ private fun DynamicIslandReaderDock(
     isExpanded: Boolean,
     isBookmarkedHere: Boolean,
     isPdfDocument: Boolean,
-    isStandardPageView: Boolean,
+    documentFormat: DocumentFormat,
+    showFormatModeToggle: Boolean,
+    isOriginalFormatView: Boolean,
     isPageTranslated: Boolean,
     isProcessingStatus: Boolean,
     processingStatusText: String,
@@ -812,7 +828,7 @@ private fun DynamicIslandReaderDock(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
-    onToggleStandardPageView: () -> Unit,
+    onSetOriginalFormatView: (Boolean) -> Unit,
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -1165,6 +1181,20 @@ private fun DynamicIslandReaderDock(
                             compact = true
                         )
 
+                        // Dedicated View Mode Switcher ONLY for non-EPUB files (PDF, PPTX, DOCX, TXT, FB2)
+                        if (showFormatModeToggle) {
+                            FormatViewModeSegmentedToggle(
+                                documentFormat = documentFormat,
+                                isOriginalFormatView = isOriginalFormatView,
+                                darkSurfaceOverride = true,
+                                compact = true,
+                                onSelectOriginalFormat = { original ->
+                                    onSetOriginalFormatView(original)
+                                    onDismiss()
+                                }
+                            )
+                        }
+
                         // ALL quick reading tools in ONE SINGLE compact row!
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1183,12 +1213,6 @@ private fun DynamicIslandReaderDock(
                                 active = false,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenToc() }
-                            IslandActionTile(
-                                icon = Icons.Rounded.Description,
-                                label = "Hoja",
-                                active = isStandardPageView,
-                                modifier = Modifier.weight(1f)
-                            ) { onToggleStandardPageView(); onDismiss() }
                             IslandActionTile(
                                 icon = Icons.Rounded.Draw,
                                 label = "Firmar",
@@ -1552,7 +1576,9 @@ private fun ClassicKindleOverlayBars(
     isExpanded: Boolean,
     isBookmarkedHere: Boolean,
     isPdfDocument: Boolean,
-    isStandardPageView: Boolean,
+    documentFormat: DocumentFormat,
+    showFormatModeToggle: Boolean,
+    isOriginalFormatView: Boolean,
     isPageTranslated: Boolean,
     bookTitle: String,
     progressLabel: String,
@@ -1562,7 +1588,7 @@ private fun ClassicKindleOverlayBars(
     onOpenAppearance: () -> Unit,
     onOpenToc: () -> Unit,
     onToggleDrawing: () -> Unit,
-    onToggleStandardPageView: () -> Unit,
+    onSetOriginalFormatView: (Boolean) -> Unit,
     onTriggerOcrTranslate: () -> Unit,
     onOpenAnnotations: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -1718,16 +1744,23 @@ private fun ClassicKindleOverlayBars(
                     brightnessValue = brightnessValue,
                     onBrightnessChanged = onBrightnessChanged
                 )
+                // Dedicated View Mode Switcher ONLY for non-EPUB files (PDF, PPTX, DOCX, TXT, FB2)
+                if (showFormatModeToggle) {
+                    FormatViewModeSegmentedToggle(
+                        documentFormat = documentFormat,
+                        isOriginalFormatView = isOriginalFormatView,
+                        onSelectOriginalFormat = { original ->
+                            onSetOriginalFormatView(original)
+                            onDismiss()
+                        }
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceAround
                 ) {
                     ClassicBarAction(Icons.Rounded.FormatListBulleted, "Índice") { onDismiss(); onOpenToc() }
                     ClassicBarAction(Icons.Rounded.TextFields, "Texto") { onDismiss(); onOpenAppearance() }
-                    ClassicBarAction(
-                        icon = Icons.Rounded.Description,
-                        label = if (isStandardPageView) "Adaptar" else "Hoja"
-                    ) { onToggleStandardPageView(); onDismiss() }
                     ClassicBarAction(Icons.Rounded.Draw, "Firmar") { onDismiss(); onToggleDrawing() }
                     if (isPdfDocument) {
                         ClassicBarAction(Icons.Rounded.Translate, "Traducir") { onDismiss(); onTriggerOcrTranslate() }
@@ -1748,9 +1781,14 @@ private fun DirectBrightnessRow(
     compact: Boolean = false
 ) {
     val palette = LocalFolioPalette.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val canWriteSystem = remember(context, brightnessValue) {
+        com.example.engine.SystemBrightnessController.canWriteSystemSettings(context)
+    }
     val bg = if (darkSurfaceOverride) Color.White.copy(alpha = 0.08f) else palette.surfaceAlt.copy(alpha = 0.72f)
     val fg = if (darkSurfaceOverride) Color(0xFFF3F6FC) else palette.ink
-    val sliderPos = if (brightnessValue < 0f) 0.5f else brightnessValue.coerceIn(0.05f, 1f)
+    val sliderPos = brightnessValue.coerceIn(0.01f, 1f)
+    val pct = (sliderPos * 100f).roundToInt().coerceIn(1, 100)
 
     Row(
         modifier = Modifier
@@ -1769,8 +1807,8 @@ private fun DirectBrightnessRow(
         )
         Slider(
             value = sliderPos,
-            onValueChange = { v -> onBrightnessChanged(v.coerceIn(0.05f, 1f)) },
-            valueRange = 0.05f..1f,
+            onValueChange = { v -> onBrightnessChanged(v.coerceIn(0.01f, 1f)) },
+            valueRange = 0.01f..1f,
             modifier = Modifier
                 .weight(1f)
                 .height(if (compact) 26.dp else 34.dp)
@@ -1786,6 +1824,35 @@ private fun DirectBrightnessRow(
             tint = fg.copy(alpha = 0.85f),
             modifier = Modifier.size(if (compact) 14.dp else 16.dp)
         )
+        Spacer(Modifier.width(5.dp))
+        if (canWriteSystem) {
+            Text(
+                text = "$pct%",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = if (compact) 10.sp else 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = fg.copy(alpha = 0.8f)
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(palette.accent.copy(alpha = 0.16f))
+                    .clickable {
+                        com.example.engine.SystemBrightnessController.openWriteSettingsPermission(context)
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .testTag("brightness_sync_system_btn")
+            ) {
+                Text(
+                    text = "Sync",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = palette.accent
+                )
+            }
+        }
     }
 }
 
@@ -1838,6 +1905,107 @@ private fun ClassicBarAction(
     ) {
         Icon(icon, contentDescription = label, tint = palette.ink, modifier = Modifier.size(20.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = palette.inkMuted, maxLines = 1)
+    }
+}
+
+@Composable
+private fun FormatViewModeSegmentedToggle(
+    documentFormat: DocumentFormat,
+    isOriginalFormatView: Boolean,
+    onSelectOriginalFormat: (Boolean) -> Unit,
+    darkSurfaceOverride: Boolean = false,
+    compact: Boolean = false
+) {
+    val palette = LocalFolioPalette.current
+    val containerBg = if (darkSurfaceOverride) Color.White.copy(alpha = 0.08f) else palette.surfaceAlt.copy(alpha = 0.82f)
+    val containerBorder = if (darkSurfaceOverride) Color.White.copy(alpha = 0.14f) else palette.border
+    val inactiveInk = if (darkSurfaceOverride) Color.White.copy(alpha = 0.72f) else palette.inkMuted
+
+    val originalIcon = when (documentFormat) {
+        DocumentFormat.PPTX -> Icons.Rounded.Slideshow
+        DocumentFormat.PDF -> Icons.Rounded.PictureAsPdf
+        else -> Icons.Rounded.Description
+    }
+    val originalLabel = if (compact) documentFormat.label else "Formato ${documentFormat.label}"
+    val epubLabel = if (compact) "Adaptado" else "Modo EPUB"
+
+    val epubBg by animateColorAsState(
+        targetValue = if (!isOriginalFormatView) palette.accent else Color.Transparent,
+        animationSpec = tween(180),
+        label = "fmt_toggle_epub_bg"
+    )
+    val origBg by animateColorAsState(
+        targetValue = if (isOriginalFormatView) palette.accent else Color.Transparent,
+        animationSpec = tween(180),
+        label = "fmt_toggle_orig_bg"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(if (compact) 14.dp else 18.dp))
+            .background(containerBg)
+            .border(1.dp, containerBorder, RoundedCornerShape(if (compact) 14.dp else 18.dp))
+            .padding(3.dp)
+            .testTag("menu_format_mode_toggle"),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(if (compact) 11.dp else 14.dp))
+                .background(epubBg)
+                .clickable { onSelectOriginalFormat(false) }
+                .padding(horizontal = 8.dp, vertical = if (compact) 5.dp else 8.dp)
+                .testTag("toggle_view_adapted_epub"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.AutoStories,
+                contentDescription = "Vista adaptada estilo EPUB",
+                tint = if (!isOriginalFormatView) Color.White else inactiveInk,
+                modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = epubLabel,
+                fontSize = if (compact) 10.5.sp else 11.5.sp,
+                fontWeight = if (!isOriginalFormatView) FontWeight.ExtraBold else FontWeight.SemiBold,
+                color = if (!isOriginalFormatView) Color.White else inactiveInk,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(if (compact) 11.dp else 14.dp))
+                .background(origBg)
+                .clickable { onSelectOriginalFormat(true) }
+                .padding(horizontal = 8.dp, vertical = if (compact) 5.dp else 8.dp)
+                .testTag("toggle_view_original_format"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = originalIcon,
+                contentDescription = "Vista formato original ${documentFormat.label}",
+                tint = if (isOriginalFormatView) Color.White else inactiveInk,
+                modifier = Modifier.size(if (compact) 13.dp else 15.dp)
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = originalLabel,
+                fontSize = if (compact) 10.5.sp else 11.5.sp,
+                fontWeight = if (isOriginalFormatView) FontWeight.ExtraBold else FontWeight.SemiBold,
+                color = if (isOriginalFormatView) Color.White else inactiveInk,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 

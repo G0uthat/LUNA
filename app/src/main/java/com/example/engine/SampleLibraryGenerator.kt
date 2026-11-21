@@ -24,125 +24,232 @@ import java.util.zip.ZipOutputStream
 
 object SampleLibraryGenerator {
 
+    const val CURRENT_SAMPLE_VERSION = 2
+
     suspend fun ensureSampleDocuments(context: Context, repository: FolioRepository) =
         withContext(Dispatchers.IO) {
-            if (repository.getDocumentCount() > 0) return@withContext
-
+            val existingDocs = repository.getAllDocumentsOnce()
+            val existingFormats = existingDocs.map { it.format.uppercase() }.toSet()
+            val existingFileNames = existingDocs.map { File(it.filePath).name }.toSet()
             val booksDir = File(context.filesDir, "books").apply { mkdirs() }
+            val now = System.currentTimeMillis()
 
-            // 1. Real EPUB 3 Book
-            val epubFile = File(booksDir, "el_atlas_de_la_lectura.epub")
-            createSampleEpub(epubFile)
-            val epubParsed = DocumentParser.parse(context, epubFile, DocumentFormat.EPUB)
-            val epubCover = CoverManager.generateOrExtractCover(
-                context, epubFile, DocumentFormat.EPUB, epubParsed.title, epubParsed.author, 0xFF2B64F5
-            )
-            val epubId = repository.insertDocument(
-                DocumentEntity(
-                    title = epubParsed.title,
-                    author = epubParsed.author,
-                    format = DocumentFormat.EPUB.name,
-                    filePath = epubFile.absolutePath,
-                    coverImagePath = epubCover,
-                    totalUnits = epubParsed.chapters.size,
-                    currentUnit = 0,
-                    progressPercent = 0.25f,
-                    totalWords = epubParsed.totalWords,
-                    coverColorHex = 0xFF2B64F5,
-                    badgeTag = "EPUB",
-                    lastOpenedAt = System.currentTimeMillis()
+            var epubId: Long? = existingDocs.firstOrNull { it.format.equals("EPUB", true) }?.id
+            var manhwaId: Long? = existingDocs.firstOrNull { File(it.filePath).name == "shadow_blade_manhwa_ep1.pdf" }?.id
+            var docxId: Long? = existingDocs.firstOrNull { it.format.equals("DOCX", true) }?.id
+            var pdfId: Long? = existingDocs.firstOrNull { File(it.filePath).name == "guia_estudio_visual.pdf" }?.id
+            var pptxId: Long? = existingDocs.firstOrNull { it.format.equals("PPTX", true) }?.id
+            var txtId: Long? = existingDocs.firstOrNull { it.format.equals("TXT", true) }?.id
+            var fb2Id: Long? = existingDocs.firstOrNull { it.format.equals("FB2", true) }?.id
+
+            // 1. Real EPUB 3 Book (Temas suaves, tipografía, diccionario y subrayado)
+            if (DocumentFormat.EPUB.name !in existingFormats) {
+                val epubFile = File(booksDir, "el_atlas_de_la_lectura.epub")
+                createSampleEpub(epubFile)
+                val epubParsed = DocumentParser.parse(context, epubFile, DocumentFormat.EPUB)
+                val epubCover = CoverManager.generateOrExtractCover(
+                    context, epubFile, DocumentFormat.EPUB, epubParsed.title, epubParsed.author, 0xFF2B64F5
                 )
-            )
-
-            // 2. Real Image-Based Manhwa PDF in English (OCR + Seamless Spanish Translation)
-            val manhwaFile = File(booksDir, "shadow_blade_manhwa_ep1.pdf")
-            createSampleManhwaImagePdf(manhwaFile)
-            val manhwaParsed = DocumentParser.parse(context, manhwaFile, DocumentFormat.PDF)
-            val manhwaCover = CoverManager.generateOrExtractCover(
-                context, manhwaFile, DocumentFormat.PDF, "Shadow Blade · Ep. 1", "Studio Han", 0xFFE11D48
-            )
-            val manhwaId = repository.insertDocument(
-                DocumentEntity(
-                    title = "Shadow Blade · Ep. 1",
-                    author = "Studio Han",
-                    format = DocumentFormat.PDF.name,
-                    filePath = manhwaFile.absolutePath,
-                    coverImagePath = manhwaCover,
-                    totalUnits = manhwaParsed.pdfPageCount,
-                    currentUnit = 0,
-                    progressPercent = 0f,
-                    totalWords = 180,
-                    coverColorHex = 0xFFE11D48,
-                    badgeTag = "Manhwa OCR",
-                    lastOpenedAt = System.currentTimeMillis() - 1_000
+                epubId = repository.insertDocument(
+                    DocumentEntity(
+                        title = epubParsed.title,
+                        author = epubParsed.author,
+                        format = DocumentFormat.EPUB.name,
+                        filePath = epubFile.absolutePath,
+                        coverImagePath = epubCover,
+                        totalUnits = epubParsed.chapters.size,
+                        currentUnit = 0,
+                        progressPercent = 0.25f,
+                        totalWords = epubParsed.totalWords,
+                        coverColorHex = 0xFF2B64F5,
+                        badgeTag = "EPUB",
+                        lastOpenedAt = now
+                    )
                 )
-            )
+            }
 
-            // 3. Real DOCX Document
-            val docxFile = File(booksDir, "cuaderno_arquitectura_minimalista.docx")
-            createSampleDocx(docxFile)
-            val docxParsed = DocumentParser.parse(context, docxFile, DocumentFormat.DOCX)
-            val docxCover = CoverManager.generateOrExtractCover(
-                context, docxFile, DocumentFormat.DOCX, docxParsed.title, docxParsed.author, 0xFF0D9488
-            )
-            val docxId = repository.insertDocument(
-                DocumentEntity(
-                    title = docxParsed.title,
-                    author = docxParsed.author,
-                    format = DocumentFormat.DOCX.name,
-                    filePath = docxFile.absolutePath,
-                    coverImagePath = docxCover,
-                    totalUnits = docxParsed.chapters.size,
-                    currentUnit = 0,
-                    progressPercent = 0f,
-                    totalWords = docxParsed.totalWords,
-                    coverColorHex = 0xFF0D9488,
-                    badgeTag = "DOCX",
-                    lastOpenedAt = System.currentTimeMillis() - 2_000
+            // 2. Real Image-Based Manhwa PDF in English (OCR + Traducción instantánea)
+            if ("shadow_blade_manhwa_ep1.pdf" !in existingFileNames && DocumentFormat.PDF.name !in existingFormats) {
+                val manhwaFile = File(booksDir, "shadow_blade_manhwa_ep1.pdf")
+                createSampleManhwaImagePdf(manhwaFile)
+                val manhwaParsed = DocumentParser.parse(context, manhwaFile, DocumentFormat.PDF)
+                val manhwaCover = CoverManager.generateOrExtractCover(
+                    context, manhwaFile, DocumentFormat.PDF, "Shadow Blade · Ep. 1", "Studio Han", 0xFFE11D48
                 )
-            )
-
-            // 4. Real Vector Study PDF
-            val pdfFile = File(booksDir, "guia_estudio_visual.pdf")
-            createSampleStudyPdf(pdfFile)
-            val pdfParsed = DocumentParser.parse(context, pdfFile, DocumentFormat.PDF)
-            val pdfCover = CoverManager.generateOrExtractCover(
-                context, pdfFile, DocumentFormat.PDF, "Guía de Estudio Visual", "Taller Luma", 0xFF4F46E5
-            )
-            val pdfId = repository.insertDocument(
-                DocumentEntity(
-                    title = "Guía de Estudio Visual",
-                    author = "Taller Luma",
-                    format = DocumentFormat.PDF.name,
-                    filePath = pdfFile.absolutePath,
-                    coverImagePath = pdfCover,
-                    totalUnits = pdfParsed.pdfPageCount,
-                    currentUnit = 0,
-                    progressPercent = 0f,
-                    totalWords = pdfParsed.totalWords,
-                    coverColorHex = 0xFF4F46E5,
-                    badgeTag = "PDF",
-                    lastOpenedAt = System.currentTimeMillis() - 3_000
+                manhwaId = repository.insertDocument(
+                    DocumentEntity(
+                        title = "Shadow Blade · Ep. 1",
+                        author = "Studio Han",
+                        format = DocumentFormat.PDF.name,
+                        filePath = manhwaFile.absolutePath,
+                        coverImagePath = manhwaCover,
+                        totalUnits = manhwaParsed.pdfPageCount,
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = 180,
+                        coverColorHex = 0xFFE11D48,
+                        badgeTag = "Manhwa OCR",
+                        lastOpenedAt = now - 1_000
+                    )
                 )
-            )
+            }
 
-            // Seed Spotify-style book playlists / sagas
+            // 3. Real PowerPoint (.pptx) Presentation 16:9 (Formato PPTX original <-> Modo EPUB + Firma/Anotación)
+            if (DocumentFormat.PPTX.name !in existingFormats) {
+                val pptxFile = File(booksDir, "presentacion_luma_trabajo.pptx")
+                createSamplePptx(pptxFile)
+                val pptxParsed = DocumentParser.parse(context, pptxFile, DocumentFormat.PPTX)
+                val pptxCover = CoverManager.generateOrExtractCover(
+                    context, pptxFile, DocumentFormat.PPTX, pptxParsed.title, pptxParsed.author, 0xFFD97706
+                )
+                pptxId = repository.insertDocument(
+                    DocumentEntity(
+                        title = pptxParsed.title,
+                        author = pptxParsed.author,
+                        format = DocumentFormat.PPTX.name,
+                        filePath = pptxFile.absolutePath,
+                        coverImagePath = pptxCover,
+                        totalUnits = pptxParsed.slides.size.coerceAtLeast(1),
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = pptxParsed.totalWords,
+                        coverColorHex = 0xFFD97706,
+                        badgeTag = "PPTX 16:9",
+                        lastOpenedAt = now - 1_500
+                    )
+                )
+            }
+
+            // 4. Real DOCX Document with A4 Page Dimensions & Signature Block (Hoja A4 + Firma)
+            if (DocumentFormat.DOCX.name !in existingFormats) {
+                val docxFile = File(booksDir, "cuaderno_arquitectura_minimalista.docx")
+                createSampleDocx(docxFile)
+                val docxParsed = DocumentParser.parse(context, docxFile, DocumentFormat.DOCX)
+                val docxCover = CoverManager.generateOrExtractCover(
+                    context, docxFile, DocumentFormat.DOCX, docxParsed.title, docxParsed.author, 0xFF0D9488
+                )
+                docxId = repository.insertDocument(
+                    DocumentEntity(
+                        title = docxParsed.title,
+                        author = docxParsed.author,
+                        format = DocumentFormat.DOCX.name,
+                        filePath = docxFile.absolutePath,
+                        coverImagePath = docxCover,
+                        totalUnits = docxParsed.chapters.size,
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = docxParsed.totalWords,
+                        coverColorHex = 0xFF0D9488,
+                        badgeTag = "DOCX · A4",
+                        lastOpenedAt = now - 2_000
+                    )
+                )
+            }
+
+            // 5. Real Vector Study PDF (Zoom, dibujo a mano alzada y exportación fusionada)
+            if ("guia_estudio_visual.pdf" !in existingFileNames && existingDocs.isEmpty()) {
+                val pdfFile = File(booksDir, "guia_estudio_visual.pdf")
+                createSampleStudyPdf(pdfFile)
+                val pdfParsed = DocumentParser.parse(context, pdfFile, DocumentFormat.PDF)
+                val pdfCover = CoverManager.generateOrExtractCover(
+                    context, pdfFile, DocumentFormat.PDF, "Guía de Estudio Visual", "Taller Luma", 0xFF4F46E5
+                )
+                pdfId = repository.insertDocument(
+                    DocumentEntity(
+                        title = "Guía de Estudio Visual",
+                        author = "Taller Luma",
+                        format = DocumentFormat.PDF.name,
+                        filePath = pdfFile.absolutePath,
+                        coverImagePath = pdfCover,
+                        totalUnits = pdfParsed.pdfPageCount,
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = pdfParsed.totalWords,
+                        coverColorHex = 0xFF4F46E5,
+                        badgeTag = "PDF",
+                        lastOpenedAt = now - 3_000
+                    )
+                )
+            }
+
+            // 6. Real TXT Document (Lectura rápida, búsqueda y cambio a formato hoja)
+            if (DocumentFormat.TXT.name !in existingFormats) {
+                val txtFile = File(booksDir, "notas_rapidas_luma.txt")
+                createSampleTxt(txtFile)
+                val txtParsed = DocumentParser.parse(context, txtFile, DocumentFormat.TXT)
+                val txtCover = CoverManager.generateOrExtractCover(
+                    context, txtFile, DocumentFormat.TXT, "Notas Rápidas de Lectura", "Guía Práctica Luma", 0xFF6366F1
+                )
+                txtId = repository.insertDocument(
+                    DocumentEntity(
+                        title = "Notas Rápidas de Lectura",
+                        author = "Guía Práctica Luma",
+                        format = DocumentFormat.TXT.name,
+                        filePath = txtFile.absolutePath,
+                        coverImagePath = txtCover,
+                        totalUnits = txtParsed.chapters.size.coerceAtLeast(1),
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = txtParsed.totalWords,
+                        coverColorHex = 0xFF6366F1,
+                        badgeTag = "TXT",
+                        lastOpenedAt = now - 4_000
+                    )
+                )
+            }
+
+            // 7. Real FB2 FictionBook 2 Short Story (Novela corta, modo nocturno y marcadores)
+            if (DocumentFormat.FB2.name !in existingFormats) {
+                val fb2File = File(booksDir, "cronicas_del_observatorio.fb2")
+                createSampleFb2(fb2File)
+                val fb2Parsed = DocumentParser.parse(context, fb2File, DocumentFormat.FB2)
+                val fb2Cover = CoverManager.generateOrExtractCover(
+                    context, fb2File, DocumentFormat.FB2, fb2Parsed.title, fb2Parsed.author, 0xFF9333EA
+                )
+                fb2Id = repository.insertDocument(
+                    DocumentEntity(
+                        title = fb2Parsed.title,
+                        author = fb2Parsed.author,
+                        format = DocumentFormat.FB2.name,
+                        filePath = fb2File.absolutePath,
+                        coverImagePath = fb2Cover,
+                        totalUnits = fb2Parsed.chapters.size.coerceAtLeast(1),
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = fb2Parsed.totalWords,
+                        coverColorHex = 0xFF9333EA,
+                        badgeTag = "FB2",
+                        lastOpenedAt = now - 5_000
+                    )
+                )
+            }
+
+            // Seed Spotify-style book playlists / sagas on first run
             if (repository.getPlaylistCount() == 0) {
                 val p1 = repository.createPlaylist(
                     name = "Sagas y Manhwa",
-                    description = "Cómics y capítulos en curso",
+                    description = "Cómics, novelas cortas y capítulos en curso",
                     accentColorHex = 0xFFE11D48
                 )
-                repository.addBookToPlaylist(p1, manhwaId)
+                manhwaId?.let { repository.addBookToPlaylist(p1, it) }
+                fb2Id?.let { repository.addBookToPlaylist(p1, it) }
 
                 val p2 = repository.createPlaylist(
                     name = "Lectura y Estudio",
-                    description = "Ensayos, diseño y cuadernos",
+                    description = "Libros EPUB, apuntes TXT y guías",
                     accentColorHex = 0xFF2B64F5
                 )
-                repository.addBookToPlaylist(p2, epubId)
-                repository.addBookToPlaylist(p2, docxId)
-                repository.addBookToPlaylist(p2, pdfId)
+                epubId?.let { repository.addBookToPlaylist(p2, it) }
+                txtId?.let { repository.addBookToPlaylist(p2, it) }
+                pdfId?.let { repository.addBookToPlaylist(p2, it) }
+
+                val p3 = repository.createPlaylist(
+                    name = "Trabajo y Documentos",
+                    description = "Presentaciones PPTX y hojas A4 listas para firmar",
+                    accentColorHex = 0xFFD97706
+                )
+                pptxId?.let { repository.addBookToPlaylist(p3, it) }
+                docxId?.let { repository.addBookToPlaylist(p3, it) }
             }
         }
 
@@ -483,11 +590,14 @@ $bodyHtml
   <w:body>
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>1. Principios de Diseño Táctil Minimalista</w:t></w:r></w:p>
     <w:p><w:r><w:t>El minimalismo táctil une dos mundos aparentemente opuestos: la calma silenciosa de las superficies limpias y la satisfacción física de los controles con profundidad. Cada botón transmite su intención antes de ser presionado.</w:t></w:r></w:p>
-    <w:p><w:r><w:t>Este archivo DOCX real se renderiza con reflow completo dentro de Folio, permitiendo ajustar el tamaño de fuente, cambiar entre Literata o Lexend, subrayar conceptos clave y añadir notas persistentes.</w:t></w:r></w:p>
-    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>2. Estudio Activo y Exportación Limpia</w:t></w:r></w:p>
-    <w:p><w:r><w:t>Cuando estudias documentos técnicos en formato Word, dibujar esquemas encima de los párrafos acelera la retención espacial. Al terminar tu repaso, puedes exportar el documento fusionando tus subrayados y trazos sin perder la capacidad de seleccionar o buscar texto.</w:t></w:r></w:p>
-    <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Vocabulario de prueba contextual</w:t></w:r></w:p>
-    <w:p><w:r><w:t>Mantén pulsadas palabras como ergonomía, heurística, resiliencia o minimalismo para abrir el diccionario flotante con Wikipedia, RAE y tus propias fuentes personalizadas.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Este archivo DOCX real conserva su hoja A4 original en Luma. Usa el interruptor del menú para alternar entre Formato DOCX (hoja A4 exacta) y Modo EPUB (texto fluido adaptado a tu pantalla).</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>2. Revisión Profesional y Firma Rápida (A4)</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Cuando revisas contratos, informes o cuadernos de trabajo en formato Word, activa el botón Dibujar y pulsa Firma para estampar tu rúbrica directamente sobre la hoja A4 sin imprimir papel.</w:t></w:r></w:p>
+    <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Bloque de Conformidad y Firma</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Confirmo haber revisado este documento técnico y apruebo su exportación con anotaciones integradas.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Firma del responsable: _______________________________</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Fecha y observaciones: _______________________________</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>
   </w:body>
 </w:document>"""
             )
@@ -590,6 +700,358 @@ $bodyHtml
 
         FileOutputStream(target).use { pdfDoc.writeTo(it) }
         pdfDoc.close()
+    }
+
+    /**
+     * Generates a genuine OOXML PowerPoint (.pptx) 16:9 widescreen presentation with real
+     * theme colors, positioned DrawingML shapes, rounded cards, bullet points, a styled table,
+     * and speaker notes — rendered natively by PptxDocumentEngine.
+     */
+    private fun createSamplePptx(target: File) {
+        ZipOutputStream(FileOutputStream(target)).use { zos ->
+            writeZipText(
+                zos, "[Content_Types].xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/slides/slide3.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/slides/slide4.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/notesSlides/notesSlide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+</Types>"""
+            )
+
+            writeZipText(
+                zos, "_rels/.rels",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+</Relationships>"""
+            )
+
+            writeZipText(
+                zos, "docProps/core.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <dc:title>Presentación Luma · Trabajo y Estudio</dc:title>
+  <dc:creator>Equipo Luma</dc:creator>
+</cp:coreProperties>"""
+            )
+
+            writeZipText(
+                zos, "ppt/presentation.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldIdLst>
+    <p:sldId id="256" r:id="rId1"/>
+    <p:sldId id="257" r:id="rId2"/>
+    <p:sldId id="258" r:id="rId3"/>
+    <p:sldId id="259" r:id="rId4"/>
+  </p:sldIdLst>
+  <p:sldSz cx="12192000" cy="6858000" type="screen16x9"/>
+</p:presentation>"""
+            )
+
+            writeZipText(
+                zos, "ppt/_rels/presentation.xml.rels",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide3.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide4.xml"/>
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>
+</Relationships>"""
+            )
+
+            writeZipText(
+                zos, "ppt/theme/theme1.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Luma Editorial">
+  <a:themeElements>
+    <a:clrScheme name="Luma">
+      <a:dk1><a:srgbClr val="1A2233"/></a:dk1>
+      <a:lt1><a:srgbClr val="FFFDF8"/></a:lt1>
+      <a:dk2><a:srgbClr val="16243D"/></a:dk2>
+      <a:lt2><a:srgbClr val="F4EFE6"/></a:lt2>
+      <a:accent1><a:srgbClr val="2B64F5"/></a:accent1>
+      <a:accent2><a:srgbClr val="D97706"/></a:accent2>
+      <a:accent3><a:srgbClr val="0D9488"/></a:accent3>
+    </a:clrScheme>
+  </a:themeElements>
+</a:theme>"""
+            )
+
+            // Slide 1: Cover Slide (Deep Navy + Amber accent bar)
+            writeZipText(
+                zos, "ppt/slides/slide1.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:bg><p:bgPr><a:solidFill><a:srgbClr val="16243D"/></a:solidFill></p:bgPr></p:bg>
+    <p:spTree>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="762000" y="900000"/><a:ext cx="1950000" cy="420000"/></a:xfrm>
+          <a:prstGeom prst="roundRect"/>
+          <a:solidFill><a:srgbClr val="D97706"/></a:solidFill>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr anchor="ctr"/>
+          <a:p><a:pPr algn="ctr"/><a:r><a:rPr sz="1300" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>PRESENTACIÓN PPTX 16:9</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="762000" y="1680000"/><a:ext cx="10668000" cy="1800000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="4200" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Luma para Trabajo y Estudio</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="3" name="Subtitle"/><p:nvPr><p:ph type="subTitle"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="762000" y="3450000"/><a:ext cx="9600000" cy="1400000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="2000"><a:solidFill><a:srgbClr val="CBD5E1"/></a:solidFill></a:rPr><a:t>Visualiza diapositivas en su formato original 16:9, cambia a Modo EPUB cuando quieras leer con texto amplio y firma directamente sobre cada lámina.</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="762000" y="5550000"/><a:ext cx="10668000" cy="60000"/></a:xfrm>
+          <a:prstGeom prst="rect"/>
+          <a:solidFill><a:srgbClr val="3B82F6"/></a:solidFill>
+        </p:spPr>
+      </p:sp>
+      <p:sp>
+        <p:spPr><a:xfrm><a:off x="762000" y="5750000"/><a:ext cx="10668000" cy="520000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="94A3B8"/></a:solidFill></a:rPr><a:t>Desliza a la siguiente lámina o toca el botón Modo EPUB / Formato PPTX en el menú.</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"""
+            )
+            writeZipText(
+                zos, "ppt/slides/_rels/slide1.xml.rels",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+</Relationships>"""
+            )
+            writeZipText(
+                zos, "ppt/notesSlides/notesSlide1.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Nota del presentador: esta diapositiva conserva las coordenadas exactas 16:9 del archivo PowerPoint original.</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:notes>"""
+            )
+
+            // Slide 2: Two-card visual layout (Warm Cream paper + Cobalt & Teal cards)
+            writeZipText(
+                zos, "ppt/slides/slide2.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:bg><p:bgPr><a:solidFill><a:srgbClr val="FBF6EC"/></a:solidFill></p:bgPr></p:bg>
+    <p:spTree>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="680000" y="520000"/><a:ext cx="10800000" cy="820000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="3000" b="1"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Dos formas de leer cualquier documento</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="680000" y="1650000"/><a:ext cx="5150000" cy="4350000"/></a:xfrm>
+          <a:prstGeom prst="roundRect"/>
+          <a:solidFill><a:srgbClr val="EEF4FF"/></a:solidFill>
+          <a:ln w="19050"><a:solidFill><a:srgbClr val="2B64F5"/></a:solidFill></a:ln>
+        </p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="2100" b="1"><a:solidFill><a:srgbClr val="1D4AC0"/></a:solidFill></a:rPr><a:t>Formato Original (PPTX / A4)</a:t></a:r></a:p>
+          <a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:rPr sz="1600"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Mantiene la proporción exacta 16:9, A4, Carta o A3.</a:t></a:r></a:p>
+          <a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:rPr sz="1600"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Ideal para revisar diseños, tablas y diagramas.</a:t></a:r></a:p>
+          <a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:rPr sz="1600"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Perfecto para dibujar y firmar con precisión.</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="6320000" y="1650000"/><a:ext cx="5150000" cy="4350000"/></a:xfrm>
+          <a:prstGeom prst="roundRect"/>
+          <a:solidFill><a:srgbClr val="ECFDF5"/></a:solidFill>
+          <a:ln w="19050"><a:solidFill><a:srgbClr val="0D9488"/></a:solidFill></a:ln>
+        </p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="2100" b="1"><a:solidFill><a:srgbClr val="0F766E"/></a:solidFill></a:rPr><a:t>Modo EPUB Adaptado</a:t></a:r></a:p>
+          <a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:rPr sz="1600"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Reorganiza el texto en lectura fluida sin hacer zoom.</a:t></a:r></a:p>
+          <a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:rPr sz="1600"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Usa tus fuentes favoritas, interlineado y temas cálidos.</a:t></a:r></a:p>
+          <a:p><a:pPr><a:buChar char="•"/></a:pPr><a:r><a:rPr sz="1600"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Permite subrayar y consultar diccionario al instante.</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"""
+            )
+
+            // Slide 3: Real OOXML Table (<a:tbl>) comparing formats
+            writeZipText(
+                zos, "ppt/slides/slide3.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:bgPr></p:bg>
+    <p:spTree>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="680000" y="480000"/><a:ext cx="10800000" cy="800000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="2800" b="1"><a:solidFill><a:srgbClr val="16243D"/></a:solidFill></a:rPr><a:t>Resumen de formatos compatibles en Luma</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:graphicFrame>
+        <p:xfrm><a:off x="680000" y="1550000"/><a:ext cx="10800000" cy="4400000"/></p:xfrm>
+        <a:graphic>
+          <a:graphicData>
+            <a:tbl>
+              <a:tblGrid>
+                <a:gridCol w="2200000"/>
+                <a:gridCol w="4300000"/>
+                <a:gridCol w="4300000"/>
+              </a:tblGrid>
+              <a:tr h="900000">
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Formato</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="16243D"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Uso Principal</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="16243D"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Función Destacada</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="16243D"/></a:solidFill></a:tcPr></a:tc>
+              </a:tr>
+              <a:tr h="860000">
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400" b="1"><a:solidFill><a:srgbClr val="2B64F5"/></a:solidFill></a:rPr><a:t>EPUB / FB2</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Libros y lectura prolongada</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Temas cálidos, modo nocturno y diccionario</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></a:tcPr></a:tc>
+              </a:tr>
+              <a:tr h="860000">
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400" b="1"><a:solidFill><a:srgbClr val="D97706"/></a:solidFill></a:rPr><a:t>PPTX / DOCX</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Trabajo, clases y contratos</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Hoja 16:9 / A4, firma y exportación PDF</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:tcPr></a:tc>
+              </a:tr>
+              <a:tr h="860000">
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400" b="1"><a:solidFill><a:srgbClr val="E11D48"/></a:solidFill></a:rPr><a:t>PDF / TXT</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>Apuntes, artículos y Manhwa</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></a:tcPr></a:tc>
+                <a:tc><a:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="1A2233"/></a:solidFill></a:rPr><a:t>OCR interactivo, zoom y cambio a Modo EPUB</a:t></a:r></a:p></a:txBody><a:tcPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></a:tcPr></a:tc>
+              </a:tr>
+            </a:tbl>
+          </a:graphicData>
+        </a:graphic>
+      </p:graphicFrame>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"""
+            )
+
+            // Slide 4: Closing / Signature Practice Slide
+            writeZipText(
+                zos, "ppt/slides/slide4.xml",
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFBF3"/></a:solidFill></p:bgPr></p:bg>
+    <p:spTree>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+        <p:spPr><a:xfrm><a:off x="762000" y="620000"/><a:ext cx="10668000" cy="860000"/></a:xfrm></p:spPr>
+        <p:txBody>
+          <a:p><a:r><a:rPr sz="3200" b="1"><a:solidFill><a:srgbClr val="332920"/></a:solidFill></a:rPr><a:t>Zona de práctica: anota o firma esta lámina</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:spPr>
+          <a:xfrm><a:off x="762000" y="1850000"/><a:ext cx="10668000" cy="3600000"/></a:xfrm>
+          <a:prstGeom prst="roundRect"/>
+          <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>
+          <a:ln w="25400"><a:solidFill><a:srgbClr val="D97706"/></a:solidFill></a:ln>
+        </p:spPr>
+        <p:txBody>
+          <a:p><a:pPr algn="ctr"/><a:r><a:rPr sz="1800" b="1"><a:solidFill><a:srgbClr val="B45309"/></a:solidFill></a:rPr><a:t>Activa "Dibujar" en el menú y elige el preset "Firma"</a:t></a:r></a:p>
+          <a:p><a:pPr algn="ctr"/><a:r><a:rPr sz="1500"><a:solidFill><a:srgbClr val="64748B"/></a:solidFill></a:rPr><a:t>Dibuja tu firma o un esquema dentro de este recuadro y luego pulsa Exportar para obtener un PDF listo para enviar.</a:t></a:r></a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+</p:sld>"""
+            )
+        }
+    }
+
+    /**
+     * Generates a clean, structured plain-text (.txt) sample document for quick notes,
+     * full-text search, soft warm themes, and toggling between Modo EPUB and standard sheet view.
+     */
+    private fun createSampleTxt(target: File) {
+        val text = """
+            NOTAS RÁPIDAS DE LECTURA Y ENFOQUE
+            Guía Práctica Luma · Formato TXT
+
+            1. Por qué leer texto plano sin distracciones
+            Los archivos TXT son los más ligeros y universales para guardar apuntes de clase, borradores, guiones o resúmenes de libros. En Luma puedes abrirlos al instante con tipografía editorial y temas cálidos suaves.
+
+            2. Cómo cuidar tu vista en sesiones largas
+            - Elige Crema cálida, Arena suave o Ámbar durante el día para evitar el blanco brillante.
+            - Sube el Filtro de luz cálida en Texto y Tema para reducir la fatiga ocular.
+            - Activa el Horario nocturno automático para que Luma cambie a Noche cálida al caer la tarde.
+
+            3. Prueba las herramientas aquí mismo
+            - Mantén pulsada cualquier palabra para buscar su definición o subrayarla con color.
+            - Usa el buscador del marcapáginas para localizar términos como "fatiga" o "horario".
+            - Cambia el interruptor de la barra a Formato TXT si quieres ver estas notas como una hoja A4 lista para anotar o firmar.
+        """.trimIndent()
+        target.writeText(text, Charsets.UTF_8)
+    }
+
+    /**
+     * Generates a valid FictionBook 2 (.fb2) XML short story showcasing native FB2 chapters,
+     * epigraph, bookmarks, and nocturnal reading comfort.
+     */
+    private fun createSampleFb2(target: File) {
+        val fb2Xml = """<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <description>
+    <title-info>
+      <genre>sf</genre>
+      <author>
+        <first-name>Elena</first-name>
+        <last-name>Mendoza</last-name>
+      </author>
+      <book-title>Crónicas del Observatorio</book-title>
+      <lang>es</lang>
+    </title-info>
+  </description>
+  <body>
+    <title><p>Crónicas del Observatorio</p></title>
+    <section>
+      <title><p>Capítulo I · La lámpara de ámbar</p></title>
+      <epigraph>
+        <p>«Quien lee de noche descubre constelaciones que el sol oculta.»</p>
+      </epigraph>
+      <p>En lo alto de la sierra de Atacama, el observatorio antiguo conservaba una regla inquebrantable después del anochecer: ninguna pantalla podía emitir luz fría. Todas las bitácoras se consultaban bajo lámparas de tono ámbar para proteger la adaptación nocturna de los astrónomos.</p>
+      <p>Mateo abrió su cuaderno digital mientras la cúpula giraba en silencio sobre su cabeza. Afuera, la Vía Láctea cruzaba el cielo como un río de tinta plateada. Dentro de la cabina, cada párrafo reposaba sobre un fondo oscuro cálido que permitía leer durante horas sin fatiga.</p>
+      <p>Prueba activar el tema Noche cálida o Bosque noche desde Texto y Tema mientras lees este archivo FB2 real.</p>
+    </section>
+    <section>
+      <title><p>Capítulo II · Señal en el meridiano</p></title>
+      <p>A las dos de la madrugada, una pequeña pulsación apareció en el registro del telescopio. No era ruido atmosférico ni el paso de un satélite comercial; era un patrón rítmico que se repetía cada cuarenta y dos segundos con exactitud matemática.</p>
+      <p>Mateo guardó un marcador en la página exacta del catálogo estelar, subrayó la coordenada principal y trazó un diagrama rápido sobre el margen. En pocos segundos había conectado tres observaciones separadas por veinte años de historia.</p>
+      <p>Puedes usar el menú del marcapáginas lateral para añadir un marcador aquí, explorar el índice de capítulos o alternar entre Modo EPUB y Formato FB2.</p>
+    </section>
+  </body>
+</FictionBook>"""
+        target.writeText(fb2Xml, Charsets.UTF_8)
     }
 
     private fun writeZipText(zos: ZipOutputStream, entryName: String, content: String) {

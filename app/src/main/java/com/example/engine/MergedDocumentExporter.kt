@@ -4,9 +4,11 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.text.Layout
@@ -21,6 +23,11 @@ import com.example.data.model.DrawingTool
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.OcrPageResult
 import com.example.data.model.ParsedDocument
+import com.example.data.model.ParsedSlide
+import com.example.data.model.SlideElement
+import com.example.data.model.SlideShapeGeometry
+import com.example.data.model.SlideTextAlign
+import com.example.data.model.SlideVerticalAlign
 import com.example.data.model.StandardPageFormat
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -445,100 +452,110 @@ object MergedDocumentExporter {
         parsed.slides.forEachIndexed { idx, slide ->
             val page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, idx + 1).create())
             val canvas = page.canvas
-            canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), bgPaint)
-            canvas.drawRect(0f, 0f, pageWidth.toFloat(), 6f, accentBarPaint)
 
-            val hasImages = slide.imagePaths.isNotEmpty()
-            val textAreaWidth = if (hasImages && pageWidth > pageHeight) {
-                ((pageWidth - marginX * 2.5f) * 0.56f).toInt().coerceAtLeast(180)
+            if (slide.elements.isNotEmpty()) {
+                drawAuthenticPptxSlideOnPdfCanvas(
+                    canvas = canvas,
+                    slide = slide,
+                    pageWidth = pageWidth.toFloat(),
+                    pageHeight = pageHeight.toFloat(),
+                    nativeWidthPt = parsed.nativePageWidthPt
+                )
             } else {
-                (pageWidth - marginX * 2f).toInt().coerceAtLeast(180)
-            }
+                canvas.drawRect(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat(), bgPaint)
+                canvas.drawRect(0f, 0f, pageWidth.toFloat(), 6f, accentBarPaint)
 
-            var y = marginY
-            val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#101828")
-                textSize = (pageHeight * 0.052f).coerceIn(18f, 30f)
-                isFakeBoldText = true
-            }
-            val titleLayout = StaticLayout.Builder
-                .obtain(slide.title, 0, slide.title.length, titlePaint, (pageWidth - marginX * 2f).toInt().coerceAtLeast(180))
-                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                .setLineSpacing(2f, 1.15f)
-                .build()
-            canvas.save()
-            canvas.translate(marginX, y)
-            titleLayout.draw(canvas)
-            canvas.restore()
-            y += titleLayout.height + 10f
-
-            if (slide.subtitle.isNotBlank()) {
-                val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.parseColor("#475467")
-                    textSize = (pageHeight * 0.032f).coerceIn(12f, 18f)
+                val hasImages = slide.imagePaths.isNotEmpty()
+                val textAreaWidth = if (hasImages && pageWidth > pageHeight) {
+                    ((pageWidth - marginX * 2.5f) * 0.56f).toInt().coerceAtLeast(180)
+                } else {
+                    (pageWidth - marginX * 2f).toInt().coerceAtLeast(180)
                 }
-                val subLayout = StaticLayout.Builder
-                    .obtain(slide.subtitle, 0, slide.subtitle.length, subPaint, textAreaWidth)
+
+                var y = marginY
+                val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.parseColor("#101828")
+                    textSize = (pageHeight * 0.052f).coerceIn(18f, 30f)
+                    isFakeBoldText = true
+                }
+                val titleLayout = StaticLayout.Builder
+                    .obtain(slide.title, 0, slide.title.length, titlePaint, (pageWidth - marginX * 2f).toInt().coerceAtLeast(180))
                     .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setLineSpacing(2f, 1.2f)
+                    .setLineSpacing(2f, 1.15f)
                     .build()
                 canvas.save()
                 canvas.translate(marginX, y)
-                subLayout.draw(canvas)
+                titleLayout.draw(canvas)
                 canvas.restore()
-                y += subLayout.height + 12f
-            }
+                y += titleLayout.height + 10f
 
-            val bodyTopY = y
-            val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#1D2939")
-                textSize = (pageHeight * 0.028f).coerceIn(11f, 16f)
-            }
-            for (block in slide.bodyBlocks) {
-                val prefix = if (block.type == BlockType.LIST_ITEM) "•  " else ""
-                val text = prefix + block.text
-                val layout = StaticLayout.Builder
-                    .obtain(text, 0, text.length, bodyPaint, textAreaWidth)
-                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setLineSpacing(2f, 1.24f)
-                    .build()
-                if (y + layout.height > pageHeight - marginY - 18f) break
-                canvas.save()
-                canvas.translate(marginX, y)
-                layout.draw(canvas)
-                canvas.restore()
-                y += layout.height + 8f
-            }
+                if (slide.subtitle.isNotBlank()) {
+                    val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = Color.parseColor("#475467")
+                        textSize = (pageHeight * 0.032f).coerceIn(12f, 18f)
+                    }
+                    val subLayout = StaticLayout.Builder
+                        .obtain(slide.subtitle, 0, slide.subtitle.length, subPaint, textAreaWidth)
+                        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                        .setLineSpacing(2f, 1.2f)
+                        .build()
+                    canvas.save()
+                    canvas.translate(marginX, y)
+                    subLayout.draw(canvas)
+                    canvas.restore()
+                    y += subLayout.height + 12f
+                }
 
-            // Draw first embedded slide image neatly inside available space
-            if (hasImages) {
-                val imgPath = slide.imagePaths.first()
-                runCatching {
-                    val bmp = BitmapFactory.decodeFile(imgPath)
-                    if (bmp != null) {
-                        val destRect = if (pageWidth > pageHeight) {
-                            val left = marginX + textAreaWidth + marginX * 0.5f
-                            val right = pageWidth - marginX
-                            val top = bodyTopY
-                            val bottom = pageHeight - marginY - 22f
-                            fitRect(bmp.width.toFloat(), bmp.height.toFloat(), RectF(left, top, right, bottom))
-                        } else {
-                            val top = (y + 8f).coerceAtMost(pageHeight * 0.55f)
-                            val bottom = pageHeight - marginY - 22f
-                            fitRect(bmp.width.toFloat(), bmp.height.toFloat(), RectF(marginX, top, pageWidth - marginX, bottom))
+                val bodyTopY = y
+                val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.parseColor("#1D2939")
+                    textSize = (pageHeight * 0.028f).coerceIn(11f, 16f)
+                }
+                for (block in slide.bodyBlocks) {
+                    val prefix = if (block.type == BlockType.LIST_ITEM) "•  " else ""
+                    val text = prefix + block.text
+                    val layout = StaticLayout.Builder
+                        .obtain(text, 0, text.length, bodyPaint, textAreaWidth)
+                        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                        .setLineSpacing(2f, 1.24f)
+                        .build()
+                    if (y + layout.height > pageHeight - marginY - 18f) break
+                    canvas.save()
+                    canvas.translate(marginX, y)
+                    layout.draw(canvas)
+                    canvas.restore()
+                    y += layout.height + 8f
+                }
+
+                if (hasImages) {
+                    val imgPath = slide.imagePaths.first()
+                    runCatching {
+                        val bmp = BitmapFactory.decodeFile(imgPath)
+                        if (bmp != null) {
+                            val destRect = if (pageWidth > pageHeight) {
+                                val left = marginX + textAreaWidth + marginX * 0.5f
+                                val right = pageWidth - marginX
+                                val top = bodyTopY
+                                val bottom = pageHeight - marginY - 22f
+                                fitRect(bmp.width.toFloat(), bmp.height.toFloat(), RectF(left, top, right, bottom))
+                            } else {
+                                val top = (y + 8f).coerceAtMost(pageHeight * 0.55f)
+                                val bottom = pageHeight - marginY - 22f
+                                fitRect(bmp.width.toFloat(), bmp.height.toFloat(), RectF(marginX, top, pageWidth - marginX, bottom))
+                            }
+                            canvas.drawBitmap(bmp, null, destRect, Paint(Paint.FILTER_BITMAP_FLAG))
+                            bmp.recycle()
                         }
-                        canvas.drawBitmap(bmp, null, destRect, Paint(Paint.FILTER_BITMAP_FLAG))
-                        bmp.recycle()
                     }
                 }
-            }
 
-            canvas.drawText(
-                "${idx + 1} / ${parsed.slides.size}",
-                pageWidth - marginX - 42f,
-                pageHeight - 14f,
-                footerPaint
-            )
+                canvas.drawText(
+                    "${idx + 1} / ${parsed.slides.size}",
+                    pageWidth - marginX - 42f,
+                    pageHeight - 14f,
+                    footerPaint
+                )
+            }
 
             val slideStrokes = drawingsByLocation["pptx-slide-$idx"].orEmpty() +
                 drawingsByLocation["std-page-$idx"].orEmpty() +
@@ -551,6 +568,216 @@ object MergedDocumentExporter {
 
         pdfDoc.writeTo(outputStream)
         pdfDoc.close()
+    }
+
+    private fun drawAuthenticPptxSlideOnPdfCanvas(
+        canvas: Canvas,
+        slide: ParsedSlide,
+        pageWidth: Float,
+        pageHeight: Float,
+        nativeWidthPt: Float
+    ) {
+        val ptScale = (pageWidth / nativeWidthPt.coerceAtLeast(320f)).coerceIn(0.45f, 2.5f)
+        val bgStart = slide.backgroundColorArgb.toInt()
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val bgEnd = slide.backgroundGradientEndArgb?.toInt()
+        if (bgEnd != null) {
+            bgPaint.shader = LinearGradient(0f, 0f, 0f, pageHeight, bgStart, bgEnd, Shader.TileMode.CLAMP)
+        } else {
+            bgPaint.color = bgStart
+        }
+        canvas.drawRect(0f, 0f, pageWidth, pageHeight, bgPaint)
+
+        slide.backgroundImagePath?.let { path ->
+            runCatching {
+                val bmp = BitmapFactory.decodeFile(path)
+                if (bmp != null) {
+                    canvas.drawBitmap(bmp, null, RectF(0f, 0f, pageWidth, pageHeight), Paint(Paint.FILTER_BITMAP_FLAG))
+                    bmp.recycle()
+                }
+            }
+        }
+
+        val isDarkBg = isDarkColorInt(bgStart)
+        val defaultInk = if (isDarkBg) Color.parseColor("#F5F7FA") else Color.parseColor("#141B29")
+
+        for (el in slide.elements) {
+            val left = el.left * pageWidth
+            val top = el.top * pageHeight
+            val width = (el.width * pageWidth).coerceAtLeast(4f)
+            val height = (el.height * pageHeight).coerceAtLeast(4f)
+            val rect = RectF(left, top, left + width, top + height)
+
+            when (el) {
+                is SlideElement.Picture -> {
+                    runCatching {
+                        val bmp = BitmapFactory.decodeFile(el.imagePath)
+                        if (bmp != null) {
+                            canvas.save()
+                            if (el.rotationDeg != 0f) {
+                                canvas.rotate(el.rotationDeg, rect.centerX(), rect.centerY())
+                            }
+                            val fitted = fitRect(bmp.width.toFloat(), bmp.height.toFloat(), rect)
+                            canvas.drawBitmap(bmp, null, fitted, Paint(Paint.FILTER_BITMAP_FLAG))
+                            canvas.restore()
+                            bmp.recycle()
+                        }
+                    }
+                }
+
+                is SlideElement.ShapeBox -> {
+                    canvas.save()
+                    if (el.rotationDeg != 0f) {
+                        canvas.rotate(el.rotationDeg, rect.centerX(), rect.centerY())
+                    }
+                    if (el.geometry == SlideShapeGeometry.LINE) {
+                        val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                            color = (el.borderColorArgb ?: el.fillColorArgb ?: 0xFF64748BL).toInt()
+                            strokeWidth = (el.borderWidthPt.coerceAtLeast(1f) * ptScale).coerceIn(1f, 6f)
+                        }
+                        canvas.drawLine(rect.left, rect.centerY(), rect.right, rect.centerY(), lp)
+                    } else {
+                        if (el.fillColorArgb != null) {
+                            val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+                            if (el.gradientEndColorArgb != null) {
+                                fp.shader = LinearGradient(
+                                    rect.left, rect.top, rect.left, rect.bottom,
+                                    el.fillColorArgb.toInt(), el.gradientEndColorArgb.toInt(),
+                                    Shader.TileMode.CLAMP
+                                )
+                            } else {
+                                fp.color = el.fillColorArgb.toInt()
+                            }
+                            when (el.geometry) {
+                                SlideShapeGeometry.ROUND_RECT -> canvas.drawRoundRect(rect, 10f * ptScale, 10f * ptScale, fp)
+                                SlideShapeGeometry.ELLIPSE -> canvas.drawOval(rect, fp)
+                                else -> canvas.drawRect(rect, fp)
+                            }
+                        }
+                        if (el.borderColorArgb != null && el.borderWidthPt > 0f) {
+                            val bp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                style = Paint.Style.STROKE
+                                color = el.borderColorArgb.toInt()
+                                strokeWidth = (el.borderWidthPt * ptScale).coerceIn(0.6f, 5f)
+                            }
+                            when (el.geometry) {
+                                SlideShapeGeometry.ROUND_RECT -> canvas.drawRoundRect(rect, 10f * ptScale, 10f * ptScale, bp)
+                                SlideShapeGeometry.ELLIPSE -> canvas.drawOval(rect, bp)
+                                else -> canvas.drawRect(rect, bp)
+                            }
+                        }
+
+                        if (el.paragraphs.isNotEmpty()) {
+                            val localInk = el.fillColorArgb?.let { f ->
+                                val c = f.toInt()
+                                if (Color.alpha(c) > 120) {
+                                    if (isDarkColorInt(c)) Color.parseColor("#F5F7FA") else Color.parseColor("#141B29")
+                                } else defaultInk
+                            } ?: defaultInk
+                            val pad = (6f * ptScale).coerceIn(2f, 12f)
+                            val innerW = (rect.width() - pad * 2f).toInt().coerceAtLeast(16)
+                            val layouts = el.paragraphs.map { para ->
+                                val firstRun = para.runs.firstOrNull()
+                                val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                                    color = firstRun?.colorArgb?.toInt() ?: localInk
+                                    textSize = ((firstRun?.fontSizePt ?: 14f) * ptScale).coerceIn(7f, 44f)
+                                    isFakeBoldText = firstRun?.isBold == true
+                                    textSkewX = if (firstRun?.isItalic == true) -0.2f else 0f
+                                    isUnderlineText = firstRun?.isUnderline == true
+                                }
+                                val text = para.bulletPrefix + para.runs.joinToString("") { it.text }
+                                val alignment = when (para.align) {
+                                    SlideTextAlign.CENTER -> Layout.Alignment.ALIGN_CENTER
+                                    SlideTextAlign.RIGHT -> Layout.Alignment.ALIGN_OPPOSITE
+                                    else -> Layout.Alignment.ALIGN_NORMAL
+                                }
+                                StaticLayout.Builder.obtain(text, 0, text.length, tp, innerW)
+                                    .setAlignment(alignment)
+                                    .setLineSpacing(1.5f, 1.15f)
+                                    .build()
+                            }
+                            val totalTextH = layouts.sumOf { it.height } + (layouts.size - 1).coerceAtLeast(0) * (4f * ptScale)
+                            var curY = when (el.verticalAlign) {
+                                SlideVerticalAlign.MIDDLE -> (rect.top + (rect.height() - totalTextH) * 0.5f).coerceAtLeast(rect.top + pad)
+                                SlideVerticalAlign.BOTTOM -> (rect.bottom - pad - totalTextH).coerceAtLeast(rect.top + pad)
+                                SlideVerticalAlign.TOP -> rect.top + pad
+                            }
+                            canvas.clipRect(rect)
+                            for (lyt in layouts) {
+                                canvas.save()
+                                canvas.translate(rect.left + pad, curY)
+                                lyt.draw(canvas)
+                                canvas.restore()
+                                curY += lyt.height + 4f * ptScale
+                            }
+                        }
+                    }
+                    canvas.restore()
+                }
+
+                is SlideElement.Table -> {
+                    val rowCount = el.rows.size.coerceAtLeast(1)
+                    val rowH = rect.height() / rowCount
+                    val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        style = Paint.Style.STROKE
+                        color = if (isDarkBg) Color.argb(90, 255, 255, 255) else Color.parseColor("#CBD5E1")
+                        strokeWidth = 0.8f
+                    }
+                    el.rows.forEachIndexed { rIdx, row ->
+                        val weightSum = el.colWeights.take(row.size).sum().coerceAtLeast(0.01f)
+                        var colX = rect.left
+                        val rowTop = rect.top + rIdx * rowH
+                        row.forEachIndexed { cIdx, cell ->
+                            val wFrac = (el.colWeights.getOrElse(cIdx) { 1f / row.size.coerceAtLeast(1) }) / weightSum
+                            val colW = rect.width() * wFrac
+                            val cellRect = RectF(colX, rowTop, colX + colW, rowTop + rowH)
+                            if (cell.fillColorArgb != null) {
+                                val cp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                    style = Paint.Style.FILL
+                                    color = cell.fillColorArgb.toInt()
+                                }
+                                canvas.drawRect(cellRect, cp)
+                            }
+                            canvas.drawRect(cellRect, borderPaint)
+                            val cellInk = cell.textColorArgb?.toInt() ?: cell.fillColorArgb?.let { f ->
+                                if (Color.alpha(f.toInt()) > 120) {
+                                    if (isDarkColorInt(f.toInt())) Color.WHITE else Color.parseColor("#141B29")
+                                } else defaultInk
+                            } ?: defaultInk
+                            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                                color = cellInk
+                                textSize = (cell.fontSizePt * ptScale).coerceIn(6.5f, 18f)
+                                isFakeBoldText = cell.isBold
+                            }
+                            val textW = (colW - 6f).toInt().coerceAtLeast(10)
+                            val lyt = StaticLayout.Builder.obtain(cell.text, 0, cell.text.length, tp, textW)
+                                .setAlignment(
+                                    when (cell.align) {
+                                        SlideTextAlign.CENTER -> Layout.Alignment.ALIGN_CENTER
+                                        SlideTextAlign.RIGHT -> Layout.Alignment.ALIGN_OPPOSITE
+                                        else -> Layout.Alignment.ALIGN_NORMAL
+                                    }
+                                )
+                                .build()
+                            canvas.save()
+                            canvas.clipRect(cellRect)
+                            canvas.translate(cellRect.left + 3f, cellRect.top + ((rowH - lyt.height) * 0.5f).coerceAtLeast(2f))
+                            lyt.draw(canvas)
+                            canvas.restore()
+                            colX += colW
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isDarkColorInt(color: Int): Boolean {
+        val r = Color.red(color) / 255.0
+        val g = Color.green(color) / 255.0
+        val b = Color.blue(color) / 255.0
+        val luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return luminance < 0.36
     }
 
     private fun fitRect(srcW: Float, srcH: Float, bounds: RectF): RectF {

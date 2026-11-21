@@ -51,6 +51,10 @@ import com.example.ui.reader.ReaderViewModel
 import com.example.ui.theme.FolioTheme
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.paletteFor
+import com.example.ui.theme.resolveEffectiveTheme
+import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.delay
+import java.util.Calendar
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -73,7 +77,15 @@ class MainActivity : ComponentActivity() {
             val prefs by preferencesRepository.preferencesFlow.collectAsStateWithLifecycle(
                 initialValue = ReaderPreferences()
             )
-            val palette = paletteFor(prefs.theme)
+            var currentHour by remember { mutableIntStateOf(Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) }
+            LaunchedEffect(prefs.nightAutoSchedule) {
+                while (true) {
+                    currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                    delay(60_000L)
+                }
+            }
+            val effectiveTheme = remember(prefs, currentHour) { resolveEffectiveTheme(prefs, currentHour) }
+            val palette = paletteFor(effectiveTheme)
 
             LaunchedEffect(
                 prefs.islandFilterMode,
@@ -110,7 +122,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            FolioTheme(readingTheme = prefs.theme, useSystemFont = prefs.useSystemFont) {
+            val activeNightDimming = if (effectiveTheme.isDark) prefs.nightTextDimming else 0f
+            FolioTheme(
+                readingTheme = effectiveTheme,
+                useSystemFont = prefs.useSystemFont,
+                softNightDimming = activeNightDimming
+            ) {
                 var activeDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
                 val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
                 val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
@@ -163,6 +180,30 @@ class MainActivity : ComponentActivity() {
                                 .align(Alignment.TopEnd)
                                 .statusBarsPadding()
                                 .padding(top = 6.dp, end = 10.dp)
+                        )
+                    }
+
+                    // Pointer-passthrough optical eye-comfort layer (warm blue-light amber shield + dark-room dim)
+                    if (prefs.warmFilterStrength > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Color(0xFFFF9E3D).copy(
+                                        alpha = (prefs.warmFilterStrength * 0.42f).coerceIn(0f, 0.22f)
+                                    )
+                                )
+                        )
+                    }
+                    if (activeNightDimming > 0.01f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Color.Black.copy(
+                                        alpha = (activeNightDimming * 0.45f).coerceIn(0f, 0.22f)
+                                    )
+                                )
                         )
                     }
                 }

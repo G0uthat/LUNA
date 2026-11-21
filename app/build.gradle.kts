@@ -141,6 +141,7 @@ dependencies {
   implementation(libs.mlkit.text.recognition)
   implementation(libs.mlkit.translate)
   implementation(libs.pdfbox.android)
+  implementation(libs.jsoup)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

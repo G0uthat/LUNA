@@ -1,9 +1,15 @@
 package com.example.ui.components
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,9 +26,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.BatteryAlert
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsOff
@@ -42,6 +54,8 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -90,6 +104,7 @@ fun AppSettingsSheet(
     onToggleSource: (DictionarySourceEntity) -> Unit,
     onDeleteSource: (Long) -> Unit,
     onRegenerateCovers: (() -> Unit)? = null,
+    onReplayOnboarding: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     var activeTab by remember(initialTab) { mutableIntStateOf(initialTab) }
@@ -104,7 +119,7 @@ fun AppSettingsSheet(
     ) { dismissAnimated ->
         LumaDropdownHeader(
             title = "Ajustes",
-            subtitle = "Tema, lectura y diccionario",
+            subtitle = "Tema, lectura, diccionario y créditos",
             leadingIcon = Icons.Rounded.Settings,
             onDismiss = dismissAnimated,
             closeTestTag = "app_settings_close"
@@ -125,7 +140,8 @@ fun AppSettingsSheet(
                 onAddSource = onAddSource,
                 onToggleSource = onToggleSource,
                 onDeleteSource = onDeleteSource,
-                onRegenerateCovers = onRegenerateCovers
+                onRegenerateCovers = onRegenerateCovers,
+                onReplayOnboarding = onReplayOnboarding
             )
             Spacer(Modifier.height(6.dp))
         }
@@ -142,7 +158,8 @@ fun AppSettingsContent(
     onAddSource: (name: String, urlTemplate: String) -> Unit,
     onToggleSource: (DictionarySourceEntity) -> Unit,
     onDeleteSource: (Long) -> Unit,
-    onRegenerateCovers: (() -> Unit)? = null
+    onRegenerateCovers: (() -> Unit)? = null,
+    onReplayOnboarding: (() -> Unit)? = null
 ) {
     val palette = LocalFolioPalette.current
     val context = LocalContext.current
@@ -165,8 +182,13 @@ fun AppSettingsContent(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-            // Segmented Tabs
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Segmented Tabs (horizontally scrollable so all 3 fit comfortably on compact screens)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 TactileChip(
                     label = "Diseño y Menú",
                     icon = Icons.Rounded.Palette,
@@ -181,93 +203,22 @@ fun AppSettingsContent(
                     onClick = { onTabChange(1) },
                     modifier = Modifier.testTag("settings_tab_dict_ai")
                 )
+                TactileChip(
+                    label = "Créditos",
+                    icon = Icons.Rounded.Favorite,
+                    selected = activeTab == 2,
+                    onClick = { onTabChange(2) },
+                    modifier = Modifier.testTag("settings_tab_credits")
+                )
             }
 
             if (activeTab == 0) {
-                // 1. Prominent 7-Theme Visual Grid (ALL 7 themes immediately visible without scrolling!)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                        .border(1.dp, palette.border, RoundedCornerShape(20.dp))
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Rounded.Palette,
-                                contentDescription = null,
-                                tint = palette.accent,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(7.dp))
-                            Text(
-                                text = "Cambiar tema",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = palette.ink
-                            )
-                        }
-                        Text(
-                            text = prefs.theme.displayName,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = palette.accent
-                        )
-                    }
-
-                    val themeRows = ReadingTheme.entries.chunked(4)
-                    for (rowThemes in themeRows) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            for (theme in rowThemes) {
-                                val tp = paletteFor(theme)
-                                val selected = prefs.theme == theme
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(tp.background)
-                                        .border(
-                                            width = if (selected) 2.5.dp else 1.dp,
-                                            color = if (selected) palette.accent else tp.border,
-                                            shape = RoundedCornerShape(16.dp)
-                                        )
-                                        .clickable { onUpdatePrefs { it.copy(theme = theme) } }
-                                        .padding(vertical = 10.dp, horizontal = 4.dp)
-                                        .testTag("settings_theme_${theme.name}"),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        text = "Aa",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = tp.ink
-                                    )
-                                    Spacer(Modifier.height(2.dp))
-                                    Text(
-                                        text = theme.displayName,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) tp.accent else tp.inkMuted,
-                                        maxLines = 1
-                                    )
-                                }
-                            }
-                            repeat(4 - rowThemes.size) {
-                                Spacer(Modifier.weight(1f))
-                            }
-                        }
-                    }
-                }
+                // 1. Soft Visual Themes, Warm Blue-Light Shield & Configurable Night Reading Mode
+                SoftThemeAndNightModePanel(
+                    prefs = prefs,
+                    onUpdatePrefs = onUpdatePrefs,
+                    compactMode = false
+                )
 
                 // 2. FPS / High Refresh Rate Unlock (60, 90, 120, 144, 240 FPS + Máx)
                 val displayInfo = remember(context, prefs.targetFps) {
@@ -649,7 +600,7 @@ fun AppSettingsContent(
                         Text("Autocompletar carátulas de la biblioteca", fontWeight = FontWeight.Bold)
                     }
                 }
-            } else {
+            } else if (activeTab == 1) {
                 // Embedded Dictionary Sources & BYOK AI Engine content
                 DictionaryAndAiSettingsContent(
                     prefs = prefs,
@@ -659,7 +610,254 @@ fun AppSettingsContent(
                     onToggleSource = onToggleSource,
                     onDeleteSource = onDeleteSource
                 )
+            } else {
+                // Tab 2: Credits, Community Discord & Dedication
+                LumaCreditsSettingsContent(
+                    onReplayOnboarding = onReplayOnboarding
+                )
             }
+    }
+}
+
+private const val LUMA_DISCORD_URL = "https://discord.gg/f2Ey5NP9dN"
+
+@Composable
+private fun LumaCreditsSettingsContent(
+    onReplayOnboarding: (() -> Unit)? = null
+) {
+    val palette = LocalFolioPalette.current
+    val context = LocalContext.current
+    var copiedDiscord by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("settings_credits_content"),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // 1. Brand emblem card with the vectorized calligraphic Luma logo
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(palette.surfaceAlt.copy(alpha = 0.65f))
+                .border(1.dp, palette.border, RoundedCornerShape(24.dp))
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            LumaCalligraphicLogo(
+                modifier = Modifier
+                    .fillMaxWidth(0.76f)
+                    .height(66.dp)
+            )
+            Text(
+                text = "Lector universal EPUB · PDF · DOCX · PPTX · TXT · FB2",
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.inkMuted,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        // 2. Community Discord Card
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(palette.surfaceAlt.copy(alpha = 0.68f))
+                .border(1.dp, palette.accent.copy(alpha = 0.34f), RoundedCornerShape(22.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF5865F2).copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Forum,
+                        contentDescription = null,
+                        tint = Color(0xFF5865F2),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Comunidad oficial en Discord",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = palette.ink
+                    )
+                    Text(
+                        text = "Comparte lecturas, reporta mejoras y únete a la comunidad de Luma.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                }
+            }
+
+            // Direct clickable URL box + Copy button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(palette.surface)
+                    .border(1.dp, palette.border, RoundedCornerShape(14.dp))
+                    .clickable {
+                        runCatching {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LUMA_DISCORD_URL)).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .testTag("credits_discord_link_row"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = LUMA_DISCORD_URL,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(palette.surfaceAlt)
+                        .clickable {
+                            runCatching {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("Discord Luma", LUMA_DISCORD_URL))
+                                copiedDiscord = true
+                            }
+                        }
+                        .testTag("credits_copy_discord_btn"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (copiedDiscord) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                        contentDescription = "Copiar enlace de Discord",
+                        tint = if (copiedDiscord) Color(0xFF22C55E) else palette.inkMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            TactileButton(
+                onClick = {
+                    runCatching {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LUMA_DISCORD_URL)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    }
+                },
+                containerColor = Color(0xFF5865F2),
+                shadowColor = Color(0xFF3C45A5),
+                contentColor = Color.White,
+                cornerRadius = 16.dp,
+                lipDepth = 2.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("credits_open_discord_btn")
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Unirse al Discord de la comunidad", fontWeight = FontWeight.ExtraBold)
+            }
+        }
+
+        // 3. Dedicated separate Dedication Card
+        val roseAccent = if (palette.isDark) Color(0xFFF48FB1) else Color(0xFFD84B78)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(roseAccent.copy(alpha = if (palette.isDark) 0.12f else 0.08f))
+                .border(1.dp, roseAccent.copy(alpha = 0.30f), RoundedCornerShape(24.dp))
+                .padding(horizontal = 20.dp, vertical = 20.dp)
+                .testTag("credits_dedication_card"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(roseAccent.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Favorite,
+                    contentDescription = null,
+                    tint = roseAccent,
+                    modifier = Modifier.size(19.dp)
+                )
+            }
+            Text(
+                text = "Dedicada a mi amada Anghela.",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                fontStyle = FontStyle.Italic,
+                color = palette.ink,
+                textAlign = TextAlign.Center,
+                letterSpacing = 0.3.sp
+            )
+        }
+
+        // 4. Optional Permissions & Interactive Tour Replay
+        if (onReplayOnboarding != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(palette.surfaceAlt.copy(alpha = 0.6f))
+                    .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                    .clickable(onClick = onReplayOnboarding)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .testTag("credits_replay_tour_row"),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Explore,
+                    contentDescription = null,
+                    tint = palette.accent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Permisos y tour interactivo",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    Text(
+                        text = "Vuelve a revisar permisos del sistema y el recorrido guiado",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = palette.accent,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
     }
 }
 

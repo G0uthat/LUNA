@@ -54,7 +54,7 @@ data class ReaderUiState(
     val isDockExpanded: Boolean = false,
     val isDrawingMode: Boolean = false,
     val isPanZoomWhileDrawing: Boolean = false,
-    val pptxForceAdaptedText: Boolean = false,
+    val viewAsOriginalFormat: Boolean = false,
     val activeTool: DrawingTool = DrawingTool.PEN,
     val activeColorArgb: Long = 0xFF1D5BFFL,
     val activeWidthNorm: Float = 0.008f,
@@ -154,12 +154,19 @@ class ReaderViewModel(
                 }
                 val startUnit = doc.currentUnit.coerceIn(0, (totalUnits - 1).coerceAtLeast(0))
 
+                val initialOriginalView = when (format) {
+                    DocumentFormat.EPUB -> false
+                    DocumentFormat.PDF, DocumentFormat.PPTX -> true
+                    DocumentFormat.DOCX, DocumentFormat.TXT, DocumentFormat.FB2 -> preferences.value.useStandardPageView
+                }
+
                 _uiState.update {
                     it.copy(
                         isLoading = false,
                         document = doc,
                         parsed = parsed,
-                        currentUnitIndex = startUnit
+                        currentUnitIndex = startUnit,
+                        viewAsOriginalFormat = initialOriginalView
                     )
                 }
                 refreshUndoRedoFlags()
@@ -174,7 +181,7 @@ class ReaderViewModel(
     fun currentLocationKey(): String {
         val state = _uiState.value
         val parsed = state.parsed ?: return "unit-0"
-        return if (parsed.format == DocumentFormat.PDF) {
+        return if (parsed.format == DocumentFormat.PDF && state.viewAsOriginalFormat) {
             "pdf-page-${state.currentUnitIndex}"
         } else {
             state.activeSheetLocationKey
@@ -255,15 +262,24 @@ class ReaderViewModel(
         }
     }
 
-    fun toggleStandardPageViewForCurrentDoc() {
-        val parsed = _uiState.value.parsed
-        if (parsed?.format == DocumentFormat.PPTX) {
-            _uiState.update { it.copy(pptxForceAdaptedText = !it.pptxForceAdaptedText, isPanZoomWhileDrawing = false) }
-        } else {
-            val next = !preferences.value.useStandardPageView
-            _uiState.update { it.copy(isPanZoomWhileDrawing = false) }
-            updatePreferences { it.copy(useStandardPageView = next) }
+    fun setViewAsOriginalFormat(original: Boolean) {
+        val format = _uiState.value.parsed?.format ?: return
+        if (format == DocumentFormat.EPUB) return
+        _uiState.update {
+            it.copy(
+                viewAsOriginalFormat = original,
+                isPanZoomWhileDrawing = false,
+                selectedWord = null
+            )
         }
+        if (format == DocumentFormat.DOCX || format == DocumentFormat.TXT || format == DocumentFormat.FB2) {
+            updatePreferences { it.copy(useStandardPageView = original) }
+        }
+        refreshUndoRedoFlags()
+    }
+
+    fun toggleStandardPageViewForCurrentDoc() {
+        setViewAsOriginalFormat(!_uiState.value.viewAsOriginalFormat)
     }
 
     fun setDrawingTool(tool: DrawingTool) {
