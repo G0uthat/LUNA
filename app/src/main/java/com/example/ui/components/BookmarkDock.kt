@@ -113,6 +113,7 @@ import com.example.data.model.MediaPlaybackInfo
 import com.example.data.model.ReaderMenuStyle
 import com.example.engine.DynamicIslandEvent
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlin.math.roundToInt
 
 /**
@@ -336,6 +337,7 @@ private fun DraggableSoftBookmarkDock(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val density = LocalDensity.current
     val isRight = side == BookmarkDockSide.RIGHT
 
@@ -378,16 +380,10 @@ private fun DraggableSoftBookmarkDock(
                     hasInitializedPosition = true
                 } else {
                     launch {
-                        animX.animateTo(
-                            targetX,
-                            spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow)
-                        )
+                        animX.animateTo(targetX, motion.glideSpring())
                     }
                     launch {
-                        animY.animateTo(
-                            targetY,
-                            spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
-                        )
+                        animY.animateTo(targetY, motion.glideSpring())
                     }
                 }
             }
@@ -396,26 +392,25 @@ private fun DraggableSoftBookmarkDock(
         // Tactile lift scale while dragging + subtle spring pop when page bookmark state changes
         val dragLiftScale by animateFloatAsState(
             targetValue = if (isDragging) 1.12f else 1f,
-            animationSpec = spring(dampingRatio = 0.72f, stiffness = 460f),
+            animationSpec = motion.tactileSpring(),
             label = "bookmark_drag_lift"
         )
         val bookmarkIconPop by animateFloatAsState(
             targetValue = if (isBookmarkedHere) 1.12f else 1f,
-            animationSpec = spring(dampingRatio = 0.56f, stiffness = 460f),
+            animationSpec = motion.expressiveSpring(),
             label = "bookmark_icon_pop"
         )
 
         // IMPORTANT: Do NOT read animY.value in composition scope (that forces 120Hz recompositions while dragging!).
         // Use persisted dockYFraction for the drawer TransformOrigin so dragging causes ZERO recompositions.
-        val smoothDockEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
         val pillOrigin = TransformOrigin(if (isRight) 1f else 0f, 0.5f)
         val drawerOrigin = TransformOrigin(if (isRight) 1f else 0f, dockYFraction.coerceIn(0.15f, 0.85f))
 
         // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(tween(190, easing = smoothDockEasing)),
-            exit = fadeOut(tween(155, easing = smoothDockEasing))
+            enter = fadeIn(motion.tweenSpec(190)),
+            exit = fadeOut(motion.exitTween(155))
         ) {
             Box(
                 modifier = Modifier
@@ -434,15 +429,15 @@ private fun DraggableSoftBookmarkDock(
         AnimatedVisibility(
             visible = !isExpanded,
             enter = scaleIn(
-                initialScale = 0.76f,
+                initialScale = 0.78f,
                 transformOrigin = pillOrigin,
-                animationSpec = spring(dampingRatio = 0.84f, stiffness = 460f)
-            ) + fadeIn(tween(170, easing = smoothDockEasing)),
+                animationSpec = motion.tactileSpring()
+            ) + fadeIn(motion.emphasizedTween(175)),
             exit = scaleOut(
-                targetScale = 0.76f,
+                targetScale = 0.78f,
                 transformOrigin = pillOrigin,
-                animationSpec = tween(155, easing = smoothDockEasing)
-            ) + fadeOut(tween(130, easing = smoothDockEasing))
+                animationSpec = motion.exitTween(155)
+            ) + fadeOut(motion.exitTween(130))
         ) {
             val pillShape = if (isDragging) {
                 RoundedCornerShape(20.dp)
@@ -489,10 +484,7 @@ private fun DraggableSoftBookmarkDock(
                                 coroutineScope.launch {
                                     animX.animateTo(
                                         targetValue = snapX,
-                                        animationSpec = spring(
-                                            dampingRatio = 0.76f,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        )
+                                        animationSpec = motion.glideSpring()
                                     )
                                 }
                             },
@@ -508,10 +500,7 @@ private fun DraggableSoftBookmarkDock(
                                 coroutineScope.launch {
                                     animX.animateTo(
                                         targetValue = snapX,
-                                        animationSpec = spring(
-                                            dampingRatio = 0.76f,
-                                            stiffness = Spring.StiffnessMediumLow
-                                        )
+                                        animationSpec = motion.glideSpring()
                                     )
                                 }
                             },
@@ -585,15 +574,15 @@ private fun DraggableSoftBookmarkDock(
         AnimatedVisibility(
             visible = isExpanded,
             enter = scaleIn(
-                initialScale = 0.62f,
+                initialScale = 0.66f,
                 transformOrigin = drawerOrigin,
-                animationSpec = spring(dampingRatio = 0.86f, stiffness = 430f)
-            ) + fadeIn(tween(175, easing = smoothDockEasing)),
+                animationSpec = motion.modalSpring()
+            ) + fadeIn(motion.emphasizedTween(185)),
             exit = scaleOut(
-                targetScale = 0.64f,
+                targetScale = 0.68f,
                 transformOrigin = drawerOrigin,
-                animationSpec = tween(175, easing = smoothDockEasing)
-            ) + fadeOut(tween(140, easing = smoothDockEasing)),
+                animationSpec = motion.exitTween(175)
+            ) + fadeOut(motion.exitTween(145)),
             modifier = Modifier
                 .align(if (isRight) Alignment.CenterEnd else Alignment.CenterStart)
                 .displayCutoutPadding()
@@ -847,6 +836,7 @@ private fun DynamicIslandReaderDock(
     val palette = LocalFolioPalette.current
     val islandBg = Color(0xFF0C111C)
     val islandFg = Color(0xFFF3F6FC)
+    val motion = LocalLumaMotion.current
     val topOrigin = TransformOrigin(0.5f, 0f)
 
     // Only allow switching between Lectura and Música when media is actively playing or recently paused/detected
@@ -864,8 +854,8 @@ private fun DynamicIslandReaderDock(
         // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(140))
+            enter = fadeIn(motion.tweenSpec(175)),
+            exit = fadeOut(motion.exitTween(145))
         ) {
             Box(
                 modifier = Modifier
@@ -898,19 +888,18 @@ private fun DynamicIslandReaderDock(
             )
 
             // 1. Compact Apple/Infinix Dynamic Island Pill (silky GPU Zoom-In / Zoom-Out)
-            val smoothIslandCurve = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
             AnimatedVisibility(
                 visible = !isExpanded && activeIslandEvent == null,
                 enter = scaleIn(
-                    initialScale = 0.86f,
+                    initialScale = 0.87f,
                     transformOrigin = topOrigin,
-                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 460f)
-                ) + fadeIn(tween(175, easing = smoothIslandCurve)),
+                    animationSpec = motion.tactileSpring()
+                ) + fadeIn(motion.emphasizedTween(180)),
                 exit = scaleOut(
-                    targetScale = 0.86f,
+                    targetScale = 0.87f,
                     transformOrigin = topOrigin,
-                    animationSpec = tween(155, easing = smoothIslandCurve)
-                ) + fadeOut(tween(130, easing = smoothIslandCurve))
+                    animationSpec = motion.exitTween(155)
+                ) + fadeOut(motion.exitTween(130))
             ) {
                 val pillShape = RoundedCornerShape(50)
                 val showCompactMedia = !isProcessingStatus && hasMediaAvailable
@@ -1026,15 +1015,15 @@ private fun DynamicIslandReaderDock(
             AnimatedVisibility(
                 visible = isExpanded,
                 enter = scaleIn(
-                    initialScale = 0.62f,
+                    initialScale = 0.66f,
                     transformOrigin = topOrigin,
-                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 440f)
-                ) + fadeIn(tween(175, easing = smoothIslandCurve)),
+                    animationSpec = motion.modalSpring()
+                ) + fadeIn(motion.emphasizedTween(185)),
                 exit = scaleOut(
-                    targetScale = 0.62f,
+                    targetScale = 0.66f,
                     transformOrigin = topOrigin,
-                    animationSpec = tween(175, easing = smoothIslandCurve)
-                ) + fadeOut(tween(140, easing = smoothIslandCurve))
+                    animationSpec = motion.exitTween(175)
+                ) + fadeOut(motion.exitTween(145))
             ) {
                 val expandedW = (312.dp * dockScale).coerceIn(280.dp, 400.dp)
                 val expandedShape = RoundedCornerShape(24.dp)
@@ -1598,13 +1587,14 @@ private fun ClassicKindleOverlayBars(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val capsuleShape = RoundedCornerShape(28.dp)
     Box(modifier = modifier.fillMaxSize()) {
         // Gentle 15% dim scrim matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(140))
+            enter = fadeIn(motion.tweenSpec(175)),
+            exit = fadeOut(motion.exitTween(145))
         ) {
             Box(
                 modifier = Modifier
@@ -1623,15 +1613,15 @@ private fun ClassicKindleOverlayBars(
         AnimatedVisibility(
             visible = isExpanded,
             enter = scaleIn(
-                initialScale = 0.88f,
+                initialScale = 0.90f,
                 transformOrigin = TransformOrigin(0.5f, 0f),
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
-            ) + fadeIn(tween(150)),
+                animationSpec = motion.modalSpring()
+            ) + fadeIn(motion.emphasizedTween(175)),
             exit = scaleOut(
-                targetScale = 0.88f,
+                targetScale = 0.90f,
                 transformOrigin = TransformOrigin(0.5f, 0f),
-                animationSpec = tween(140)
-            ) + fadeOut(tween(120)),
+                animationSpec = motion.exitTween(155)
+            ) + fadeOut(motion.exitTween(135)),
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .displayCutoutPadding()
@@ -1715,15 +1705,15 @@ private fun ClassicKindleOverlayBars(
         AnimatedVisibility(
             visible = isExpanded,
             enter = scaleIn(
-                initialScale = 0.88f,
+                initialScale = 0.90f,
                 transformOrigin = TransformOrigin(0.5f, 1f),
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
-            ) + fadeIn(tween(150)),
+                animationSpec = motion.modalSpring()
+            ) + fadeIn(motion.emphasizedTween(175)),
             exit = scaleOut(
-                targetScale = 0.88f,
+                targetScale = 0.90f,
                 transformOrigin = TransformOrigin(0.5f, 1f),
-                animationSpec = tween(140)
-            ) + fadeOut(tween(120)),
+                animationSpec = motion.exitTween(155)
+            ) + fadeOut(motion.exitTween(135)),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
@@ -1917,6 +1907,7 @@ private fun FormatViewModeSegmentedToggle(
     compact: Boolean = false
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val containerBg = if (darkSurfaceOverride) Color.White.copy(alpha = 0.08f) else palette.surfaceAlt.copy(alpha = 0.82f)
     val containerBorder = if (darkSurfaceOverride) Color.White.copy(alpha = 0.14f) else palette.border
     val inactiveInk = if (darkSurfaceOverride) Color.White.copy(alpha = 0.72f) else palette.inkMuted
@@ -1931,12 +1922,12 @@ private fun FormatViewModeSegmentedToggle(
 
     val epubBg by animateColorAsState(
         targetValue = if (!isOriginalFormatView) palette.accent else Color.Transparent,
-        animationSpec = tween(180),
+        animationSpec = motion.tweenSpec(180),
         label = "fmt_toggle_epub_bg"
     )
     val origBg by animateColorAsState(
         targetValue = if (isOriginalFormatView) palette.accent else Color.Transparent,
-        animationSpec = tween(180),
+        animationSpec = motion.tweenSpec(180),
         label = "fmt_toggle_orig_bg"
     )
 

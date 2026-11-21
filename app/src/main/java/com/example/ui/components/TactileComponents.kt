@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 
 /**
  * Soft tactile button with gentle spring press depth and rounded geometry.
@@ -61,11 +62,12 @@ fun TactileButton(
     contentPadding: PaddingValues = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
     content: @Composable RowScope.() -> Unit
 ) {
+    val motion = LocalLumaMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val pressOffset by animateDpAsState(
         targetValue = if (isPressed && enabled) lipDepth else 0.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium, dampingRatio = Spring.DampingRatioNoBouncy),
+        animationSpec = motion.tactileSpring(),
         label = "tactile_press_offset"
     )
 
@@ -119,12 +121,13 @@ fun TactileChip(
     icon: ImageVector? = null
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val lip = 2.dp
     val pressOffset by animateDpAsState(
         targetValue = if (isPressed) lip else 0.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        animationSpec = motion.tactileSpring(),
         label = "chip_offset"
     )
     val bg = if (selected) palette.accent else palette.surface
@@ -190,12 +193,13 @@ fun TactileIconButton(
     size: Dp = 44.dp
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val lip = 2.dp
     val pressOffset by animateDpAsState(
         targetValue = if (isPressed) lip else 0.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        animationSpec = motion.tactileSpring(),
         label = "icon_btn_offset"
     )
     val bg = containerColor ?: if (selected) palette.accent else palette.surface
@@ -246,11 +250,12 @@ fun TactileCard(
     lipDepth: Dp = 2.5.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val motion = LocalLumaMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val pressOffset by animateDpAsState(
         targetValue = if (isPressed && onClick != null) lipDepth * 0.7f else 0.dp,
-        animationSpec = spring(stiffness = Spring.StiffnessMedium),
+        animationSpec = motion.tactileSpring(),
         label = "card_offset"
     )
     val shape = RoundedCornerShape(cornerRadius)

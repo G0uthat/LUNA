@@ -41,11 +41,14 @@ import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PhoneInTalk
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -61,6 +64,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.data.local.DictionarySourceEntity
 import com.example.data.model.IslandNotificationFilterMode
 import com.example.data.model.ReaderMenuStyle
@@ -83,9 +88,13 @@ import com.example.data.model.ReadingTheme
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
 import com.example.engine.DynamicIslandEventManager
+import com.example.engine.GitHubUpdateManager
 import com.example.engine.SystemMediaController
+import com.example.engine.UpdateCheckOutcome
+import com.example.engine.UpdateEnforcementMode
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.paletteFor
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
@@ -817,7 +826,113 @@ private fun LumaCreditsSettingsContent(
             )
         }
 
-        // 4. Optional Permissions & Interactive Tour Replay
+        // 4. GitHub APK Updates Card (fixed to G0uthat/Luma, clean manual check without preview controls)
+        val scope = rememberCoroutineScope()
+        val updateOutcome by GitHubUpdateManager.checkOutcome.collectAsStateWithLifecycle()
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(palette.surfaceAlt.copy(alpha = 0.68f))
+                .border(1.dp, palette.border, RoundedCornerShape(22.dp))
+                .padding(16.dp)
+                .testTag("settings_github_updates_card"),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(palette.accentSoft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SystemUpdate,
+                        contentDescription = null,
+                        tint = palette.accent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Actualizaciones de Luma",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = palette.ink
+                    )
+                    Text(
+                        text = "Versión instalada: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                }
+            }
+
+            val isChecking = updateOutcome is UpdateCheckOutcome.Checking
+            TactileButton(
+                onClick = {
+                    if (!isChecking) {
+                        scope.launch {
+                            GitHubUpdateManager.checkForUpdates(context, manualCheck = true)
+                        }
+                    }
+                },
+                cornerRadius = 16.dp,
+                lipDepth = 2.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("github_check_updates_btn")
+            ) {
+                if (isChecking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = palette.onAccent
+                    )
+                } else {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (isChecking) "Comprobando actualizaciones…" else "Buscar actualización ahora",
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+
+            when (val status = updateOutcome) {
+                is UpdateCheckOutcome.UpToDate -> {
+                    Text(
+                        text = "Luma está al día (v${status.checkedVersion}).",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF22C55E)
+                    )
+                }
+                is UpdateCheckOutcome.UpdateFound -> {
+                    Text(
+                        text = "Nueva versión disponible: v${status.info.versionName} (${if (status.info.mode == UpdateEnforcementMode.MANDATORY_BLOCKING) "Obligatoria" else "Opcional"}).",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.accent
+                    )
+                }
+                is UpdateCheckOutcome.Error -> {
+                    Text(
+                        text = status.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                }
+                else -> Unit
+            }
+        }
+
+        // 5. Optional Permissions & Interactive Tour Replay
         if (onReplayOnboarding != null) {
             Row(
                 modifier = Modifier

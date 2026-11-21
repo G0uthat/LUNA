@@ -80,9 +80,8 @@ import com.example.engine.CriticalEventKind
 import com.example.engine.DynamicIslandEvent
 import com.example.engine.DynamicIslandEventManager
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.launch
-
-private val SmoothIslandEasing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 
 /**
  * Ultra-minimal, distraction-free battery-only indicator shown in the reader while
@@ -182,6 +181,7 @@ fun DynamicIslandEventBanner(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val motion = LocalLumaMotion.current
     val topOrigin = TransformOrigin(0.5f, 0f)
     val density = LocalDensity.current
     val dismissThresholdPx = with(density) { -28.dp.toPx() }
@@ -204,18 +204,15 @@ fun DynamicIslandEventBanner(
         visible = event != null,
         modifier = modifier,
         enter = scaleIn(
-            initialScale = 0.60f,
+            initialScale = 0.64f,
             transformOrigin = topOrigin,
-            animationSpec = spring(
-                dampingRatio = 0.84f,
-                stiffness = 460f
-            )
-        ) + fadeIn(tween(180, easing = SmoothIslandEasing)),
+            animationSpec = motion.modalSpring()
+        ) + fadeIn(motion.emphasizedTween(185)),
         exit = scaleOut(
-            targetScale = 0.60f,
+            targetScale = 0.64f,
             transformOrigin = topOrigin,
-            animationSpec = tween(190, easing = SmoothIslandEasing)
-        ) + fadeOut(tween(145, easing = SmoothIslandEasing))
+            animationSpec = motion.exitTween(185)
+        ) + fadeOut(motion.exitTween(145))
     ) {
         val displayedEvent = event ?: lastEvent ?: return@AnimatedVisibility
         Box(
@@ -232,25 +229,13 @@ fun DynamicIslandEventBanner(
                                 onDismiss()
                             } else {
                                 coroutineScope.launch {
-                                    dragOffsetY.animateTo(
-                                        0f,
-                                        spring(
-                                            dampingRatio = Spring.DampingRatioNoBouncy,
-                                            stiffness = Spring.StiffnessMedium
-                                        )
-                                    )
+                                    dragOffsetY.animateTo(0f, motion.tactileSpring())
                                 }
                             }
                         },
                         onDragCancel = {
                             coroutineScope.launch {
-                                dragOffsetY.animateTo(
-                                    0f,
-                                    spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    )
-                                )
+                                dragOffsetY.animateTo(0f, motion.tactileSpring())
                             }
                         },
                         onVerticalDrag = { change, dragAmount ->
@@ -265,16 +250,16 @@ fun DynamicIslandEventBanner(
                 targetState = displayedEvent,
                 contentKey = { it.id },
                 transitionSpec = {
-                    (fadeIn(tween(180, easing = SmoothIslandEasing)) + scaleIn(
+                    (fadeIn(motion.emphasizedTween(180)) + scaleIn(
                         initialScale = 0.94f,
                         transformOrigin = topOrigin,
-                        animationSpec = tween(210, easing = SmoothIslandEasing)
-                    )) togetherWith (fadeOut(tween(130, easing = SmoothIslandEasing)) + scaleOut(
+                        animationSpec = motion.emphasizedTween(205)
+                    )) togetherWith (fadeOut(motion.exitTween(130)) + scaleOut(
                         targetScale = 0.94f,
                         transformOrigin = topOrigin,
-                        animationSpec = tween(140, easing = SmoothIslandEasing)
+                        animationSpec = motion.exitTween(140)
                     )) using SizeTransform(clip = false) { _, _ ->
-                        spring(dampingRatio = 0.88f, stiffness = 420f)
+                        motion.modalSpring()
                     }
                 },
                 label = "dynamic_island_event_morph"
@@ -518,12 +503,13 @@ private fun DynamicIslandEventPillCard(
  */
 @Composable
 private fun PulsingCriticalDot(color: Color) {
+    val motion = LocalLumaMotion.current
     val pulseTransition = rememberInfiniteTransition(label = "island_critical_pulse")
     val dotAlpha by pulseTransition.animateFloat(
         initialValue = 0.35f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(720, easing = SmoothIslandEasing),
+            animation = tween(motion.ambientDuration(720), easing = motion.standardEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "island_critical_dot_alpha"

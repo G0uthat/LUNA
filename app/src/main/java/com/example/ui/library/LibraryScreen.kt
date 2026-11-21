@@ -125,6 +125,7 @@ import com.example.ui.components.TactileProgressBar
 import com.example.ui.components.TourTargetBounds
 import com.example.ui.components.UserAvatarCircle
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -151,6 +152,7 @@ fun LibraryScreen(
     onOpenDocument: (Long) -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val context = LocalContext.current
     val socialRepo = remember(context) { SocialRepository.getInstance(context) }
     val userProfile by socialRepo.profile.collectAsStateWithLifecycle()
@@ -219,7 +221,7 @@ fun LibraryScreen(
         showPermissionsOnboarding || optionsBook != null
     val backgroundBlurRadius by animateDpAsState(
         targetValue = if (anyFloatingMenuOpen) 6.dp else 0.dp,
-        animationSpec = tween(220),
+        animationSpec = motion.tweenSpec(215),
         label = "library_menu_blur"
     )
 
@@ -658,12 +660,9 @@ fun LibraryScreen(
                         }
                         Box(
                             modifier = Modifier.animateItem(
-                                fadeInSpec = tween(220),
-                                fadeOutSpec = tween(190),
-                                placementSpec = spring(
-                                    dampingRatio = 0.82f,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
+                                fadeInSpec = motion.tweenSpec(215),
+                                fadeOutSpec = motion.exitTween(185),
+                                placementSpec = motion.glideSpring()
                             )
                         ) {
                             SeriesSteamCard(
@@ -781,12 +780,9 @@ fun LibraryScreen(
                     ) { doc ->
                         Box(
                             modifier = Modifier.animateItem(
-                                fadeInSpec = tween(220),
-                                fadeOutSpec = tween(190),
-                                placementSpec = spring(
-                                    dampingRatio = 0.82f,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
+                                fadeInSpec = motion.tweenSpec(215),
+                                fadeOutSpec = motion.exitTween(185),
+                                placementSpec = motion.glideSpring()
                             )
                         ) {
                             SteamCoverBookTile(

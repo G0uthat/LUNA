@@ -79,6 +79,7 @@ import kotlin.math.PI
 import kotlin.math.pow
 import kotlin.math.sin
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import com.example.ui.theme.LumaBrandFontFamily
 import com.example.ui.theme.LumaLetteringFontFamily
 
@@ -530,18 +531,18 @@ fun ProfileDropdownCapsuleOverlay(
     onImportDocument: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val density = LocalDensity.current
     val scrimInteraction = remember { MutableInteractionSource() }
     val innerPadPx = with(density) { 10.dp.toPx() }
     val capsuleTopOffsetPx = (anchorTopPx - innerPadPx).coerceAtLeast(0f).roundToInt()
 
-    val smoothEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
     Box(modifier = Modifier.fillMaxSize()) {
         // Gentle 15% dim + subtle frosted veil (pairs with the 18% background blur in LibraryScreen)
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = tween(220, easing = smoothEasing)),
-            exit = fadeOut(animationSpec = tween(175, easing = smoothEasing))
+            enter = fadeIn(animationSpec = motion.tweenSpec(215)),
+            exit = fadeOut(animationSpec = motion.exitTween(170))
         ) {
             Box(
                 modifier = Modifier
@@ -565,24 +566,21 @@ fun ProfileDropdownCapsuleOverlay(
                 .offset { IntOffset(0, capsuleTopOffsetPx) }
                 .padding(end = 8.dp),
             enter = scaleIn(
-                initialScale = 0.88f,
+                initialScale = 0.89f,
                 transformOrigin = TransformOrigin(0.88f, 0.06f),
-                animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 380f
-                )
+                animationSpec = motion.modalSpring()
             ) + slideInVertically(
                 initialOffsetY = { -10 },
-                animationSpec = spring(dampingRatio = 0.86f, stiffness = 380f)
-            ) + fadeIn(animationSpec = tween(200, easing = smoothEasing)),
+                animationSpec = motion.modalSpring()
+            ) + fadeIn(animationSpec = motion.emphasizedTween(200)),
             exit = scaleOut(
-                targetScale = 0.91f,
+                targetScale = 0.92f,
                 transformOrigin = TransformOrigin(0.88f, 0.06f),
-                animationSpec = tween(175, easing = smoothEasing)
+                animationSpec = motion.exitTween(170)
             ) + slideOutVertically(
                 targetOffsetY = { -8 },
-                animationSpec = tween(165, easing = smoothEasing)
-            ) + fadeOut(animationSpec = tween(155, easing = smoothEasing))
+                animationSpec = motion.exitTween(165)
+            ) + fadeOut(animationSpec = motion.exitTween(155))
         ) {
             val capsuleShape = RoundedCornerShape(32.dp)
             val accountSubtitle = remember(userProfile.username) {
@@ -888,6 +886,7 @@ fun LibraryFilterDropdownOverlay(
     onDismiss: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val density = LocalDensity.current
     val scrimInteraction = remember { MutableInteractionSource() }
     val gapPx = with(density) { 10.dp.toPx() }
@@ -904,12 +903,11 @@ fun LibraryFilterDropdownOverlay(
         )
     }
 
-    val smoothFilterEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = tween(220, easing = smoothFilterEasing)),
-            exit = fadeOut(animationSpec = tween(175, easing = smoothFilterEasing))
+            enter = fadeIn(animationSpec = motion.tweenSpec(215)),
+            exit = fadeOut(animationSpec = motion.exitTween(170))
         ) {
             Box(
                 modifier = Modifier
@@ -932,24 +930,21 @@ fun LibraryFilterDropdownOverlay(
                 .offset { IntOffset(0, menuTopOffsetPx) }
                 .padding(end = 16.dp, start = 16.dp),
             enter = scaleIn(
-                initialScale = 0.88f,
+                initialScale = 0.89f,
                 transformOrigin = TransformOrigin(0.90f, 0.05f),
-                animationSpec = spring(
-                    dampingRatio = 0.84f,
-                    stiffness = 380f
-                )
+                animationSpec = motion.modalSpring()
             ) + slideInVertically(
                 initialOffsetY = { -10 },
-                animationSpec = spring(dampingRatio = 0.86f, stiffness = 380f)
-            ) + fadeIn(animationSpec = tween(200, easing = smoothFilterEasing)),
+                animationSpec = motion.modalSpring()
+            ) + fadeIn(animationSpec = motion.emphasizedTween(200)),
             exit = scaleOut(
-                targetScale = 0.91f,
+                targetScale = 0.92f,
                 transformOrigin = TransformOrigin(0.90f, 0.05f),
-                animationSpec = tween(175, easing = smoothFilterEasing)
+                animationSpec = motion.exitTween(170)
             ) + slideOutVertically(
                 targetOffsetY = { -8 },
-                animationSpec = tween(165, easing = smoothFilterEasing)
-            ) + fadeOut(animationSpec = tween(155, easing = smoothFilterEasing))
+                animationSpec = motion.exitTween(165)
+            ) + fadeOut(animationSpec = motion.exitTween(155))
         ) {
             val capsuleShape = RoundedCornerShape(32.dp)
             Column(

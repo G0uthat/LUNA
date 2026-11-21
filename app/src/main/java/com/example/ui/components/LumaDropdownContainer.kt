@@ -74,6 +74,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.engine.DynamicIslandEventManager
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import com.example.ui.theme.LumaBrandFontFamily
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -93,10 +94,13 @@ fun LumaFloatingDropdownDialog(
     maxWidth: Dp = 520.dp,
     maxHeightFraction: Float = 0.84f,
     dismissOnScrimClick: Boolean = true,
+    dismissOnBackPress: Boolean = true,
+    scrimAlpha: Float = 0.15f,
     testTag: String = "luma_dropdown_panel",
     content: @Composable ColumnScope.(dismissWithAnimation: () -> Unit) -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val scope = rememberCoroutineScope()
     val scrimInteraction = remember { MutableInteractionSource() }
     val cardInteraction = remember { MutableInteractionSource() }
@@ -108,12 +112,13 @@ fun LumaFloatingDropdownDialog(
         isVisible = true
     }
 
+    val exitDurationMs = motion.duration(175)
     val triggerDismiss: () -> Unit = {
         if (!isDismissing) {
             isDismissing = true
             isVisible = false
             scope.launch {
-                delay(185L)
+                delay(exitDurationMs.toLong() + 12L)
                 onDismiss()
             }
         }
@@ -126,13 +131,13 @@ fun LumaFloatingDropdownDialog(
         }
     }
 
-    val smoothEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
-
     Dialog(
-        onDismissRequest = { if (dismissOnScrimClick) triggerDismiss() },
+        onDismissRequest = { if (dismissOnScrimClick && dismissOnBackPress) triggerDismiss() },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
+            decorFitsSystemWindows = false,
+            dismissOnBackPress = dismissOnBackPress,
+            dismissOnClickOutside = dismissOnScrimClick
         )
     ) {
         // Remove Android's heavy default 60% black dialog dim so our gentle 15% scrim shines cleanly
@@ -150,16 +155,16 @@ fun LumaFloatingDropdownDialog(
         val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
 
         Box(modifier = Modifier.fillMaxSize()) {
-            // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay
+            // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay (stronger for mandatory blockers)
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(animationSpec = tween(190, easing = smoothEasing)),
-                exit = fadeOut(animationSpec = tween(155, easing = smoothEasing))
+                enter = fadeIn(animationSpec = motion.tweenSpec(195)),
+                exit = fadeOut(animationSpec = motion.exitTween(155))
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.15f))
+                        .background(Color.Black.copy(alpha = scrimAlpha))
                         .background(palette.background.copy(alpha = 0.08f))
                         .clickable(
                             interactionSource = scrimInteraction,
@@ -183,27 +188,21 @@ fun LumaFloatingDropdownDialog(
                 AnimatedVisibility(
                     visible = isVisible,
                     enter = scaleIn(
-                        initialScale = 0.88f,
+                        initialScale = 0.89f,
                         transformOrigin = transformOrigin,
-                        animationSpec = spring(
-                            dampingRatio = 0.84f,
-                            stiffness = 380f
-                        )
+                        animationSpec = motion.modalSpring()
                     ) + slideInVertically(
                         initialOffsetY = { -16 },
-                        animationSpec = spring(
-                            dampingRatio = 0.86f,
-                            stiffness = 390f
-                        )
-                    ) + fadeIn(animationSpec = tween(210, easing = smoothEasing)),
+                        animationSpec = motion.modalSpring()
+                    ) + fadeIn(animationSpec = motion.emphasizedTween(210)),
                     exit = scaleOut(
-                        targetScale = 0.91f,
+                        targetScale = 0.92f,
                         transformOrigin = transformOrigin,
-                        animationSpec = tween(175, easing = smoothEasing)
+                        animationSpec = motion.exitTween(175)
                     ) + slideOutVertically(
                         targetOffsetY = { -10 },
-                        animationSpec = tween(175, easing = smoothEasing)
-                    ) + fadeOut(animationSpec = tween(160, easing = smoothEasing))
+                        animationSpec = motion.exitTween(175)
+                    ) + fadeOut(animationSpec = motion.exitTween(160))
                 ) {
                     Column(
                         modifier = Modifier
@@ -258,6 +257,7 @@ fun LumaDropdownHeader(
     subtitle: String? = null,
     leadingIcon: ImageVector? = null,
     onDismiss: () -> Unit,
+    showCloseButton: Boolean = true,
     closeTestTag: String = "luma_dropdown_close"
 ) {
     val palette = LocalFolioPalette.current
@@ -310,23 +310,25 @@ fun LumaDropdownHeader(
                     )
                 }
             }
-            Spacer(Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(palette.surfaceAlt)
-                    .border(1.dp, palette.border, CircleShape)
-                    .clickable(onClick = onDismiss)
-                    .testTag(closeTestTag),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Cerrar",
-                    tint = palette.ink,
-                    modifier = Modifier.size(18.dp)
-                )
+            if (showCloseButton) {
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(palette.surfaceAlt)
+                        .border(1.dp, palette.border, CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .testTag(closeTestTag),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Cerrar",
+                        tint = palette.ink,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
         HorizontalDivider(

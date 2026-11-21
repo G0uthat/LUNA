@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -153,36 +154,33 @@ private fun BookmarkRibbonDropAnimation(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val slideY = remember(eventId) { Animatable(if (isAdded) -90f else 0f) }
     val alphaAnim = remember(eventId) { Animatable(if (isAdded) 0f else 1f) }
     val burstProgress = remember(eventId) { Animatable(0f) }
 
-    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     LaunchedEffect(eventId) {
         if (isAdded) {
-            launch { alphaAnim.animateTo(1f, tween(140, easing = smoothEasing)) }
+            launch { alphaAnim.animateTo(1f, motion.tweenSpec(145)) }
             launch {
                 slideY.animateTo(
                     targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = 0.68f,
-                        stiffness = 380f
-                    )
+                    animationSpec = motion.expressiveSpring()
                 )
             }
             launch {
-                delay(80)
-                burstProgress.animateTo(1f, tween(480, easing = smoothEasing))
+                delay(motion.duration(80, minFrames = 2).toLong())
+                burstProgress.animateTo(1f, motion.emphasizedTween(480))
             }
             delay(800)
-            launch { slideY.animateTo(-72f, tween(240, easing = smoothEasing)) }
-            alphaAnim.animateTo(0f, tween(210, easing = smoothEasing))
+            launch { slideY.animateTo(-72f, motion.exitTween(240)) }
+            alphaAnim.animateTo(0f, motion.exitTween(210))
         } else {
             launch {
-                burstProgress.animateTo(1f, tween(340, easing = smoothEasing))
+                burstProgress.animateTo(1f, motion.tweenSpec(340))
             }
-            launch { slideY.animateTo(-86f, tween(320, easing = smoothEasing)) }
-            alphaAnim.animateTo(0f, tween(290, easing = smoothEasing))
+            launch { slideY.animateTo(-86f, motion.exitTween(320)) }
+            alphaAnim.animateTo(0f, motion.exitTween(290))
         }
         onFinished()
     }
@@ -278,33 +276,30 @@ private fun TactileIconPulseAnimation(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
-    val scaleAnim = remember(eventId) { Animatable(0.45f) }
+    val motion = LocalLumaMotion.current
+    val scaleAnim = remember(eventId) { Animatable(0.48f) }
     val alphaAnim = remember(eventId) { Animatable(0f) }
     val rippleProgress = remember(eventId) { Animatable(0f) }
 
-    val smoothEasing = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     LaunchedEffect(eventId) {
-        launch { alphaAnim.animateTo(1f, tween(140, easing = smoothEasing)) }
+        launch { alphaAnim.animateTo(1f, motion.tweenSpec(145)) }
         launch {
             scaleAnim.animateTo(
                 targetValue = 1f,
-                animationSpec = spring(
-                    dampingRatio = 0.66f,
-                    stiffness = 420f
-                )
+                animationSpec = motion.expressiveSpring()
             )
         }
         launch {
-            rippleProgress.animateTo(1f, tween(620, easing = smoothEasing))
+            rippleProgress.animateTo(1f, motion.emphasizedTween(620))
         }
         delay(660)
         launch {
             scaleAnim.animateTo(
                 targetValue = if (isDeleteStyle) 0.58f else 0.84f,
-                animationSpec = tween(210, easing = smoothEasing)
+                animationSpec = motion.exitTween(210)
             )
         }
-        alphaAnim.animateTo(0f, tween(200, easing = smoothEasing))
+        alphaAnim.animateTo(0f, motion.exitTween(200))
         onFinished()
     }
 
@@ -363,18 +358,19 @@ private fun ErrorFrostedPillAnimation(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val scaleAnim = remember(eventId) { Animatable(0.88f) }
     val alphaAnim = remember(eventId) { Animatable(0f) }
 
     LaunchedEffect(eventId) {
-        launch { alphaAnim.animateTo(1f, tween(160)) }
+        launch { alphaAnim.animateTo(1f, motion.tweenSpec(165)) }
         scaleAnim.animateTo(
             targetValue = 1f,
-            animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMedium)
+            animationSpec = motion.modalSpring()
         )
         delay(2300)
-        launch { scaleAnim.animateTo(0.92f, tween(180)) }
-        alphaAnim.animateTo(0f, tween(180))
+        launch { scaleAnim.animateTo(0.92f, motion.exitTween(180)) }
+        alphaAnim.animateTo(0f, motion.exitTween(180))
         onFinished()
     }
 

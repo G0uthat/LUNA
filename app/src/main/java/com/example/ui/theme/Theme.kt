@@ -332,10 +332,14 @@ fun FolioTheme(
     readingTheme: ReadingTheme = ReadingTheme.WARM_CREAM,
     useSystemFont: Boolean = false,
     softNightDimming: Float = 0f,
+    effectiveRefreshRateHz: Float = 60f,
     content: @Composable () -> Unit
 ) {
     val palette = remember(readingTheme, softNightDimming) {
         paletteFor(readingTheme).withSoftNightDimming(softNightDimming)
+    }
+    val motion = remember(effectiveRefreshRateHz) {
+        motionProfileFor(effectiveRefreshRateHz)
     }
     val typography = remember(useSystemFont) { buildFolioTypography(useSystemFont) }
     val colorScheme = if (palette.isDark) {
@@ -374,7 +378,10 @@ fun FolioTheme(
         )
     }
 
-    CompositionLocalProvider(LocalFolioPalette provides palette) {
+    CompositionLocalProvider(
+        LocalFolioPalette provides palette,
+        LocalLumaMotion provides motion
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = typography,

@@ -89,6 +89,7 @@ import com.example.ui.theme.HighlightCobalt
 import com.example.ui.theme.HighlightCoral
 import com.example.ui.theme.HighlightMint
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlin.math.roundToInt
 
 val HighlightSwatches = listOf(
@@ -124,6 +125,7 @@ fun ContextualDictionaryPopover(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val enabledSources = remember(sources) { sources.filter { it.isEnabled } }
@@ -152,8 +154,6 @@ fun ContextualDictionaryPopover(
         activeSelection.word
     }
 
-    val smoothEaseOut = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
-
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val maxW = constraints.maxWidth
         val maxH = constraints.maxHeight
@@ -180,10 +180,7 @@ fun ContextualDictionaryPopover(
 
         val animatedOffset by animateIntOffsetAsState(
             targetValue = IntOffset(targetX, targetY),
-            animationSpec = spring(
-                dampingRatio = 0.84f,
-                stiffness = 380f
-            ),
+            animationSpec = motion.modalSpring(),
             label = "dictionary_popover_offset"
         )
 
@@ -194,8 +191,8 @@ fun ContextualDictionaryPopover(
         // Soft fading backdrop scrim — only intercepts taps while visible
         AnimatedVisibility(
             visible = isVisible,
-            enter = fadeIn(animationSpec = tween(220, easing = smoothEaseOut)),
-            exit = fadeOut(animationSpec = tween(175, easing = smoothEaseOut))
+            enter = fadeIn(animationSpec = motion.tweenSpec(215)),
+            exit = fadeOut(animationSpec = motion.exitTween(170))
         ) {
             Box(
                 modifier = Modifier
@@ -211,31 +208,25 @@ fun ContextualDictionaryPopover(
 
         AnimatedVisibility(
             visible = isVisible,
-            enter = fadeIn(animationSpec = tween(210, easing = smoothEaseOut)) +
+            enter = fadeIn(animationSpec = motion.emphasizedTween(210)) +
                 scaleIn(
-                    initialScale = 0.84f,
+                    initialScale = 0.86f,
                     transformOrigin = TransformOrigin(pivotX, pivotY),
-                    animationSpec = spring(
-                        dampingRatio = 0.80f,
-                        stiffness = 350f
-                    )
+                    animationSpec = motion.modalSpring()
                 ) +
                 slideInVertically(
                     initialOffsetY = { if (placeBelow) -glidePx else glidePx },
-                    animationSpec = spring(
-                        dampingRatio = 0.84f,
-                        stiffness = 360f
-                    )
+                    animationSpec = motion.modalSpring()
                 ),
-            exit = fadeOut(animationSpec = tween(165, easing = smoothEaseOut)) +
+            exit = fadeOut(animationSpec = motion.exitTween(165)) +
                 scaleOut(
-                    targetScale = 0.88f,
+                    targetScale = 0.90f,
                     transformOrigin = TransformOrigin(pivotX, pivotY),
-                    animationSpec = tween(175, easing = smoothEaseOut)
+                    animationSpec = motion.exitTween(175)
                 ) +
                 slideOutVertically(
                     targetOffsetY = { if (placeBelow) -glidePx / 2 else glidePx / 2 },
-                    animationSpec = tween(175, easing = smoothEaseOut)
+                    animationSpec = motion.exitTween(175)
                 ),
             modifier = Modifier
                 .offset { animatedOffset }
@@ -259,7 +250,7 @@ fun ContextualDictionaryPopover(
                         onClick = {}
                     )
                     .animateContentSize(
-                        animationSpec = spring(dampingRatio = 0.85f, stiffness = 420f)
+                        animationSpec = motion.modalSpring()
                     )
                     .padding(12.dp)
                     .testTag("contextual_dictionary_popover")
@@ -275,6 +266,14 @@ fun ContextualDictionaryPopover(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    LumaSparkRevealLottie(
+                        replayKey = "${selection.locationKey}_${selection.blockIndex}_${selection.wordStartChar}_${selection.word}",
+                        tint = palette.accent,
+                        modifier = Modifier
+                            .size(22.dp)
+                            .testTag("popover_lottie_reveal_spark")
+                    )
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         text = headerLabel,
                         style = if (isMultiWord) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
@@ -510,12 +509,13 @@ fun ContextualDictionaryPopover(
                     )
                     Spacer(Modifier.width(8.dp))
                     if (isTranslatingWord) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = palette.accent
+                        LumaDictionaryPulseLottie(
+                            tint = palette.accent,
+                            modifier = Modifier
+                                .size(width = 30.dp, height = 16.dp)
+                                .testTag("popover_lottie_translating")
                         )
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(6.dp))
                         Text(
                             text = translationStatusText.ifBlank { "Traduciendo al español…" },
                             style = MaterialTheme.typography.bodySmall,
@@ -623,11 +623,22 @@ private fun WikipediaNativeSummaryBody(
     val palette = LocalFolioPalette.current
     when {
         isLoading -> {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(26.dp),
-                    strokeWidth = 2.5.dp,
-                    color = palette.accent
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                LumaDictionaryPulseLottie(
+                    tint = palette.accent,
+                    modifier = Modifier
+                        .size(width = 64.dp, height = 34.dp)
+                        .testTag("popover_lottie_wiki_loading")
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Consultando diccionario…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.inkMuted
                 )
             }
         }

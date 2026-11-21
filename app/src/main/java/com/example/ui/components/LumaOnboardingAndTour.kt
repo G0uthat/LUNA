@@ -98,6 +98,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.engine.SystemBrightnessController
 import com.example.engine.SystemMediaController
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlin.math.roundToInt
 
 /**
@@ -405,8 +406,8 @@ fun LumaInteractiveTourOverlay(
     onFinish: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val density = LocalDensity.current
-    val smoothEasing = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
 
     val allSteps = remember {
         listOf(
@@ -485,8 +486,8 @@ fun LumaInteractiveTourOverlay(
 
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn(tween(260, easing = smoothEasing)),
-        exit = fadeOut(tween(210, easing = smoothEasing))
+        enter = fadeIn(motion.emphasizedTween(255)),
+        exit = fadeOut(motion.exitTween(205))
     ) {
         BoxWithConstraints(
             modifier = Modifier
@@ -516,7 +517,7 @@ fun LumaInteractiveTourOverlay(
             val targetRight = (rawTarget.right + padPx).coerceIn(targetLeft + 32f, screenW - 8f)
             val targetBottom = (rawTarget.bottom + padPx).coerceIn(targetTop + 32f, screenH - 8f)
 
-            val spotlightSpec = spring<Float>(dampingRatio = 0.82f, stiffness = 310f)
+            val spotlightSpec = motion.glideSpring<Float>()
             val animLeft by animateFloatAsState(targetLeft, spotlightSpec, label = "tour_left")
             val animTop by animateFloatAsState(targetTop, spotlightSpec, label = "tour_top")
             val animRight by animateFloatAsState(targetRight, spotlightSpec, label = "tour_right")
@@ -529,7 +530,7 @@ fun LumaInteractiveTourOverlay(
                 initialValue = 0f,
                 targetValue = 1f,
                 animationSpec = infiniteRepeatable(
-                    animation = tween(1350, easing = FastOutSlowInEasing),
+                    animation = tween(motion.ambientDuration(1350), easing = FastOutSlowInEasing),
                     repeatMode = RepeatMode.Reverse
                 ),
                 label = "tour_pulse_val"
@@ -578,6 +579,20 @@ fun LumaInteractiveTourOverlay(
                 )
             }
 
+            // Smooth 60fps Lottie spotlight beacon gliding along the active spotlight corner
+            val beaconSizePx = with(density) { 44.dp.toPx() }
+            val beaconX = (animRight - beaconSizePx * 0.55f)
+                .coerceIn(6f, (screenW - beaconSizePx - 6f).coerceAtLeast(6f))
+            val beaconY = (animTop - beaconSizePx * 0.45f)
+                .coerceIn(6f, (screenH - beaconSizePx - 6f).coerceAtLeast(6f))
+            LumaTourBeaconLottie(
+                tint = palette.accent,
+                modifier = Modifier
+                    .offset { IntOffset(beaconX.roundToInt(), beaconY.roundToInt()) }
+                    .size(44.dp)
+                    .testTag("tour_lottie_beacon")
+            )
+
             // Decide whether the floating coach-mark card sits cleanly below or above the target
             val placeCardBelow = targetBottom < screenH * 0.56f
             val cardYTargetPx = if (placeCardBelow) {
@@ -589,7 +604,7 @@ fun LumaInteractiveTourOverlay(
             }
             val animatedCardY by animateFloatAsState(
                 targetValue = cardYTargetPx,
-                animationSpec = spring(dampingRatio = 0.84f, stiffness = 320f),
+                animationSpec = motion.glideSpring(),
                 label = "tour_card_y"
             )
 
@@ -635,11 +650,12 @@ fun LumaInteractiveTourOverlay(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Icon(
-                                imageVector = currentStep.icon,
-                                contentDescription = null,
+                            LumaSparkRevealLottie(
+                                replayKey = currentStep.id,
                                 tint = palette.accent,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .testTag("tour_lottie_step_spark")
                             )
                             Text(
                                 text = "${safeIndex + 1} / ${activeSteps.size} · ${currentStep.badge}",
@@ -667,11 +683,11 @@ fun LumaInteractiveTourOverlay(
                     AnimatedContent(
                         targetState = currentStep,
                         transitionSpec = {
-                            (fadeIn(tween(220, easing = smoothEasing)) +
-                                slideInHorizontally(tween(220, easing = smoothEasing)) { it / 10 })
+                            (fadeIn(motion.emphasizedTween(220)) +
+                                slideInHorizontally(motion.emphasizedTween(220)) { it / 10 })
                                 .togetherWith(
-                                    fadeOut(tween(160, easing = smoothEasing)) +
-                                        slideOutHorizontally(tween(160, easing = smoothEasing)) { -it / 12 }
+                                    fadeOut(motion.exitTween(160)) +
+                                        slideOutHorizontally(motion.exitTween(160)) { -it / 12 }
                                 )
                         },
                         label = "tour_step_copy"

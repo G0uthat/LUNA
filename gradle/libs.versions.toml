@@ -41,6 +41,7 @@ googleServices = "4.5.0"
 credentials = "1.5.0"
 googleid = "1.1.1"
 jsoup = "1.18.3"
+lottieCompose = "6.6.6"
 
 
 [libraries]
@@ -99,6 +100,7 @@ mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition"
 mlkit-translate = { group = "com.google.mlkit", name = "translate", version = "17.0.3" }
 pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version = "2.0.27.0" }
 jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
+lottie-compose = { group = "com.airbnb.android", name = "lottie-compose", version.ref = "lottieCompose" }
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "kotlinxCoroutinesCore" }
 
 

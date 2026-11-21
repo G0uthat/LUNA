@@ -107,7 +107,9 @@ import com.example.data.model.SlideTextAlign
 import com.example.data.model.SlideVerticalAlign
 import com.example.data.model.StandardPageFormat
 import com.example.ui.components.DrawingCanvasOverlay
+import androidx.compose.foundation.pager.PagerDefaults
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -176,6 +178,7 @@ fun StandardPageDocumentReader(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val coroutineScope = rememberCoroutineScope()
     val isPptx = parsed.format == DocumentFormat.PPTX
 
@@ -316,7 +319,7 @@ fun StandardPageDocumentReader(
                 if (jumpToUnitTrigger > 0) {
                     val targetSheet = sheets.indexOfFirst { it.chapterIndex == currentUnitIndex }
                         .takeIf { it >= 0 } ?: currentUnitIndex.coerceIn(0, safeSheetCount - 1)
-                    pagerState.animateScrollToPage(targetSheet)
+                    pagerState.animateScrollToPage(targetSheet, animationSpec = motion.emphasizedTween(290))
                 }
             }
 
@@ -335,10 +338,20 @@ fun StandardPageDocumentReader(
                 } else {
                     when {
                         xFrac < 0.24f && pagerState.currentPage > 0 -> {
-                            coroutineScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(
+                                    pagerState.currentPage - 1,
+                                    animationSpec = motion.emphasizedTween(280)
+                                )
+                            }
                         }
                         xFrac > 0.76f && pagerState.currentPage < safeSheetCount - 1 -> {
-                            coroutineScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(
+                                    pagerState.currentPage + 1,
+                                    animationSpec = motion.emphasizedTween(280)
+                                )
+                            }
                         }
                         else -> onTapPageCenter()
                     }
@@ -347,6 +360,10 @@ fun StandardPageDocumentReader(
 
             HorizontalPager(
                 state = pagerState,
+                flingBehavior = PagerDefaults.flingBehavior(
+                    state = pagerState,
+                    snapAnimationSpec = motion.glideSpring()
+                ),
                 userScrollEnabled = !canInteractWithCanvas && zoomScale <= 1.02f,
                 modifier = Modifier
                     .fillMaxSize()
@@ -515,8 +532,8 @@ fun StandardPageDocumentReader(
         ) {
             AnimatedVisibility(
                 visible = showSpeakerNotes && !currentSlideNotes.isNullOrBlank(),
-                enter = fadeIn(),
-                exit = fadeOut()
+                enter = fadeIn(motion.tweenSpec(190)),
+                exit = fadeOut(motion.exitTween(155))
             ) {
                 Column(
                     modifier = Modifier

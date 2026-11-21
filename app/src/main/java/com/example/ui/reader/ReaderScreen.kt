@@ -73,6 +73,7 @@ import com.example.ui.components.ReaderBatteryOnlyIndicator
 import com.example.ui.components.TactileButton
 import com.example.ui.components.TocBottomSheet
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -82,6 +83,7 @@ fun ReaderScreen(
     onBackToLibrary: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val context = LocalContext.current
     val view = LocalView.current
 
@@ -272,7 +274,7 @@ fun ReaderScreen(
                     showExportDialog || showNewNoteDialog || editingHighlight != null
                 val readerBlurRadius by animateDpAsState(
                     targetValue = if (anyReaderMenuOpen) 6.dp else 0.dp,
-                    animationSpec = tween(210),
+                    animationSpec = motion.tweenSpec(210),
                     label = "reader_menu_blur"
                 )
                 val readerSurfaceMod = if (readerBlurRadius > 0.dp) {
@@ -361,8 +363,8 @@ fun ReaderScreen(
                 AnimatedVisibility(
                     visible = (prefs.showMinimalFooter || showTempProgressOverlay) && !state.isDrawingMode &&
                         !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded),
-                    enter = fadeIn(),
-                    exit = fadeOut(),
+                    enter = fadeIn(motion.tweenSpec(185)),
+                    exit = fadeOut(motion.exitTween(150)),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
@@ -399,8 +401,8 @@ fun ReaderScreen(
                     visible = !state.isDrawingMode &&
                         !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded) &&
                         activeIslandEvent == null,
-                    enter = fadeIn(tween(180)),
-                    exit = fadeOut(tween(140)),
+                    enter = fadeIn(motion.tweenSpec(180)),
+                    exit = fadeOut(motion.exitTween(140)),
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .displayCutoutPadding()

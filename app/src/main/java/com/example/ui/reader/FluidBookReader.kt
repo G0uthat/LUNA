@@ -93,7 +93,9 @@ import com.example.engine.FluidSheet
 import com.example.engine.FluidSheetBlock
 import com.example.ui.components.DrawingCanvasOverlay
 import com.example.ui.components.extractSentenceRange
+import androidx.compose.foundation.pager.PagerDefaults
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -129,6 +131,7 @@ fun FluidBookReader(
 ) {
     if (chapters.isEmpty()) return
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val coroutineScope = rememberCoroutineScope()
 
     // Fluid Google Drive-style sheet pinch-zoom state
@@ -355,7 +358,7 @@ fun FluidBookReader(
                             if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                 pagerState.scrollToPage(target)
                             } else {
-                                pagerState.animateScrollToPage(target)
+                                pagerState.animateScrollToPage(target, animationSpec = motion.emphasizedTween(300))
                             }
                         }
                     }
@@ -385,7 +388,7 @@ fun FluidBookReader(
                                     if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                         pagerState.scrollToPage(prev)
                                     } else {
-                                        pagerState.animateScrollToPage(prev)
+                                        pagerState.animateScrollToPage(prev, animationSpec = motion.emphasizedTween(280))
                                     }
                                 }
                             }
@@ -395,7 +398,7 @@ fun FluidBookReader(
                                     if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                         pagerState.scrollToPage(next)
                                     } else {
-                                        pagerState.animateScrollToPage(next)
+                                        pagerState.animateScrollToPage(next, animationSpec = motion.emphasizedTween(280))
                                     }
                                 }
                             }
@@ -407,6 +410,10 @@ fun FluidBookReader(
                 Box(modifier = Modifier.fillMaxSize().then(zoomLayerMod)) {
                     HorizontalPager(
                         state = pagerState,
+                        flingBehavior = PagerDefaults.flingBehavior(
+                            state = pagerState,
+                            snapAnimationSpec = motion.glideSpring()
+                        ),
                         userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
                         modifier = Modifier.fillMaxSize()
                     ) { pageIdx ->

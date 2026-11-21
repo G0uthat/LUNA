@@ -10,7 +10,8 @@ import kotlin.math.roundToInt
 data class DisplayRefreshInfo(
     val activeRefreshRateHz: Float,
     val maxSupportedHz: Float,
-    val supportedRatesHz: List<Int>
+    val supportedRatesHz: List<Int>,
+    val configuredRefreshRateHz: Float = activeRefreshRateHz
 )
 
 /**
@@ -25,7 +26,8 @@ object DisplayRefreshRateController {
             ?: return DisplayRefreshInfo(
                 activeRefreshRateHz = 60f,
                 maxSupportedHz = 60f,
-                supportedRatesHz = listOf(60)
+                supportedRatesHz = listOf(60),
+                configuredRefreshRateHz = 60f
             )
 
         val currentMode = display.mode
@@ -44,7 +46,8 @@ object DisplayRefreshRateController {
         return DisplayRefreshInfo(
             activeRefreshRateHz = currentMode.refreshRate,
             maxSupportedHz = maxHz,
-            supportedRatesHz = rates.ifEmpty { listOf(currentMode.refreshRate.roundToInt()) }
+            supportedRatesHz = rates.ifEmpty { listOf(currentMode.refreshRate.roundToInt()) },
+            configuredRefreshRateHz = currentMode.refreshRate
         )
     }
 
@@ -59,6 +62,7 @@ object DisplayRefreshRateController {
             option.fps
         }
 
+        var selectedModeHz = desiredHz.coerceAtMost(info.maxSupportedHz.coerceAtLeast(60f))
         val attrs = window.attributes
         if (display != null) {
             val currentMode = display.mode
@@ -73,6 +77,7 @@ object DisplayRefreshRateController {
             if (sameResModes.isNotEmpty()) {
                 val targetMode = selectBestDisplayMode(sameResModes, desiredHz)
                 attrs.preferredDisplayModeId = targetMode.modeId
+                selectedModeHz = targetMode.refreshRate
             }
         }
 
@@ -96,7 +101,10 @@ object DisplayRefreshRateController {
             }
         }
 
-        return getDisplayInfo(activity)
+        val updated = getDisplayInfo(activity)
+        return updated.copy(
+            configuredRefreshRateHz = selectedModeHz.coerceIn(60f, 240f)
+        )
     }
 
     private fun selectBestDisplayMode(modes: List<Display.Mode>, desiredHz: Float): Display.Mode {

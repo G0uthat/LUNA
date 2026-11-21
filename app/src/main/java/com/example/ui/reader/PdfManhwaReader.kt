@@ -96,7 +96,9 @@ import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.SelectedWordContext
 import com.example.ui.components.DrawingCanvasOverlay
+import androidx.compose.foundation.pager.PagerDefaults
 import com.example.ui.theme.LocalFolioPalette
+import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -146,6 +148,7 @@ fun PdfManhwaReader(
     val safePageCount = pageCount.coerceAtLeast(1)
     val safeIndex = currentPageIndex.coerceIn(0, safePageCount - 1)
     val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
     val coroutineScope = rememberCoroutineScope()
 
     val renderMutex = remember(filePath) { Mutex() }
@@ -247,7 +250,7 @@ fun PdfManhwaReader(
                     if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                         pagerState.scrollToPage(safeIndex)
                     } else {
-                        pagerState.animateScrollToPage(safeIndex)
+                        pagerState.animateScrollToPage(safeIndex, animationSpec = motion.emphasizedTween(290))
                     }
                 }
             }
@@ -274,7 +277,7 @@ fun PdfManhwaReader(
                                 if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                     pagerState.scrollToPage(prev)
                                 } else {
-                                    pagerState.animateScrollToPage(prev)
+                                    pagerState.animateScrollToPage(prev, animationSpec = motion.emphasizedTween(280))
                                 }
                             }
                         }
@@ -284,7 +287,7 @@ fun PdfManhwaReader(
                                 if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                     pagerState.scrollToPage(next)
                                 } else {
-                                    pagerState.animateScrollToPage(next)
+                                    pagerState.animateScrollToPage(next, animationSpec = motion.emphasizedTween(280))
                                 }
                             }
                         }
@@ -296,6 +299,10 @@ fun PdfManhwaReader(
             Box(modifier = pdfViewportMod) {
                 HorizontalPager(
                     state = pagerState,
+                    flingBehavior = PagerDefaults.flingBehavior(
+                        state = pagerState,
+                        snapAnimationSpec = motion.glideSpring()
+                    ),
                     userScrollEnabled = !canDrawOnCanvas && zoomScale <= 1.02f,
                     modifier = Modifier.fillMaxSize()
                 ) { pageIdx ->
@@ -414,7 +421,7 @@ fun PdfManhwaReader(
                 prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && isDockExpanded -> 144.dp
                 else -> 40.dp
             },
-            animationSpec = tween(220, easing = FastOutSlowInEasing),
+            animationSpec = motion.emphasizedTween(220),
             label = "pdf_pill_bottom_clearance"
         )
 
@@ -429,8 +436,8 @@ fun PdfManhwaReader(
             // Show floating OCR/translation pill ONLY when not already displayed inside Dynamic Island
             AnimatedVisibility(
                 visible = isProcessingOcrOrTranslation && prefs.menuStyle != ReaderMenuStyle.DYNAMIC_ISLAND,
-                enter = fadeIn(tween(180)) + slideInVertically(tween(200)) { it / 2 },
-                exit = fadeOut(tween(160)) + slideOutVertically(tween(180)) { it / 2 }
+                enter = fadeIn(motion.emphasizedTween(185)) + slideInVertically(motion.emphasizedTween(200)) { it / 2 },
+                exit = fadeOut(motion.exitTween(160)) + slideOutVertically(motion.exitTween(180)) { it / 2 }
             ) {
                 Row(
                     modifier = Modifier
@@ -465,8 +472,8 @@ fun PdfManhwaReader(
                 (isDrawingMode && zoomScale > 1.05f)
             AnimatedVisibility(
                 visible = showQuickControls,
-                enter = fadeIn(tween(180)),
-                exit = fadeOut(tween(150))
+                enter = fadeIn(motion.tweenSpec(180)),
+                exit = fadeOut(motion.exitTween(150))
             ) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

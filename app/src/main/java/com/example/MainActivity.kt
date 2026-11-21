@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.local.FolioDatabase
 import com.example.data.local.FolioRepository
@@ -41,9 +43,11 @@ import com.example.data.model.ReaderPreferences
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
 import com.example.engine.DynamicIslandEventManager
+import com.example.engine.GitHubUpdateManager
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
 import com.example.ui.components.DynamicIslandEventBanner
+import com.example.ui.components.GitHubUpdateDialog
 import com.example.ui.library.LibraryScreen
 import com.example.ui.library.LibraryViewModel
 import com.example.ui.reader.ReaderScreen
@@ -54,17 +58,20 @@ import com.example.ui.theme.paletteFor
 import com.example.ui.theme.resolveEffectiveTheme
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Calendar
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
     private var currentTargetFps: TargetFpsOption = TargetFpsOption.AUTO
+    private val activeRefreshRateState = mutableFloatStateOf(60f)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)
+        val initialDisplay = DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)
+        activeRefreshRateState.floatValue = initialDisplay.configuredRefreshRateHz
 
         val db = FolioDatabase.getInstance(applicationContext)
         val repository = FolioRepository(db.folioDao())
@@ -72,6 +79,14 @@ class MainActivity : ComponentActivity() {
         SystemMediaController.start(applicationContext)
         DynamicIslandEventManager.start(applicationContext)
         SocialRepository.getInstance(applicationContext)
+        GitHubUpdateManager.enforceCachedMandatoryLockIfNeeded(applicationContext)
+        lifecycleScope.launch {
+            GitHubUpdateManager.checkForUpdates(
+                context = applicationContext,
+                manualCheck = false,
+                bypassThrottle = true
+            )
+        }
 
         setContent {
             val prefs by preferencesRepository.preferencesFlow.collectAsStateWithLifecycle(
@@ -99,7 +114,8 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(prefs.targetFps) {
                 currentTargetFps = prefs.targetFps
-                DisplayRefreshRateController.applyRefreshRate(this@MainActivity, prefs.targetFps)
+                val applied = DisplayRefreshRateController.applyRefreshRate(this@MainActivity, prefs.targetFps)
+                activeRefreshRateState.floatValue = applied.configuredRefreshRateHz
             }
 
             LaunchedEffect(palette.isDark) {
@@ -123,15 +139,18 @@ class MainActivity : ComponentActivity() {
             }
 
             val activeNightDimming = if (effectiveTheme.isDark) prefs.nightTextDimming else 0f
+            val effectiveRefreshRateHz by activeRefreshRateState
             FolioTheme(
                 readingTheme = effectiveTheme,
                 useSystemFont = prefs.useSystemFont,
-                softNightDimming = activeNightDimming
+                softNightDimming = activeNightDimming,
+                effectiveRefreshRateHz = effectiveRefreshRateHz
             ) {
                 var activeDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
                 val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
                 val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
                 val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
+                val activeGitHubUpdate by GitHubUpdateManager.activeUpdate.collectAsStateWithLifecycle()
 
                 val libraryViewModel: LibraryViewModel = viewModel(
                     factory = remember {
@@ -206,6 +225,25 @@ class MainActivity : ComponentActivity() {
                                 )
                         )
                     }
+
+                    // In-app GitHub APK update popup (ONLY shown while user is inside Luma)
+                    activeGitHubUpdate?.let { updateInfo ->
+                        GitHubUpdateDialog(
+                            updateInfo = updateInfo,
+                            onDownloadApk = {
+                                GitHubUpdateManager.openApkDownload(this@MainActivity, updateInfo)
+                            },
+                            onRemindLater = {
+                                GitHubUpdateManager.dismissOptionalForSession()
+                            },
+                            onSkipVersion = {
+                                GitHubUpdateManager.skipOptionalVersion(this@MainActivity)
+                            },
+                            onRetryCheck = {
+                                GitHubUpdateManager.checkForUpdates(applicationContext, manualCheck = true)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -213,9 +251,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)
+        val applied = DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)
+        activeRefreshRateState.floatValue = applied.configuredRefreshRateHz
         SystemMediaController.setForegroundActive(true)
         SystemMediaController.refreshPermissionStatus(applicationContext)
+        lifecycleScope.launch {
+            GitHubUpdateManager.checkForUpdates(applicationContext, manualCheck = false)
+        }
     }
 
     override fun onPause() {
