@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.text.font.FontFamily
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.LexendFamily
@@ -156,6 +157,7 @@ val DEFAULT_ISLAND_ALLOWED_PACKAGES: Set<String> = setOf(
     "com.google.android.gm"
 )
 
+@Immutable
 data class ReaderPreferences(
     val theme: ReadingTheme = ReadingTheme.LIGHT,
     val useSystemFont: Boolean = false,
@@ -210,12 +212,14 @@ enum class BlockType {
     LIST_ITEM
 }
 
+@Immutable
 data class ParsedBlock(
     val index: Int,
     val type: BlockType,
     val text: String
 )
 
+@Immutable
 data class ParsedChapter(
     val index: Int,
     val title: String,
@@ -225,6 +229,7 @@ data class ParsedChapter(
     val wordCount: Int
 )
 
+@Immutable
 data class TocEntry(
     val title: String,
     val targetIndex: Int,
@@ -260,12 +265,14 @@ data class SlideTableCell(
     val align: SlideTextAlign = SlideTextAlign.LEFT
 )
 
+@Immutable
 sealed interface SlideElement {
     val left: Float
     val top: Float
     val width: Float
     val height: Float
 
+    @Immutable
     data class ShapeBox(
         override val left: Float,
         override val top: Float,
@@ -281,6 +288,7 @@ sealed interface SlideElement {
         val paragraphs: List<SlideParagraph> = emptyList()
     ) : SlideElement
 
+    @Immutable
     data class Picture(
         override val left: Float,
         override val top: Float,
@@ -290,6 +298,7 @@ sealed interface SlideElement {
         val imagePath: String
     ) : SlideElement
 
+    @Immutable
     data class Table(
         override val left: Float,
         override val top: Float,
@@ -300,6 +309,7 @@ sealed interface SlideElement {
     ) : SlideElement
 }
 
+@Immutable
 data class ParsedSlide(
     val index: Int,
     val title: String,
@@ -313,6 +323,7 @@ data class ParsedSlide(
     val elements: List<SlideElement> = emptyList()
 )
 
+@Immutable
 data class ParsedDocument(
     val title: String,
     val author: String,
@@ -334,11 +345,13 @@ enum class DrawingTool(val displayName: String) {
     ERASER("Borrador")
 }
 
+@Immutable
 data class StrokePoint(
     val x: Float,
     val y: Float
 )
 
+@Immutable
 data class DrawingStroke(
     val id: String,
     val tool: DrawingTool,
@@ -348,6 +361,7 @@ data class DrawingStroke(
     val points: List<StrokePoint>
 )
 
+@Immutable
 data class OcrWordBox(
     val text: String,
     val left: Float,
@@ -356,6 +370,7 @@ data class OcrWordBox(
     val bottom: Float
 )
 
+@Immutable
 data class OcrBlockBox(
     val id: Int,
     val originalText: String,
@@ -369,12 +384,14 @@ data class OcrBlockBox(
     val inkColorArgb: Long = 0xFF101828L
 )
 
+@Immutable
 data class OcrPageResult(
     val pageIndex: Int,
     val blocks: List<OcrBlockBox>,
     val isTranslated: Boolean = false
 )
 
+@Immutable
 data class SearchMatch(
     val targetIndex: Int,
     val chapterTitle: String,
@@ -382,6 +399,7 @@ data class SearchMatch(
     val blockIndex: Int = 0
 )
 
+@Immutable
 data class SelectedWordContext(
     val word: String,
     val snippet: String,
@@ -397,6 +415,7 @@ data class SelectedWordContext(
     val wordEndChar: Int = endChar
 )
 
+@Immutable
 data class WikipediaSummary(
     val title: String,
     val description: String,

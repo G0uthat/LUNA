@@ -28,7 +28,7 @@ object SampleLibraryGenerator {
 
     suspend fun ensureSampleDocuments(context: Context, repository: FolioRepository) =
         withContext(Dispatchers.IO) {
-            val existingDocs = repository.getAllDocumentsOnce()
+            val existingDocs = repository.getDocumentsForCoverCheck()
             val existingFormats = existingDocs.map { it.format.uppercase() }.toSet()
             val existingFileNames = existingDocs.map { File(it.filePath).name }.toSet()
             val booksDir = File(context.filesDir, "books").apply { mkdirs() }

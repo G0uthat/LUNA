@@ -6,29 +6,28 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -37,7 +36,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -54,10 +55,12 @@ import com.example.data.model.DocumentFormat
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.ParsedBlock
 import com.example.data.model.ReaderMenuStyle
+import com.example.data.model.ReaderPreferences
 import com.example.data.model.StandardPageFormat
 import com.example.engine.DynamicIslandEventManager
 import com.example.engine.MergedDocumentExporter
 import com.example.engine.SocialRepository
+import com.example.engine.SystemBrightnessController
 import com.example.engine.SystemMediaController
 import com.example.ui.components.AnnotationsAndBookmarksSheet
 import com.example.ui.components.AppSettingsSheet
@@ -94,10 +97,6 @@ fun ReaderScreen(
     val drawingsByLocation by viewModel.drawingsByLocation.collectAsStateWithLifecycle()
     val ocrByPage by viewModel.ocrByPage.collectAsStateWithLifecycle()
     val dictSources by viewModel.dictionarySources.collectAsStateWithLifecycle()
-    val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
-    val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
-    val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
-    val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
     val socialRepo = remember(context) { SocialRepository.getInstance(context) }
 
     var showAppearanceSheet by remember { mutableStateOf(false) }
@@ -112,16 +111,7 @@ fun ReaderScreen(
     var pendingExportOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
     var showTempProgressOverlay by remember { mutableStateOf(false) }
 
-    // Live absolute phone brightness synchronized 1:1 with Android's system brightness slider
     val activity = context as? Activity
-    var liveBrightness by remember {
-        mutableFloatStateOf(com.example.engine.SystemBrightnessController.readSystemBrightnessFraction(context))
-    }
-    LaunchedEffect(context) {
-        com.example.engine.SystemBrightnessController.observeSystemBrightness(context).collect { systemFrac ->
-            liveBrightness = systemFrac
-        }
-    }
 
     // Hide Android system status bar icons during reading (shows ONLY battery indicator + Dynamic Island alerts)
     DisposableEffect(view) {
@@ -134,7 +124,7 @@ fun ReaderScreen(
         onDispose {
             insetsController?.show(WindowInsetsCompat.Type.statusBars())
             socialRepo.clearReadingPresence()
-            com.example.engine.SystemBrightnessController.clearWindowOverride(activity)
+            SystemBrightnessController.clearWindowOverride(activity)
         }
     }
 
@@ -159,11 +149,13 @@ fun ReaderScreen(
         }
     }
 
-    val handleTapCenter: () -> Unit = {
-        if (prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR) {
-            viewModel.toggleDock()
-        } else {
-            showTempProgressOverlay = !showTempProgressOverlay
+    val handleTapCenter = remember(prefs.menuStyle, viewModel) {
+        {
+            if (prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR) {
+                viewModel.toggleDock()
+            } else {
+                showTempProgressOverlay = !showTempProgressOverlay
+            }
         }
     }
 
@@ -230,7 +222,9 @@ fun ReaderScreen(
                 val minsLeft = max(1, remainingWords / 210)
                 val progressSummary = "${(progress * 100).roundToInt()}% · ~$minsLeft min restantes"
                 val currentLocKey = viewModel.currentLocationKey()
-                val isBookmarkedHere = bookmarks.any { it.locationKey == currentLocKey }
+                val isBookmarkedHere by remember(bookmarks, currentLocKey) {
+                    derivedStateOf { bookmarks.any { it.locationKey == currentLocKey } }
+                }
 
                 // Enrich PDF adapted chapters with ML Kit OCR text on scanned/manhwa pages when available
                 val effectiveChapters = remember(parsed, ocrByPage, isPdf, state.showTranslatedManhwaOverlay) {
@@ -268,22 +262,25 @@ fun ReaderScreen(
                     socialRepo.updateReadingPresence(parsed.title, progressPctInt)
                 }
 
-                // Subtle 18% frosted blur on the reading surface while any floating dropdown menu is open
-                val anyReaderMenuOpen = state.isDockExpanded || showAppearanceSheet || showTocSheet ||
-                    showAnnotationsSheet || showSearchSheet || showSettingsSheet ||
-                    showExportDialog || showNewNoteDialog || editingHighlight != null
-                val readerBlurRadius by animateDpAsState(
-                    targetValue = if (anyReaderMenuOpen) 6.dp else 0.dp,
-                    animationSpec = motion.tweenSpec(210),
-                    label = "reader_menu_blur"
-                )
-                val readerSurfaceMod = if (readerBlurRadius > 0.dp) {
-                    Modifier.fillMaxSize().blur(radius = readerBlurRadius)
-                } else {
-                    Modifier.fillMaxSize()
+                val anyReaderMenuOpen by remember(
+                    state.isDockExpanded,
+                    showAppearanceSheet,
+                    showTocSheet,
+                    showAnnotationsSheet,
+                    showSearchSheet,
+                    showSettingsSheet,
+                    showExportDialog,
+                    showNewNoteDialog,
+                    editingHighlight
+                ) {
+                    derivedStateOf {
+                        state.isDockExpanded || showAppearanceSheet || showTocSheet ||
+                            showAnnotationsSheet || showSearchSheet || showSettingsSheet ||
+                            showExportDialog || showNewNoteDialog || editingHighlight != null
+                    }
                 }
 
-                // 1. Distraction-Free Reading Surface (Native PDF, Standard Physical Sheet/PPTX, or Adapted EPUB Book)
+                // 1. Distraction-Free Reading Surface (NEVER wrapped in animated Modifier.blur — 0 full-screen blur passes!)
                 when {
                     isShowingPdfNative -> {
                         PdfManhwaReader(
@@ -310,7 +307,7 @@ fun ReaderScreen(
                             onEraseStrokes = viewModel::eraseStrokes,
                             onToggleTranslateOverlay = viewModel::toggleOrRunManhwaPageTranslation,
                             onTapPageCenter = handleTapCenter,
-                            modifier = readerSurfaceMod
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                     isShowingStandardSheet -> {
@@ -333,7 +330,9 @@ fun ReaderScreen(
                             onStrokeCompleted = viewModel::addStroke,
                             onEraseStrokes = viewModel::eraseStrokes,
                             onTapPageCenter = handleTapCenter,
-                            modifier = readerSurfaceMod
+                            showBatteryBubble = !state.isDrawingMode &&
+                                !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded),
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                     else -> {
@@ -354,10 +353,13 @@ fun ReaderScreen(
                             onStrokeCompleted = viewModel::addStroke,
                             onEraseStrokes = viewModel::eraseStrokes,
                             onTapPageCenter = handleTapCenter,
-                            modifier = readerSurfaceMod
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                 }
+
+                // Draw-phase frosted gradient veil replacing expensive animated Modifier.blur()
+                ReaderFrostedMenuScrim(visible = anyReaderMenuOpen)
 
                 // 2. Ultra-minimalist discrete reading progress footer (only if enabled or tapped)
                 AnimatedVisibility(
@@ -396,28 +398,18 @@ fun ReaderScreen(
                     }
                 }
 
-                // 2.5 Distraction-free Battery-ONLY status indicator (system status bar & notification icons hidden)
-                AnimatedVisibility(
-                    visible = !state.isDrawingMode &&
-                        !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded) &&
-                        activeIslandEvent == null,
-                    enter = fadeIn(motion.tweenSpec(180)),
-                    exit = fadeOut(motion.exitTween(140)),
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .displayCutoutPadding()
-                        .padding(top = 2.dp)
-                ) {
-                    ReaderBatteryOnlyIndicator()
+                // 2.5 Isolated Battery indicator host (hidden when integrated beside StandardPage format bar)
+                if (!isShowingStandardSheet) {
+                    ReaderBatteryStatusHost(
+                        isDrawingMode = state.isDrawingMode,
+                        isClassicExpanded = prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded
+                    )
                 }
 
-                // 3. Configurable Reader Menu (Draggable Bookmark / Apple Dynamic Island / Classic Kindle Bar)
-                BookmarkDockOverlay(
-                    menuStyle = prefs.menuStyle,
-                    side = prefs.dockSide,
-                    dockYFraction = prefs.dockYFraction,
-                    dockScale = prefs.dockScale,
-                    brightnessValue = liveBrightness,
+                // 3. Isolated Dock Host (1Hz MediaSession ticks, Dynamic Island events, and live brightness
+                //    ONLY recompose this host — NEVER the PDF/EPUB/PPTX reader surface!)
+                ReaderDockOverlayHost(
+                    prefs = prefs,
                     isExpanded = state.isDockExpanded,
                     isBookmarkedHere = isBookmarkedHere,
                     isDrawingMode = state.isDrawingMode,
@@ -428,20 +420,12 @@ fun ReaderScreen(
                     isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
                     isProcessingStatus = state.isProcessingOcrOrTranslation,
                     processingStatusText = state.ocrTranslationStatus,
-                    mediaInfo = mediaInfo,
-                    activeIslandEvent = if (topModalHostId == null) activeIslandEvent else null,
-                    queuedIslandCount = queuedIslandCount,
                     bookTitle = parsed.title,
                     progressLabel = progressSummary,
                     onToggleExpanded = { viewModel.toggleDock() },
                     onDismiss = { viewModel.toggleDock(false) },
                     onDockRepositioned = { newSide, newY ->
                         viewModel.updatePreferences { it.copy(dockSide = newSide, dockYFraction = newY) }
-                    },
-                    onBrightnessChanged = { b ->
-                        val clamped = b.coerceIn(0.01f, 1f)
-                        liveBrightness = clamped
-                        com.example.engine.SystemBrightnessController.applyAbsoluteBrightness(context, activity, clamped)
                     },
                     onToggleBookmarkHere = viewModel::toggleBookmarkCurrentPage,
                     onOpenAppearance = { showAppearanceSheet = true },
@@ -456,14 +440,7 @@ fun ReaderScreen(
                         showSettingsSheet = true
                     },
                     onOpenExport = { showExportDialog = true },
-                    onBackToLibrary = onBackToLibrary,
-                    onMediaPlayPause = { SystemMediaController.togglePlayPause(context) },
-                    onMediaNext = { SystemMediaController.skipToNext(context) },
-                    onMediaPrevious = { SystemMediaController.skipToPrevious(context) },
-                    onMediaSeek = { posMs -> SystemMediaController.seekTo(posMs) },
-                    onOpenNotificationAccess = { SystemMediaController.openNotificationAccessSettings(context) },
-                    onTapIslandEvent = { event -> DynamicIslandEventManager.openActiveEvent(context, event) },
-                    onDismissIslandEvent = { DynamicIslandEventManager.dismissActiveEvent() }
+                    onBackToLibrary = onBackToLibrary
                 )
 
                 // 4. Floating Drawing & Signature Toolbar (only when drawing mode is active)
@@ -596,9 +573,12 @@ fun ReaderScreen(
                 }
 
                 if (showExportDialog) {
+                    val strokeCount = remember(drawingsByLocation) {
+                        drawingsByLocation.values.sumOf { it.size }
+                    }
                     MergedExportDialog(
                         document = doc,
-                        drawingStrokeCount = drawingsByLocation.values.sumOf { it.size },
+                        drawingStrokeCount = strokeCount,
                         highlightCount = highlights.size,
                         ocrPageCount = ocrByPage.size,
                         isExporting = state.isExporting,
@@ -638,4 +618,156 @@ fun ReaderScreen(
             onConsumed = viewModel::clearFeedbackEvent
         )
     }
+}
+
+/**
+ * Draw-phase-only frosted scrim replacing expensive animated full-screen Modifier.blur().
+ * Reads animated alpha strictly inside `drawBehind` (zero recomposition of reader content).
+ */
+@Composable
+private fun ReaderFrostedMenuScrim(visible: Boolean) {
+    val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
+    val scrimAlphaState = animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = motion.tweenSpec(200),
+        label = "reader_menu_scrim_alpha"
+    )
+    val scrimBrush = remember(palette.isDark, palette.background) {
+        val base = if (palette.isDark) Color.Black else palette.background
+        Brush.verticalGradient(
+            colors = listOf(
+                base.copy(alpha = if (palette.isDark) 0.34f else 0.24f),
+                Color.Black.copy(alpha = if (palette.isDark) 0.26f else 0.16f),
+                base.copy(alpha = if (palette.isDark) 0.36f else 0.26f)
+            )
+        )
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawBehind {
+                val a = scrimAlphaState.value
+                if (a > 0.005f) {
+                    drawRect(brush = scrimBrush, alpha = a)
+                }
+            }
+    )
+}
+
+@Composable
+private fun BoxScope.ReaderBatteryStatusHost(
+    isDrawingMode: Boolean,
+    isClassicExpanded: Boolean
+) {
+    val motion = LocalLumaMotion.current
+    val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+    AnimatedVisibility(
+        visible = !isDrawingMode && !isClassicExpanded && activeIslandEvent == null,
+        enter = fadeIn(motion.tweenSpec(180)),
+        exit = fadeOut(motion.exitTween(140)),
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .displayCutoutPadding()
+            .statusBarsPadding()
+            .padding(top = 6.dp, end = 12.dp)
+    ) {
+        com.example.ui.components.ReaderBatteryPillBubble()
+    }
+}
+
+@Composable
+private fun ReaderDockOverlayHost(
+    prefs: ReaderPreferences,
+    isExpanded: Boolean,
+    isBookmarkedHere: Boolean,
+    isDrawingMode: Boolean,
+    isPdfDocument: Boolean,
+    documentFormat: DocumentFormat,
+    showFormatModeToggle: Boolean,
+    isOriginalFormatView: Boolean,
+    isPageTranslated: Boolean,
+    isProcessingStatus: Boolean,
+    processingStatusText: String,
+    bookTitle: String,
+    progressLabel: String,
+    onToggleExpanded: () -> Unit,
+    onDismiss: () -> Unit,
+    onDockRepositioned: (com.example.data.model.BookmarkDockSide, Float) -> Unit,
+    onToggleBookmarkHere: () -> Unit,
+    onOpenAppearance: () -> Unit,
+    onOpenToc: () -> Unit,
+    onToggleDrawing: () -> Unit,
+    onSetOriginalFormatView: (Boolean) -> Unit,
+    onTriggerOcrTranslate: () -> Unit,
+    onOpenAnnotations: () -> Unit,
+    onOpenSearch: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenExport: () -> Unit,
+    onBackToLibrary: () -> Unit
+) {
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
+    val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+    val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
+    val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
+
+    var liveBrightness by remember {
+        mutableFloatStateOf(SystemBrightnessController.readSystemBrightnessFraction(context))
+    }
+    LaunchedEffect(context) {
+        SystemBrightnessController.observeSystemBrightness(context).collect { systemFrac ->
+            liveBrightness = systemFrac
+        }
+    }
+
+    BookmarkDockOverlay(
+        menuStyle = prefs.menuStyle,
+        side = prefs.dockSide,
+        dockYFraction = prefs.dockYFraction,
+        dockScale = prefs.dockScale,
+        brightnessValue = liveBrightness,
+        isExpanded = isExpanded,
+        isBookmarkedHere = isBookmarkedHere,
+        isDrawingMode = isDrawingMode,
+        isPdfDocument = isPdfDocument,
+        documentFormat = documentFormat,
+        showFormatModeToggle = showFormatModeToggle,
+        isOriginalFormatView = isOriginalFormatView,
+        isPageTranslated = isPageTranslated,
+        isProcessingStatus = isProcessingStatus,
+        processingStatusText = processingStatusText,
+        mediaInfo = mediaInfo,
+        activeIslandEvent = if (topModalHostId == null) activeIslandEvent else null,
+        queuedIslandCount = queuedIslandCount,
+        bookTitle = bookTitle,
+        progressLabel = progressLabel,
+        onToggleExpanded = onToggleExpanded,
+        onDismiss = onDismiss,
+        onDockRepositioned = onDockRepositioned,
+        onBrightnessChanged = { b ->
+            val clamped = b.coerceIn(0.01f, 1f)
+            liveBrightness = clamped
+            SystemBrightnessController.applyAbsoluteBrightness(context, activity, clamped)
+        },
+        onToggleBookmarkHere = onToggleBookmarkHere,
+        onOpenAppearance = onOpenAppearance,
+        onOpenToc = onOpenToc,
+        onToggleDrawing = onToggleDrawing,
+        onSetOriginalFormatView = onSetOriginalFormatView,
+        onTriggerOcrTranslate = onTriggerOcrTranslate,
+        onOpenAnnotations = onOpenAnnotations,
+        onOpenSearch = onOpenSearch,
+        onOpenSettings = onOpenSettings,
+        onOpenExport = onOpenExport,
+        onBackToLibrary = onBackToLibrary,
+        onMediaPlayPause = { SystemMediaController.togglePlayPause(context) },
+        onMediaNext = { SystemMediaController.skipToNext(context) },
+        onMediaPrevious = { SystemMediaController.skipToPrevious(context) },
+        onMediaSeek = { posMs -> SystemMediaController.seekTo(posMs) },
+        onOpenNotificationAccess = { SystemMediaController.openNotificationAccessSettings(context) },
+        onTapIslandEvent = { event -> DynamicIslandEventManager.openActiveEvent(context, event) },
+        onDismissIslandEvent = { DynamicIslandEventManager.dismissActiveEvent() }
+    )
 }

@@ -1,13 +1,8 @@
 package com.example.ui.reader
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.LruCache
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,13 +21,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -41,9 +34,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
@@ -51,46 +44,39 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Notes
 import androidx.compose.material.icons.rounded.Slideshow
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.BlockType
 import com.example.data.model.DocumentFormat
 import com.example.data.model.DrawingStroke
@@ -101,46 +87,20 @@ import com.example.data.model.ParsedDocument
 import com.example.data.model.ParsedSlide
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
-import com.example.data.model.SlideElement
-import com.example.data.model.SlideShapeGeometry
-import com.example.data.model.SlideTextAlign
-import com.example.data.model.SlideVerticalAlign
 import com.example.data.model.StandardPageFormat
+import com.example.data.model.TextAlignOption
+import com.example.engine.DynamicIslandEventManager
 import com.example.ui.components.DrawingCanvasOverlay
-import androidx.compose.foundation.pager.PagerDefaults
+import com.example.ui.components.ReaderBatteryPillBubble
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 import kotlin.math.abs
 import kotlin.math.ceil
 
-private object SlideBitmapCache {
-    private val cache = object : LruCache<String, Bitmap>(18) {}
-
-    suspend fun load(path: String): Bitmap? {
-        cache.get(path)?.takeIf { !it.isRecycled }?.let { return it }
-        return withContext(Dispatchers.IO) {
-            runCatching {
-                val file = File(path)
-                if (!file.exists()) return@runCatching null
-                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(path, opts)
-                val maxDim = maxOf(opts.outWidth, opts.outHeight).coerceAtLeast(1)
-                var sample = 1
-                while (maxDim / sample > 1600) sample *= 2
-                val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
-                BitmapFactory.decodeFile(path, decodeOpts)?.also { bmp ->
-                    cache.put(path, bmp)
-                }
-            }.getOrNull()
-        }
-    }
-}
-
-private data class StandardDocumentSheet(
+@Immutable
+internal data class StandardDocumentSheet(
     val sheetIndex: Int,
     val chapterIndex: Int,
     val locationKey: String,
@@ -148,6 +108,10 @@ private data class StandardDocumentSheet(
     val blocks: List<ParsedBlock> = emptyList(),
     val slide: ParsedSlide? = null
 )
+
+private val StdPillShape = RoundedCornerShape(50)
+private val StdNotesCardShape = RoundedCornerShape(20.dp)
+private val StdPaperShape = RoundedCornerShape(4.dp)
 
 /**
  * Universal Standard Physical Page & PowerPoint Slide Reader:
@@ -175,6 +139,7 @@ fun StandardPageDocumentReader(
     onStrokeCompleted: (String, DrawingStroke) -> Unit,
     onEraseStrokes: (String, Set<String>) -> Unit,
     onTapPageCenter: () -> Unit,
+    showBatteryBubble: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
@@ -229,6 +194,9 @@ fun StandardPageDocumentReader(
     var panOffset by remember { mutableStateOf(Offset.Zero) }
     var showSpeakerNotes by remember { mutableStateOf(false) }
 
+    val isZoomed by remember { derivedStateOf { zoomScale > 1.02f } }
+    val showZoomResetPill by remember { derivedStateOf { zoomScale > 1.05f } }
+
     val canInteractWithCanvas = isDrawingMode && !isPanZoomWhileDrawing
     val canPanOrZoom = !canInteractWithCanvas
 
@@ -242,8 +210,9 @@ fun StandardPageDocumentReader(
         }
     }
 
-    var activeSheetIndex by remember { mutableStateOf(initialSheetIdx) }
+    var activeSheetIndex by remember { mutableIntStateOf(initialSheetIdx) }
     val activeSheet = sheets.getOrNull(activeSheetIndex.coerceIn(0, safeSheetCount - 1))
+    val latestOnActiveSheetChanged by rememberUpdatedState(onActiveSheetChanged)
 
     Box(
         modifier = modifier
@@ -260,16 +229,21 @@ fun StandardPageDocumentReader(
                     listState.scrollToItem(targetSheet)
                 }
             }
-            LaunchedEffect(listState.firstVisibleItemIndex, sheets) {
-                val idx = listState.firstVisibleItemIndex.coerceIn(0, safeSheetCount - 1)
-                activeSheetIndex = idx
-                val sheet = sheets.getOrNull(idx) ?: return@LaunchedEffect
-                onActiveSheetChanged(idx, safeSheetCount, sheet.locationKey, sheet.chapterIndex)
+            // Observe scroll index via snapshotFlow instead of reading firstVisibleItemIndex in composition scope
+            LaunchedEffect(listState, sheets) {
+                snapshotFlow { listState.firstVisibleItemIndex }
+                    .distinctUntilChanged()
+                    .collect { rawIdx ->
+                        val idx = rawIdx.coerceIn(0, safeSheetCount - 1)
+                        activeSheetIndex = idx
+                        val sheet = sheets.getOrNull(idx) ?: return@collect
+                        latestOnActiveSheetChanged(idx, safeSheetCount, sheet.locationKey, sheet.chapterIndex)
+                    }
             }
 
             LazyColumn(
                 state = listState,
-                userScrollEnabled = !canInteractWithCanvas && zoomScale <= 1.02f,
+                userScrollEnabled = !canInteractWithCanvas && !isZoomed,
                 contentPadding = PaddingValues(
                     top = topBarPaddingDp + 54.dp,
                     bottom = if (isDrawingMode) 156.dp else 72.dp,
@@ -323,48 +297,58 @@ fun StandardPageDocumentReader(
                 }
             }
 
-            LaunchedEffect(pagerState.currentPage, sheets) {
-                zoomScale = 1f
-                panOffset = Offset.Zero
-                val idx = pagerState.currentPage.coerceIn(0, safeSheetCount - 1)
-                activeSheetIndex = idx
-                val sheet = sheets.getOrNull(idx) ?: return@LaunchedEffect
-                onActiveSheetChanged(idx, safeSheetCount, sheet.locationKey, sheet.chapterIndex)
+            // Observe settled/current page via snapshotFlow so paging doesn't recompose the whole reader tree
+            LaunchedEffect(pagerState, sheets) {
+                snapshotFlow { pagerState.currentPage }
+                    .distinctUntilChanged()
+                    .collect { rawIdx ->
+                        zoomScale = 1f
+                        panOffset = Offset.Zero
+                        val idx = rawIdx.coerceIn(0, safeSheetCount - 1)
+                        activeSheetIndex = idx
+                        val sheet = sheets.getOrNull(idx) ?: return@collect
+                        latestOnActiveSheetChanged(idx, safeSheetCount, sheet.locationKey, sheet.chapterIndex)
+                    }
             }
 
-            val handleTapX: (Float) -> Unit = { xFrac ->
-                if (zoomScale > 1.05f || !prefs.tapZonesEnabled || isDrawingMode) {
-                    onTapPageCenter()
-                } else {
-                    when {
-                        xFrac < 0.24f && pagerState.currentPage > 0 -> {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(
-                                    pagerState.currentPage - 1,
-                                    animationSpec = motion.emphasizedTween(280)
-                                )
+            val handleTapX: (Float) -> Unit = remember(pagerState, safeSheetCount, prefs.tapZonesEnabled, isDrawingMode, motion) {
+                { xFrac: Float ->
+                    if (zoomScale > 1.05f || !prefs.tapZonesEnabled || isDrawingMode) {
+                        onTapPageCenter()
+                    } else {
+                        when {
+                            xFrac < 0.24f && pagerState.currentPage > 0 -> {
+                                coroutineScope.launch {
+                                    pagerState.animateScrollToPage(
+                                        pagerState.currentPage - 1,
+                                        animationSpec = motion.emphasizedTween(280)
+                                    )
+                                }
+                                Unit
                             }
-                        }
-                        xFrac > 0.76f && pagerState.currentPage < safeSheetCount - 1 -> {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(
-                                    pagerState.currentPage + 1,
-                                    animationSpec = motion.emphasizedTween(280)
-                                )
+                            xFrac > 0.76f && pagerState.currentPage < safeSheetCount - 1 -> {
+                                coroutineScope.launch {
+                                    pagerState.animateScrollToPage(
+                                        pagerState.currentPage + 1,
+                                        animationSpec = motion.emphasizedTween(280)
+                                    )
+                                }
+                                Unit
                             }
+                            else -> onTapPageCenter()
                         }
-                        else -> onTapPageCenter()
                     }
                 }
             }
 
             HorizontalPager(
                 state = pagerState,
+                key = { idx -> sheets[idx].locationKey },
                 flingBehavior = PagerDefaults.flingBehavior(
                     state = pagerState,
                     snapAnimationSpec = motion.glideSpring()
                 ),
-                userScrollEnabled = !canInteractWithCanvas && zoomScale <= 1.02f,
+                userScrollEnabled = !canInteractWithCanvas && !isZoomed,
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
@@ -406,25 +390,33 @@ fun StandardPageDocumentReader(
             }
         }
 
-        // Top Floating Format Selector Strip (Auto, A4, Carta, Oficio, A3, A5, 16:9, 4:3 + Adapted switch)
+        // Top Floating Bar: Two distinct side-by-side pill bubbles (Format Selector + Battery) with ZERO overlap
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
+                .displayCutoutPadding()
                 .statusBarsPadding()
-                .padding(top = topBarPaddingDp, start = 12.dp, end = 12.dp)
-                .shadow(8.dp, RoundedCornerShape(50), ambientColor = Color.Black.copy(alpha = 0.22f))
-                .clip(RoundedCornerShape(50))
-                .background(palette.surface.copy(alpha = 0.96f))
-                .border(1.dp, palette.border, RoundedCornerShape(50))
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 6.dp, vertical = 4.dp)
-                .testTag("standard_page_format_bar"),
+                .padding(top = topBarPaddingDp, start = 12.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
         ) {
+            // Bubble 1: Scrollable Format Selector Strip (Auto, A4, Carta, Oficio, A3, A5, 16:9, 4:3 + EPUB switch)
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
+                    .weight(1f, fill = false)
+                    .shadow(8.dp, StdPillShape, ambientColor = Color.Black.copy(alpha = 0.22f))
+                    .clip(StdPillShape)
+                    .background(palette.surface.copy(alpha = 0.96f))
+                    .border(1.dp, palette.border, StdPillShape)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .testTag("standard_page_format_bar"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+            Row(
+                modifier = Modifier
+                    .clip(StdPillShape)
                     .background(palette.accentSoft)
                     .padding(horizontal = 9.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -469,7 +461,7 @@ fun StandardPageDocumentReader(
                 val isSelected = prefs.standardPageFormat == fmt
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(50))
+                        .clip(StdPillShape)
                         .background(if (isSelected) palette.accent else Color.Transparent)
                         .clickable {
                             zoomScale = 1f
@@ -492,9 +484,9 @@ fun StandardPageDocumentReader(
             // Quick 1-tap toggle back to Adapted EPUB mode
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
+                    .clip(StdPillShape)
                     .background(palette.surfaceAlt)
-                    .border(1.dp, palette.border, RoundedCornerShape(50))
+                    .border(1.dp, palette.border, StdPillShape)
                     .clickable(onClick = onToggleStandardView)
                     .padding(horizontal = 8.dp, vertical = 5.dp)
                     .testTag("std_bar_switch_adapted"),
@@ -513,6 +505,12 @@ fun StandardPageDocumentReader(
                     fontWeight = FontWeight.SemiBold,
                     color = palette.ink
                 )
+            }
+            }
+
+            // Bubble 2: Separate Battery Pill sitting cleanly alongside the Format Selector
+            if (showBatteryBubble) {
+                StandardTopBarBatteryBubbleHost()
             }
         }
 
@@ -538,10 +536,10 @@ fun StandardPageDocumentReader(
                 Column(
                     modifier = Modifier
                         .widthIn(max = 520.dp)
-                        .shadow(12.dp, RoundedCornerShape(20.dp))
-                        .clip(RoundedCornerShape(20.dp))
+                        .shadow(12.dp, StdNotesCardShape)
+                        .clip(StdNotesCardShape)
                         .background(palette.surface.copy(alpha = 0.97f))
-                        .border(1.dp, palette.border, RoundedCornerShape(20.dp))
+                        .border(1.dp, palette.border, StdNotesCardShape)
                         .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
@@ -566,13 +564,13 @@ fun StandardPageDocumentReader(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (zoomScale > 1.05f) {
+                if (showZoomResetPill) {
                     Row(
                         modifier = Modifier
-                            .shadow(6.dp, RoundedCornerShape(50))
-                            .clip(RoundedCornerShape(50))
+                            .shadow(6.dp, StdPillShape)
+                            .clip(StdPillShape)
                             .background(palette.surface.copy(alpha = 0.96f))
-                            .border(1.dp, palette.border, RoundedCornerShape(50))
+                            .border(1.dp, palette.border, StdPillShape)
                             .clickable {
                                 zoomScale = 1f
                                 panOffset = Offset.Zero
@@ -600,10 +598,10 @@ fun StandardPageDocumentReader(
                 if (!currentSlideNotes.isNullOrBlank() && !isDrawingMode) {
                     Row(
                         modifier = Modifier
-                            .shadow(6.dp, RoundedCornerShape(50))
-                            .clip(RoundedCornerShape(50))
+                            .shadow(6.dp, StdPillShape)
+                            .clip(StdPillShape)
                             .background(if (showSpeakerNotes) palette.accent else palette.surface.copy(alpha = 0.96f))
-                            .border(1.dp, if (showSpeakerNotes) palette.accent else palette.border, RoundedCornerShape(50))
+                            .border(1.dp, if (showSpeakerNotes) palette.accent else palette.border, StdPillShape)
                             .clickable { showSpeakerNotes = !showSpeakerNotes }
                             .padding(horizontal = 12.dp, vertical = 7.dp)
                             .testTag("pptx_speaker_notes_pill"),
@@ -626,6 +624,21 @@ fun StandardPageDocumentReader(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StandardTopBarBatteryBubbleHost() {
+    val motion = LocalLumaMotion.current
+    val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+    AnimatedVisibility(
+        visible = activeIslandEvent == null,
+        enter = fadeIn(motion.tweenSpec(180)),
+        exit = fadeOut(motion.exitTween(140))
+    ) {
+        ReaderBatteryPillBubble(
+            modifier = Modifier.testTag("standard_page_battery_bubble")
+        )
     }
 }
 
@@ -692,13 +705,13 @@ private fun StandardInteractiveSheetFrame(
                 }
                 .shadow(
                     elevation = if (palette.isDark) 14.dp else 10.dp,
-                    shape = RoundedCornerShape(4.dp),
+                    shape = StdPaperShape,
                     ambientColor = Color.Black.copy(alpha = 0.24f),
                     spotColor = Color.Black.copy(alpha = 0.20f)
                 )
-                .clip(RoundedCornerShape(4.dp))
+                .clip(StdPaperShape)
                 .background(paperBg)
-                .border(1.dp, paperBorder, RoundedCornerShape(4.dp))
+                .border(1.dp, paperBorder, StdPaperShape)
                 .then(
                     if (canPanZoom) {
                         Modifier
@@ -811,7 +824,7 @@ private fun StandardInteractiveSheetFrame(
                     paperBorder = paperBorder,
                     accent = palette.accent,
                     fontFamily = fontFamily,
-                    textAlign = if (prefs.textAlign == com.example.data.model.TextAlignOption.JUSTIFY) {
+                    textAlign = if (prefs.textAlign == TextAlignOption.JUSTIFY) {
                         TextAlign.Justify
                     } else {
                         TextAlign.Start
@@ -830,608 +843,6 @@ private fun StandardInteractiveSheetFrame(
                 onEraseStrokeIds = onEraseStrokes,
                 modifier = Modifier.fillMaxSize()
             )
-        }
-    }
-}
-
-@Composable
-private fun PptxSlideSurface(
-    slide: ParsedSlide,
-    headerLabel: String,
-    formatBadge: String,
-    ptScale: Float,
-    isLandscape: Boolean,
-    paperInk: Color,
-    paperMuted: Color,
-    accent: Color,
-    fontFamily: androidx.compose.ui.text.font.FontFamily
-) {
-    if (slide.elements.isNotEmpty()) {
-        AuthenticPptxCanvasSurface(
-            slide = slide,
-            ptScale = ptScale,
-            fontFamily = fontFamily
-        )
-        return
-    }
-
-    // Structured fallback for minimal/unpositioned slides
-    val padX = (44f * ptScale).coerceIn(12f, 32f).dp
-    val padY = (32f * ptScale).coerceIn(10f, 24f).dp
-    val titleSp = (26f * ptScale).coerceIn(11f, 22f).sp
-    val subtitleSp = (16f * ptScale).coerceIn(8.5f, 14f).sp
-    val bodySp = (14f * ptScale).coerceIn(7.5f, 13f).sp
-    val metaSp = (10f * ptScale).coerceIn(6.5f, 10f).sp
-
-    val firstImgPath = slide.imagePaths.firstOrNull()
-    val slideBitmap by produceState<Bitmap?>(initialValue = null, key1 = firstImgPath) {
-        value = firstImgPath?.let { SlideBitmapCache.load(it) }
-    }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height((5f * ptScale).coerceIn(2.5f, 5f).dp)
-                .background(accent)
-        )
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = padX, vertical = padY),
-            verticalArrangement = Arrangement.spacedBy((8f * ptScale).coerceIn(3f, 8f).dp)
-        ) {
-            Text(
-                text = slide.title,
-                fontFamily = fontFamily,
-                fontSize = titleSp,
-                lineHeight = (titleSp.value * 1.18f).sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = paperInk,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-
-            if (slide.subtitle.isNotBlank()) {
-                Text(
-                    text = slide.subtitle,
-                    fontFamily = fontFamily,
-                    fontSize = subtitleSp,
-                    lineHeight = (subtitleSp.value * 1.24f).sp,
-                    fontWeight = FontWeight.Medium,
-                    color = paperMuted,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            if (slideBitmap != null && isLandscape) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy((16f * ptScale).coerceIn(6f, 14f).dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    if (slide.bodyBlocks.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1.15f)
-                                .fillMaxHeight(),
-                            verticalArrangement = Arrangement.spacedBy((6f * ptScale).coerceIn(2.5f, 6f).dp)
-                        ) {
-                            SlideBodyBlocks(
-                                blocks = slide.bodyBlocks,
-                                bodySp = bodySp,
-                                ink = paperInk,
-                                accent = accent,
-                                fontFamily = fontFamily
-                            )
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(6.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            bitmap = slideBitmap!!.asImageBitmap(),
-                            contentDescription = "Imagen de diapositiva",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy((6f * ptScale).coerceIn(2.5f, 6f).dp)
-                ) {
-                    SlideBodyBlocks(
-                        blocks = slide.bodyBlocks,
-                        bodySp = bodySp,
-                        ink = paperInk,
-                        accent = accent,
-                        fontFamily = fontFamily
-                    )
-                    if (slideBitmap != null) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(
-                                bitmap = slideBitmap!!.asImageBitmap(),
-                                contentDescription = "Imagen de diapositiva",
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = formatBadge,
-                    fontSize = metaSp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = paperMuted.copy(alpha = 0.72f)
-                )
-                Text(
-                    text = headerLabel,
-                    fontSize = metaSp,
-                    fontWeight = FontWeight.Bold,
-                    color = paperMuted.copy(alpha = 0.85f)
-                )
-            }
-        }
-    }
-}
-
-/**
- * High-fidelity original-layout PowerPoint canvas renderer.
- * Draws the authentic slide background (image, vertical gradient, or solid fill) and places every
- * OOXML shape, text box, picture, and table at its exact normalized slide coordinates.
- */
-@Composable
-private fun AuthenticPptxCanvasSurface(
-    slide: ParsedSlide,
-    ptScale: Float,
-    fontFamily: androidx.compose.ui.text.font.FontFamily
-) {
-    val bgStart = Color(slide.backgroundColorArgb.toInt())
-    val bgEnd = slide.backgroundGradientEndArgb?.let { Color(it.toInt()) }
-    val bgBitmap by produceState<Bitmap?>(initialValue = null, key1 = slide.backgroundImagePath) {
-        value = slide.backgroundImagePath?.let { SlideBitmapCache.load(it) }
-    }
-    val defaultSlideInk = if (bgStart.luminance() < 0.36f) Color(0xFFF5F7FA) else Color(0xFF141B29)
-
-    val bgModifier = when {
-        bgEnd != null -> Modifier.background(Brush.verticalGradient(listOf(bgStart, bgEnd)))
-        else -> Modifier.background(bgStart)
-    }
-
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .then(bgModifier)
-    ) {
-        val canvasW = maxWidth
-        val canvasH = maxHeight
-
-        // Optional slide master/slide background image
-        if (bgBitmap != null) {
-            Image(
-                bitmap = bgBitmap!!.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        for (element in slide.elements) {
-            val elX = canvasW * element.left.coerceIn(-0.08f, 1.05f)
-            val elY = canvasH * element.top.coerceIn(-0.08f, 1.05f)
-            val elW = (canvasW * element.width.coerceIn(0.008f, 1.15f)).coerceAtLeast(2.dp)
-            val elH = (canvasH * element.height.coerceIn(0.006f, 1.15f)).coerceAtLeast(2.dp)
-
-            when (element) {
-                is SlideElement.Picture -> {
-                    val picBitmap by produceState<Bitmap?>(initialValue = null, key1 = element.imagePath) {
-                        value = SlideBitmapCache.load(element.imagePath)
-                    }
-                    Box(
-                        modifier = Modifier
-                            .offset(x = elX, y = elY)
-                            .size(width = elW, height = elH)
-                            .graphicsLayer { rotationZ = element.rotationDeg },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (picBitmap != null) {
-                            Image(
-                                bitmap = picBitmap!!.asImageBitmap(),
-                                contentDescription = "Imagen de diapositiva",
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                    }
-                }
-
-                is SlideElement.ShapeBox -> {
-                    val shape = when (element.geometry) {
-                        SlideShapeGeometry.ROUND_RECT -> RoundedCornerShape((8f * ptScale).coerceIn(3f, 12f).dp)
-                        SlideShapeGeometry.ELLIPSE -> CircleShape
-                        else -> RectangleShape
-                    }
-                    val fillMod = when {
-                        element.fillColorArgb != null && element.gradientEndColorArgb != null -> {
-                            Modifier.background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color(element.fillColorArgb.toInt()),
-                                        Color(element.gradientEndColorArgb.toInt())
-                                    )
-                                ),
-                                shape = shape
-                            )
-                        }
-                        element.fillColorArgb != null -> {
-                            Modifier.background(Color(element.fillColorArgb.toInt()), shape = shape)
-                        }
-                        else -> Modifier
-                    }
-                    val borderMod = if (element.borderColorArgb != null && element.borderWidthPt > 0f && element.geometry != SlideShapeGeometry.LINE) {
-                        Modifier.border(
-                            width = (element.borderWidthPt * ptScale).coerceIn(0.5f, 3.5f).dp,
-                            color = Color(element.borderColorArgb.toInt()),
-                            shape = shape
-                        )
-                    } else {
-                        Modifier
-                    }
-
-                    val localInk = element.fillColorArgb?.let { fillArgb ->
-                        val fc = Color(fillArgb.toInt())
-                        if (fc.alpha > 0.45f) {
-                            if (fc.luminance() < 0.38f) Color(0xFFF5F7FA) else Color(0xFF141B29)
-                        } else {
-                            defaultSlideInk
-                        }
-                    } ?: defaultSlideInk
-
-                    Box(
-                        modifier = Modifier
-                            .offset(x = elX, y = elY)
-                            .size(width = elW, height = elH)
-                            .graphicsLayer { rotationZ = element.rotationDeg }
-                            .then(if (element.geometry != SlideShapeGeometry.LINE) Modifier.clip(shape) else Modifier)
-                            .then(if (element.geometry != SlideShapeGeometry.LINE) fillMod else Modifier)
-                            .then(borderMod),
-                        contentAlignment = when (element.verticalAlign) {
-                            SlideVerticalAlign.TOP -> Alignment.TopStart
-                            SlideVerticalAlign.MIDDLE -> Alignment.CenterStart
-                            SlideVerticalAlign.BOTTOM -> Alignment.BottomStart
-                        }
-                    ) {
-                        if (element.geometry == SlideShapeGeometry.LINE) {
-                            val lineColor = Color((element.borderColorArgb ?: element.fillColorArgb ?: 0xFF64748BL).toInt())
-                            val strokeDp = (element.borderWidthPt.coerceAtLeast(1f) * ptScale).coerceIn(0.8f, 3.5f)
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val midY = size.height * 0.5f
-                                drawLine(
-                                    color = lineColor,
-                                    start = Offset(0f, midY),
-                                    end = Offset(size.width, midY),
-                                    strokeWidth = strokeDp.dp.toPx()
-                                )
-                            }
-                        } else if (element.paragraphs.isNotEmpty()) {
-                            val padH = (5f * ptScale).coerceIn(2f, 8f).dp
-                            val padV = (3f * ptScale).coerceIn(1f, 6f).dp
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = padH, vertical = padV),
-                                verticalArrangement = Arrangement.spacedBy((3f * ptScale).coerceIn(1f, 5f).dp)
-                            ) {
-                                for (para in element.paragraphs) {
-                                    val textAlign = when (para.align) {
-                                        SlideTextAlign.LEFT -> TextAlign.Start
-                                        SlideTextAlign.CENTER -> TextAlign.Center
-                                        SlideTextAlign.RIGHT -> TextAlign.End
-                                        SlideTextAlign.JUSTIFY -> TextAlign.Justify
-                                    }
-                                    val maxRunPt = para.runs.maxOfOrNull { it.fontSizePt } ?: 14f
-                                    val lineHeightSp = (maxRunPt * ptScale * 1.20f).coerceIn(6.8f, 44f).sp
-                                    val annotated = buildAnnotatedString {
-                                        if (para.bulletPrefix.isNotEmpty()) {
-                                            val firstColor = para.runs.firstOrNull()?.colorArgb
-                                                ?.let { Color(it.toInt()) } ?: localInk
-                                            val bulletSp = (maxRunPt * ptScale).coerceIn(5.5f, 36f).sp
-                                            withStyle(SpanStyle(fontSize = bulletSp, color = firstColor)) {
-                                                append(para.bulletPrefix)
-                                            }
-                                        }
-                                        for (run in para.runs) {
-                                            val sp = (run.fontSizePt * ptScale).coerceIn(5.5f, 36f).sp
-                                            val col = run.colorArgb?.let { Color(it.toInt()) } ?: localInk
-                                            withStyle(
-                                                SpanStyle(
-                                                    fontSize = sp,
-                                                    fontWeight = if (run.isBold) FontWeight.Bold else FontWeight.Normal,
-                                                    fontStyle = if (run.isItalic) FontStyle.Italic else FontStyle.Normal,
-                                                    textDecoration = if (run.isUnderline) TextDecoration.Underline else TextDecoration.None,
-                                                    color = col
-                                                )
-                                            ) {
-                                                append(run.text)
-                                            }
-                                        }
-                                    }
-                                    val indentDp = (para.level * 10f * ptScale).coerceIn(0f, 24f).dp
-                                    Text(
-                                        text = annotated,
-                                        fontFamily = fontFamily,
-                                        lineHeight = lineHeightSp,
-                                        textAlign = textAlign,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(start = indentDp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                is SlideElement.Table -> {
-                    val gridBorder = if (bgStart.luminance() < 0.36f) {
-                        Color.White.copy(alpha = 0.25f)
-                    } else {
-                        Color(0xFFCBD5E1)
-                    }
-                    Column(
-                        modifier = Modifier
-                            .offset(x = elX, y = elY)
-                            .size(width = elW, height = elH)
-                            .border(0.6.dp, gridBorder)
-                    ) {
-                        for (row in element.rows) {
-                            Row(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxWidth()
-                            ) {
-                                row.forEachIndexed { colIdx, cell ->
-                                    val weight = element.colWeights.getOrElse(colIdx) {
-                                        1f / row.size.coerceAtLeast(1)
-                                    }.coerceAtLeast(0.05f)
-                                    val cellBg = cell.fillColorArgb?.let { Color(it.toInt()) } ?: Color.Transparent
-                                    val cellInk = cell.textColorArgb?.let { Color(it.toInt()) } ?: if (cellBg.alpha > 0.45f) {
-                                        if (cellBg.luminance() < 0.38f) Color.White else Color(0xFF141B29)
-                                    } else {
-                                        defaultSlideInk
-                                    }
-                                    val cellSp = (cell.fontSizePt * ptScale).coerceIn(5.2f, 16f).sp
-                                    val cellAlign = when (cell.align) {
-                                        SlideTextAlign.LEFT -> TextAlign.Start
-                                        SlideTextAlign.CENTER -> TextAlign.Center
-                                        SlideTextAlign.RIGHT -> TextAlign.End
-                                        SlideTextAlign.JUSTIFY -> TextAlign.Justify
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(weight)
-                                            .fillMaxHeight()
-                                            .background(cellBg)
-                                            .border(0.4.dp, gridBorder)
-                                            .padding(horizontal = (3f * ptScale).coerceIn(1.5f, 5f).dp, vertical = 1.dp),
-                                        contentAlignment = Alignment.CenterStart
-                                    ) {
-                                        Text(
-                                            text = cell.text,
-                                            fontFamily = fontFamily,
-                                            fontSize = cellSp,
-                                            lineHeight = (cellSp.value * 1.15f).sp,
-                                            fontWeight = if (cell.isBold) FontWeight.Bold else FontWeight.Normal,
-                                            color = cellInk,
-                                            textAlign = cellAlign,
-                                            maxLines = 3,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SlideBodyBlocks(
-    blocks: List<ParsedBlock>,
-    bodySp: androidx.compose.ui.unit.TextUnit,
-    ink: Color,
-    accent: Color,
-    fontFamily: androidx.compose.ui.text.font.FontFamily
-) {
-    for (block in blocks.take(10)) {
-        if (block.type == BlockType.LIST_ITEM) {
-            Row(
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .padding(top = (bodySp.value * 0.42f).dp)
-                        .size((bodySp.value * 0.34f).coerceIn(3f, 5f).dp)
-                        .clip(CircleShape)
-                        .background(accent)
-                )
-                Text(
-                    text = block.text,
-                    fontFamily = fontFamily,
-                    fontSize = bodySp,
-                    lineHeight = (bodySp.value * 1.28f).sp,
-                    color = ink,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        } else {
-            Text(
-                text = block.text,
-                fontFamily = fontFamily,
-                fontSize = bodySp,
-                lineHeight = (bodySp.value * 1.28f).sp,
-                color = ink,
-                maxLines = 5,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun PhysicalDocumentSheetSurface(
-    sheet: StandardDocumentSheet,
-    formatBadge: String,
-    ptScale: Float,
-    paperInk: Color,
-    paperMuted: Color,
-    paperBorder: Color,
-    accent: Color,
-    fontFamily: androidx.compose.ui.text.font.FontFamily,
-    textAlign: TextAlign
-) {
-    val marginX = (52f * ptScale).coerceIn(14f, 40f).dp
-    val marginY = (46f * ptScale).coerceIn(12f, 36f).dp
-    val h1Sp = (19f * ptScale).coerceIn(9.5f, 18f).sp
-    val h2Sp = (15f * ptScale).coerceIn(8.5f, 15f).sp
-    val bodySp = (11.5f * ptScale).coerceIn(6.5f, 12.5f).sp
-    val metaSp = (8.5f * ptScale).coerceIn(6f, 9.5f).sp
-    val blockGap = (9f * ptScale).coerceIn(3.5f, 9f).dp
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = marginX, vertical = marginY)
-    ) {
-        // Subtle top physical paper header (A4 / Carta / A3 indicator)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = formatBadge,
-                fontSize = metaSp,
-                fontWeight = FontWeight.Bold,
-                color = paperMuted.copy(alpha = 0.65f)
-            )
-            Text(
-                text = sheet.headerLabel,
-                fontSize = metaSp,
-                fontWeight = FontWeight.SemiBold,
-                color = paperMuted.copy(alpha = 0.65f)
-            )
-        }
-        Spacer(Modifier.height((6f * ptScale).coerceIn(3f, 7f).dp))
-        HorizontalDivider(thickness = 0.6.dp, color = paperBorder.copy(alpha = 0.7f))
-        Spacer(Modifier.height((10f * ptScale).coerceIn(5f, 12f).dp))
-
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(blockGap)
-        ) {
-            for (block in sheet.blocks) {
-                when (block.type) {
-                    BlockType.HEADING_1 -> {
-                        Text(
-                            text = block.text,
-                            fontFamily = fontFamily,
-                            fontSize = h1Sp,
-                            lineHeight = (h1Sp.value * 1.24f).sp,
-                            fontWeight = FontWeight.Bold,
-                            color = paperInk
-                        )
-                    }
-                    BlockType.HEADING_2 -> {
-                        Text(
-                            text = block.text,
-                            fontFamily = fontFamily,
-                            fontSize = h2Sp,
-                            lineHeight = (h2Sp.value * 1.26f).sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = paperInk
-                        )
-                    }
-                    BlockType.QUOTE -> {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = 6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .width(2.dp)
-                                    .heightIn(min = 16.dp)
-                                    .background(accent.copy(alpha = 0.75f))
-                            )
-                            Spacer(Modifier.width(7.dp))
-                            Text(
-                                text = block.text,
-                                fontFamily = fontFamily,
-                                fontSize = bodySp,
-                                lineHeight = (bodySp.value * 1.38f).sp,
-                                fontStyle = FontStyle.Italic,
-                                color = paperMuted
-                            )
-                        }
-                    }
-                    BlockType.LIST_ITEM -> {
-                        Text(
-                            text = "•  ${block.text}",
-                            fontFamily = fontFamily,
-                            fontSize = bodySp,
-                            lineHeight = (bodySp.value * 1.38f).sp,
-                            color = paperInk,
-                            modifier = Modifier.padding(start = 6.dp)
-                        )
-                    }
-                    BlockType.PARAGRAPH -> {
-                        Text(
-                            text = block.text,
-                            fontFamily = fontFamily,
-                            fontSize = bodySp,
-                            lineHeight = (bodySp.value * 1.40f).sp,
-                            textAlign = textAlign,
-                            color = paperInk
-                        )
-                    }
-                }
-            }
         }
     }
 }

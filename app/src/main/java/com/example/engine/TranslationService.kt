@@ -2,6 +2,7 @@ package com.example.engine
 
 import android.graphics.Bitmap
 import android.util.Base64
+import android.util.LruCache
 import com.example.data.model.AiProviderType
 import com.example.data.model.OcrBlockBox
 import com.example.data.model.ReaderPreferences
@@ -12,6 +13,7 @@ import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -23,26 +25,63 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
+import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 
 object TranslationService {
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val httpClient: OkHttpClient by lazy {
+        LumaHttpClient.shared.newBuilder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    // Bounded thread-safe in-memory LRU caches for instant repeated dictionary/translation lookups
+    private val translationCache = LruCache<String, String>(200)
+    private val wikipediaCache = LruCache<String, WikipediaSummary>(100)
+
+    private fun translationCacheKey(word: String, prefs: ReaderPreferences): String {
+        val norm = word.trim().lowercase(Locale.ROOT)
+        val engineTag = if (prefs.translationEngine == TranslationEngine.AI_CUSTOM_API && prefs.aiApiKey.isNotBlank()) {
+            "ai:${prefs.aiProvider.name}:${prefs.aiModel.trim()}"
+        } else {
+            "google"
+        }
+        return "$engineTag|$norm"
+    }
+
+    private fun wikiCacheKey(word: String): String =
+        cleanWord(word).lowercase(Locale.ROOT)
+
+    fun getCachedTranslation(word: String, prefs: ReaderPreferences): String? {
+        val cleaned = word.trim()
+        if (cleaned.isEmpty()) return null
+        return translationCache.get(translationCacheKey(cleaned, prefs))
+    }
+
+    fun getCachedWikipediaSummary(word: String): WikipediaSummary? {
+        val key = wikiCacheKey(word)
+        if (key.isEmpty()) return null
+        return wikipediaCache.get(key)
+    }
+
     /**
-     * Fetches instant Spanish summary from Wikipedia REST API.
+     * Fetches instant Spanish summary from Wikipedia REST API (with in-memory LRU cache).
      */
     suspend fun fetchWikipediaSummary(word: String): Result<WikipediaSummary> =
         withContext(Dispatchers.IO) {
             runCatching {
+                coroutineContext.ensureActive()
                 val cleaned = cleanWord(word)
                 require(cleaned.isNotEmpty()) { "Palabra vacía" }
+                val cacheKey = cleaned.lowercase(Locale.ROOT)
+                wikipediaCache.get(cacheKey)?.let { return@runCatching it }
+
                 val encoded = URLEncoder.encode(cleaned, "UTF-8").replace("+", "%20")
                 val url = "https://es.wikipedia.org/api/rest_v1/page/summary/$encoded"
                 val request = Request.Builder()
@@ -73,14 +112,16 @@ object TranslationService {
                         description = description,
                         extract = extract,
                         pageUrl = pageUrl
-                    )
+                    ).also { summary ->
+                        wikipediaCache.put(cacheKey, summary)
+                    }
                 }
             }
         }
 
     /**
      * Translates a single word or short phrase into Spanish for the contextual popover.
-     * Uses user's AI API when selected and configured, otherwise Google Traductor (HTTP + ML Kit fallback).
+     * Checks in-memory [translationCache] first; on miss uses AI API or Google Traductor (+ ML Kit fallback).
      */
     suspend fun translateWordToSpanish(
         word: String,
@@ -88,8 +129,14 @@ object TranslationService {
         prefs: ReaderPreferences,
         onStatus: (String) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
+        coroutineContext.ensureActive()
         val cleaned = word.trim()
         if (cleaned.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Texto vacío"))
+
+        val cacheKey = translationCacheKey(cleaned, prefs)
+        translationCache.get(cacheKey)?.let { cached ->
+            return@withContext Result.success(cached)
+        }
 
         if (prefs.translationEngine == TranslationEngine.AI_CUSTOM_API && prefs.aiApiKey.isNotBlank()) {
             onStatus("Consultando IA (${prefs.aiProvider.displayName})…")
@@ -112,21 +159,29 @@ object TranslationService {
                     pageBitmap = null
                 )
             }
-            if (aiResult.isSuccess && !aiResult.getOrNull().isNullOrBlank()) {
+            val aiText = aiResult.getOrNull()
+            if (aiResult.isSuccess && !aiText.isNullOrBlank()) {
+                translationCache.put(cacheKey, aiText)
                 return@withContext aiResult
             }
         }
 
         // Default or fallback: Google Translate (fast online endpoint, then on-device ML Kit Translate)
+        coroutineContext.ensureActive()
         onStatus("Traduciendo con Google Traductor…")
         val online = runCatching { googleTranslateHttp(cleaned) }
-        if (online.isSuccess && !online.getOrNull().isNullOrBlank()) {
+        val onlineText = online.getOrNull()
+        if (online.isSuccess && !onlineText.isNullOrBlank()) {
+            translationCache.put(cacheKey, onlineText)
             return@withContext online
         }
 
+        coroutineContext.ensureActive()
         runCatching {
             onStatus("Preparando traductor local EN → ES…")
-            mlKitTranslateEnToEs(cleaned)
+            mlKitTranslateEnToEs(cleaned).also { localText ->
+                if (localText.isNotBlank()) translationCache.put(cacheKey, localText)
+            }
         }
     }
 

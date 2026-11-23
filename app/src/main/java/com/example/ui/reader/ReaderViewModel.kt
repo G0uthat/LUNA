@@ -3,6 +3,7 @@ package com.example.ui.reader
 import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.LruCache
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -29,8 +30,10 @@ import com.example.engine.OcrEngine
 import com.example.engine.TranslationService
 import com.example.ui.components.LumaActionAnimType
 import com.example.ui.components.LumaFeedbackEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -124,9 +127,9 @@ class ReaderViewModel(
             initialValue = emptyList()
         )
 
-    // In-memory cache of rendered PDF page bitmaps for OCR & multimodal AI translation
-    private val pageBitmaps = mutableMapOf<Int, Bitmap>()
-    private val ocrRunningPages = mutableSetOf<Int>()
+    // Bounded in-memory window (max 3 pages) of rendered PDF bitmaps for on-demand OCR/AI translation
+    private val pageBitmaps = LruCache<Int, Bitmap>(3)
+    private var ocrTranslationJob: Job? = null
 
     // Undo / Redo stacks per locationKey
     private val undoStacks = mutableMapOf<String, ArrayDeque<List<DrawingStroke>>>()
@@ -135,6 +138,13 @@ class ReaderViewModel(
 
     init {
         loadDocument()
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        ocrTranslationJob?.cancel()
+        wordLookupJob?.cancel()
+        pageBitmaps.evictAll()
     }
 
     private fun loadDocument() {
@@ -146,13 +156,6 @@ class ReaderViewModel(
                 val file = File(doc.filePath)
                 if (!file.exists()) error("El archivo local ya no existe en el dispositivo.")
                 val format = DocumentFormat.fromExtension(doc.format) ?: DocumentFormat.EPUB
-                val parsed = DocumentParser.parse(getApplication(), file, format)
-                val totalUnits = when (format) {
-                    DocumentFormat.PDF -> parsed.pdfPageCount
-                    DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
-                    else -> parsed.chapters.size
-                }
-                val startUnit = doc.currentUnit.coerceIn(0, (totalUnits - 1).coerceAtLeast(0))
 
                 val initialOriginalView = when (format) {
                     DocumentFormat.EPUB -> false
@@ -160,16 +163,45 @@ class ReaderViewModel(
                     DocumentFormat.DOCX, DocumentFormat.TXT, DocumentFormat.FB2 -> preferences.value.useStandardPageView
                 }
 
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        document = doc,
-                        parsed = parsed,
-                        currentUnitIndex = startUnit,
-                        viewAsOriginalFormat = initialOriginalView
-                    )
+                var hasDeliveredInitial = false
+                fun publishParsed(parsed: ParsedDocument, isInitial: Boolean) {
+                    val totalUnits = when (format) {
+                        DocumentFormat.PDF -> parsed.pdfPageCount
+                        DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+                        else -> parsed.chapters.size
+                    }
+                    val targetUnit = if (isInitial) {
+                        doc.currentUnit.coerceIn(0, (totalUnits - 1).coerceAtLeast(0))
+                    } else {
+                        _uiState.value.currentUnitIndex.coerceIn(0, (totalUnits - 1).coerceAtLeast(0))
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            document = doc,
+                            parsed = parsed,
+                            currentUnitIndex = targetUnit,
+                            viewAsOriginalFormat = if (isInitial) initialOriginalView else it.viewAsOriginalFormat
+                        )
+                    }
+                    if (isInitial) refreshUndoRedoFlags()
                 }
-                refreshUndoRedoFlags()
+
+                val fullParsed = DocumentParser.parseProgressive(
+                    context = getApplication(),
+                    file = file,
+                    format = format,
+                    priorityUnitIndex = doc.currentUnit,
+                    onPartialReady = { partial ->
+                        if (!hasDeliveredInitial) {
+                            hasDeliveredInitial = true
+                            publishParsed(partial, isInitial = true)
+                        }
+                    }
+                )
+                publishParsed(fullParsed, isInitial = !hasDeliveredInitial)
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isLoading = false, error = e.localizedMessage ?: "No se pudo abrir el libro.")
@@ -446,46 +478,56 @@ class ReaderViewModel(
         }
     }
 
-    // Word / Phrase / Sentence Selection -> Instant EN/Auto -> ES Translation + Wikipedia ES REST Summary
+    // Word / Phrase / Sentence Selection -> Instant Cached or Debounced EN/Auto -> ES Translation + Wikipedia ES
     fun onWordSelected(context: SelectedWordContext) {
         wordLookupJob?.cancel()
+        val prefs = preferences.value
         val wikiTerm = resolveWikiLookupTerm(context)
+        val cachedTrans = TranslationService.getCachedTranslation(context.word, prefs)
+        val cachedWiki = if (wikiTerm.isNotBlank()) TranslationService.getCachedWikipediaSummary(wikiTerm) else null
+
         _uiState.update {
             it.copy(
                 selectedWord = context,
                 isDockExpanded = false,
-                instantTranslation = null,
-                isTranslatingWord = true,
-                wordTranslationStatus = "Traduciendo al español…",
-                wikiSummary = null,
+                instantTranslation = cachedTrans,
+                isTranslatingWord = cachedTrans == null,
+                wordTranslationStatus = if (cachedTrans == null) "Traduciendo al español…" else "",
+                wikiSummary = cachedWiki,
                 wikiError = null,
-                isWikiLoading = wikiTerm.isNotBlank()
+                isWikiLoading = wikiTerm.isNotBlank() && cachedWiki == null
             )
         }
 
+        if (cachedTrans != null && (wikiTerm.isBlank() || cachedWiki != null)) {
+            return
+        }
+
         wordLookupJob = viewModelScope.launch {
-            val prefs = preferences.value
-            // Run Translation and Wikipedia ES concurrently
-            launch {
-                val transRes = TranslationService.translateWordToSpanish(
-                    word = context.word,
-                    contextSnippet = context.snippet,
-                    prefs = prefs,
-                    onStatus = { status ->
-                        _uiState.update { it.copy(wordTranslationStatus = status) }
-                    }
-                )
-                _uiState.update {
-                    it.copy(
-                        isTranslatingWord = false,
-                        instantTranslation = transRes.getOrElse { err ->
-                            "No se pudo traducir (${err.localizedMessage ?: "sin conexión"})"
+            // Brief coalesce delay avoids spamming HTTP calls if user taps across words rapidly
+            delay(80L)
+            if (cachedTrans == null) {
+                launch {
+                    val transRes = TranslationService.translateWordToSpanish(
+                        word = context.word,
+                        contextSnippet = context.snippet,
+                        prefs = prefs,
+                        onStatus = { status ->
+                            _uiState.update { it.copy(wordTranslationStatus = status) }
                         }
                     )
+                    _uiState.update {
+                        it.copy(
+                            isTranslatingWord = false,
+                            instantTranslation = transRes.getOrElse { err ->
+                                "No se pudo traducir (${err.localizedMessage ?: "sin conexión"})"
+                            }
+                        )
+                    }
                 }
             }
 
-            if (wikiTerm.isNotBlank()) {
+            if (wikiTerm.isNotBlank() && cachedWiki == null) {
                 launch {
                     val wikiRes = TranslationService.fetchWikipediaSummary(wikiTerm)
                     _uiState.update {
@@ -502,7 +544,7 @@ class ReaderViewModel(
 
     /**
      * Expands or shrinks the active text selection (e.g., Palabra <-> Oración <-> Párrafo)
-     * without closing the popover, updating live page highlight and translating the new span.
+     * without closing the popover, debouncing network lookups while returning cache hits instantly.
      */
     fun updateSelection(updated: SelectedWordContext) {
         val prev = _uiState.value.selectedWord
@@ -510,16 +552,20 @@ class ReaderViewModel(
             return
         }
         wordLookupJob?.cancel()
+        val prefs = preferences.value
+        val cachedTrans = TranslationService.getCachedTranslation(updated.word, prefs)
         _uiState.update {
             it.copy(
                 selectedWord = updated,
-                instantTranslation = null,
-                isTranslatingWord = true,
-                wordTranslationStatus = "Traduciendo selección…"
+                instantTranslation = cachedTrans,
+                isTranslatingWord = cachedTrans == null,
+                wordTranslationStatus = if (cachedTrans == null) "Traduciendo selección…" else ""
             )
         }
+        if (cachedTrans != null) return
+
         wordLookupJob = viewModelScope.launch {
-            val prefs = preferences.value
+            delay(180L)
             val transRes = TranslationService.translateWordToSpanish(
                 word = updated.word,
                 contextSnippet = updated.snippet,
@@ -558,38 +604,11 @@ class ReaderViewModel(
         _uiState.update { it.copy(selectedWord = null) }
     }
 
-    // PDF / Manhwa On-Device OCR & Full-Page Translation
+    // PDF / Manhwa On-Demand OCR & Full-Page Translation
+    // Stores only a bounded 3-page window and NEVER launches ML Kit OCR during scrolling.
     fun onPdfPageBitmapReady(pageIndex: Int, bitmap: Bitmap) {
-        pageBitmaps[pageIndex] = bitmap
-        if (preferences.value.autoOcrPdf && ocrByPage.value[pageIndex] == null) {
-            runOcrOnPage(pageIndex, bitmap, silent = true)
-        }
-    }
-
-    private fun runOcrOnPage(pageIndex: Int, bitmap: Bitmap, silent: Boolean) {
-        if (!ocrRunningPages.add(pageIndex)) return
-        viewModelScope.launch {
-            if (!silent) {
-                _uiState.update {
-                    it.copy(
-                        isProcessingOcrOrTranslation = true,
-                        ocrTranslationStatus = "Escaneando texto OCR en página ${pageIndex + 1}…"
-                    )
-                }
-            }
-            try {
-                val ocrResult = OcrEngine.recognizePage(bitmap, pageIndex)
-                repository.saveOcrPage(documentId, ocrResult)
-            } catch (e: Exception) {
-                if (!silent) {
-                    emitFeedback(LumaActionAnimType.ERROR, "Error OCR: ${e.localizedMessage ?: "no disponible"}")
-                }
-            } finally {
-                ocrRunningPages.remove(pageIndex)
-                if (!silent) {
-                    _uiState.update { it.copy(isProcessingOcrOrTranslation = false) }
-                }
-            }
+        if (!bitmap.isRecycled) {
+            pageBitmaps.put(pageIndex, bitmap)
         }
     }
 
@@ -597,19 +616,21 @@ class ReaderViewModel(
         val pageIndex = _uiState.value.currentUnitIndex
         val existing = ocrByPage.value[pageIndex]
 
-        // If already translated, simply toggle overlay visibility
+        // If already translated and persisted in Room ocr_page_cache, simply toggle overlay visibility
         if (existing != null && existing.isTranslated) {
             _uiState.update { it.copy(showTranslatedManhwaOverlay = !it.showTranslatedManhwaOverlay) }
             return
         }
 
-        val bitmap = pageBitmaps[pageIndex]
+        val bitmap = pageBitmaps.get(pageIndex)?.takeIf { !it.isRecycled }
         if (bitmap == null) {
             emitFeedback(LumaActionAnimType.ERROR, "Espera a que cargue la página PDF")
             return
         }
 
-        viewModelScope.launch {
+        // Single-flight: cancel any previous OCR/translation job before launching the new page
+        ocrTranslationJob?.cancel()
+        ocrTranslationJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isProcessingOcrOrTranslation = true,
@@ -617,6 +638,7 @@ class ReaderViewModel(
                 )
             }
             try {
+                // Re-check Room ocr_page_cache first; only run ML Kit OCR on-demand on cache miss
                 val ocr = existing ?: OcrEngine.recognizePage(bitmap, pageIndex).also {
                     repository.saveOcrPage(documentId, it)
                 }
@@ -639,6 +661,8 @@ class ReaderViewModel(
                 repository.saveOcrPage(documentId, updatedOcr)
                 _uiState.update { it.copy(showTranslatedManhwaOverlay = true) }
                 emitFeedback(LumaActionAnimType.TRANSLATED)
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
                 emitFeedback(LumaActionAnimType.ERROR, e.localizedMessage ?: "Revisa tu conexión")
             } finally {

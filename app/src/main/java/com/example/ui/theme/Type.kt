@@ -8,45 +8,54 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.R
 
-val PlusJakartaSansFamily = FontFamily(
-    Font(R.font.plus_jakarta_sans, FontWeight.Normal),
-    Font(R.font.plus_jakarta_sans, FontWeight.Medium),
-    Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
-    Font(R.font.plus_jakarta_sans, FontWeight.Bold),
-    Font(R.font.plus_jakarta_sans, FontWeight.ExtraBold)
-)
+// Lazy-initialized FontFamilies ensure reader & brand fonts are not allocated or loaded during
+// cold startup unless the active UI or reader actually requests them.
 
-val LiterataFamily = FontFamily(
-    Font(R.font.literata, FontWeight.Normal),
-    Font(R.font.literata, FontWeight.Medium),
-    Font(R.font.literata, FontWeight.SemiBold),
-    Font(R.font.literata, FontWeight.Bold)
-)
+val PlusJakartaSansFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
+    FontFamily(
+        Font(R.font.plus_jakarta_sans, FontWeight.Normal),
+        Font(R.font.plus_jakarta_sans, FontWeight.Medium),
+        Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
+        Font(R.font.plus_jakarta_sans, FontWeight.Bold),
+        Font(R.font.plus_jakarta_sans, FontWeight.ExtraBold)
+    )
+}
 
-val LexendFamily = FontFamily(
-    Font(R.font.lexend, FontWeight.Normal),
-    Font(R.font.lexend, FontWeight.Medium),
-    Font(R.font.lexend, FontWeight.SemiBold),
-    Font(R.font.lexend, FontWeight.Bold)
-)
+val LiterataFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
+    FontFamily(
+        Font(R.font.literata, FontWeight.Normal),
+        Font(R.font.literata, FontWeight.Medium),
+        Font(R.font.literata, FontWeight.SemiBold),
+        Font(R.font.literata, FontWeight.Bold)
+    )
+}
 
-val JetBrainsMonoFamily = FontFamily(
-    Font(R.font.jetbrains_mono, FontWeight.Normal),
-    Font(R.font.jetbrains_mono, FontWeight.Medium),
-    Font(R.font.jetbrains_mono, FontWeight.Bold)
-)
+val LexendFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
+    FontFamily(
+        Font(R.font.lexend, FontWeight.Normal),
+        Font(R.font.lexend, FontWeight.Medium),
+        Font(R.font.lexend, FontWeight.SemiBold),
+        Font(R.font.lexend, FontWeight.Bold)
+    )
+}
 
-val LumaBrandFontFamily = FontFamily(
-    Font(R.font.outfit, FontWeight.Normal),
-    Font(R.font.outfit, FontWeight.Medium),
-    Font(R.font.outfit, FontWeight.SemiBold),
-    Font(R.font.outfit, FontWeight.Bold),
-    Font(R.font.outfit, FontWeight.ExtraBold)
-)
+val JetBrainsMonoFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
+    FontFamily(
+        Font(R.font.jetbrains_mono, FontWeight.Normal),
+        Font(R.font.jetbrains_mono, FontWeight.Medium),
+        Font(R.font.jetbrains_mono, FontWeight.Bold)
+    )
+}
 
-val LumaLetteringFontFamily = FontFamily(
-    Font(R.font.kaushan_script, FontWeight.Normal)
-)
+val LumaBrandFontFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
+    FontFamily(
+        Font(R.font.outfit, FontWeight.Normal),
+        Font(R.font.outfit, FontWeight.Medium),
+        Font(R.font.outfit, FontWeight.SemiBold),
+        Font(R.font.outfit, FontWeight.Bold),
+        Font(R.font.outfit, FontWeight.ExtraBold)
+    )
+}
 
 fun buildFolioTypography(useSystemFont: Boolean): Typography {
     val uiFamily = if (useSystemFont) FontFamily.Default else PlusJakartaSansFamily

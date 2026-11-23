@@ -25,3 +25,4 @@ dependencyResolutionManagement {
 rootProject.name = "Luma"
 
 include(":app")
+include(":benchmark")

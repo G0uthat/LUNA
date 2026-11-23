@@ -43,7 +43,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -53,6 +54,12 @@ android {
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("debugConfig")
+    }
+    create("benchmark") {
+      initWith(getByName("release"))
+      signingConfig = signingConfigs.getByName("debugConfig")
+      matchingFallbacks += listOf("release")
+      isDebuggable = false
     }
   }
   compileOptions {
@@ -70,8 +77,31 @@ android {
         "META-INF/LICENSE",
         "META-INF/LICENSE.txt",
         "META-INF/NOTICE",
-        "META-INF/NOTICE.txt"
+        "META-INF/NOTICE.txt",
+        // Strip unused BouncyCastle Post-Quantum Crypto tables pulled transitively by pdfbox-android (~4 MB compressed / ~7.9 MB raw)
+        "org/bouncycastle/pqc/**"
       )
+    }
+  }
+  bundle {
+    abi { enableSplit = true }
+    density { enableSplit = true }
+    language { enableSplit = true }
+  }
+  // Optional per-ABI APK splits (`gradle assembleRelease -PenableAbiSplits=true`).
+  // Disabled by default to preserve standard app-debug.apk / app-release.apk output paths.
+  val enableAbiSplits = providers.gradleProperty("enableAbiSplits")
+    .map { it.toBoolean() }
+    .orElse(false)
+    .get()
+  if (enableAbiSplits) {
+    splits {
+      abi {
+        isEnable = true
+        reset()
+        include("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        isUniversalApk = true
+      }
     }
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
@@ -79,6 +109,17 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+}
+
+composeCompiler {
+  // Strong Skipping Mode is enabled by default in Kotlin 2.0.20+ (project pinned to Kotlin 2.4.21).
+  // Generate stability metrics & reports for Phase 3 Compose recomposition auditing.
+  reportsDestination = layout.buildDirectory.dir("compose_compiler")
+  metricsDestination = layout.buildDirectory.dir("compose_compiler")
+}
+
+ksp {
+  arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -109,11 +150,13 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  implementation(libs.androidx.core.splashscreen)
   implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   // implementation(libs.androidx.navigation.compose)
+  implementation(libs.androidx.profileinstaller)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   // implementation(libs.coil.compose)

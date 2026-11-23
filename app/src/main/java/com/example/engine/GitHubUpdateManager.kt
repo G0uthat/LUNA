@@ -2,6 +2,7 @@ package com.example.engine
 
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -79,7 +80,39 @@ object GitHubUpdateManager {
     private const val KEY_LOCKED_BLOCK_MESSAGE = "locked_block_message"
     private const val KEY_LOCKED_APK_SIZE = "locked_apk_size"
 
-    private const val AUTO_CHECK_INTERVAL_MS = 10 * 60 * 1000L // 10 minutes between silent auto-checks
+    // Persisted ETag & conditional-GET (304 Not Modified) cache keys
+    private const val KEY_ETAG_RELEASES_LATEST = "etag_releases_latest"
+    private const val KEY_CACHE_RELEASES_LATEST = "cache_releases_latest"
+    private const val KEY_ETAG_RELEASES_LIST = "etag_releases_list"
+    private const val KEY_CACHE_RELEASES_LIST = "cache_releases_list"
+    private const val KEY_ETAG_POLICY = "etag_policy"
+    private const val KEY_CACHE_POLICY = "cache_policy"
+    private const val KEY_POLICY_BRANCH = "policy_branch"
+    private const val KEY_ETAG_GRADLE = "etag_gradle"
+    private const val KEY_CACHE_GRADLE_NAME = "cache_gradle_ver_name"
+    private const val KEY_CACHE_GRADLE_CODE = "cache_gradle_ver_code"
+    private const val KEY_GRADLE_BRANCH = "gradle_branch"
+    private const val KEY_DIRECT_APK_BRANCH = "direct_apk_branch"
+    private const val KEY_DIRECT_APK_PATH = "direct_apk_path"
+    private const val KEY_DIRECT_APK_ETAG = "direct_apk_etag"
+    private const val KEY_DIRECT_APK_SIZE = "direct_apk_size"
+    private const val KEY_CACHE_APK_URL = "cache_apk_url"
+    private const val KEY_CACHE_APK_ETAG = "cache_apk_etag"
+    private const val KEY_CACHE_APK_VER_NAME = "cache_apk_ver_name"
+    private const val KEY_CACHE_APK_VER_CODE = "cache_apk_ver_code"
+
+    private const val AUTO_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L // 6 hours between silent auto-checks
+
+    // Pre-compiled Regex constants (zero per-check allocation)
+    private val VERSION_CODE_REGEX = Regex("""versionCode\s*=\s*(\d+)""")
+    private val VERSION_NAME_REGEX = Regex("""versionName\s*=\s*"([^"]+)"""")
+    private val CONTENT_RANGE_REGEX = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""")
+    private val FORCE_UPDATE_REGEX = Regex("force_update\\s*[:=]\\s*true", RegexOption.IGNORE_CASE)
+    private val CONTROL_TAG_REGEX = Regex(
+        "\\[(FORCE|OBLIGATORIA|OBLIGATORIO|MANDATORY|OPTIONAL|SKIPPABLE)]",
+        RegexOption.IGNORE_CASE
+    )
+    private val SEMVER_REGEX = Regex("(\\d+(?:\\.\\d+)*)")
 
     private val candidateBranches = listOf("main", "master")
     private val candidateRepoApkPaths = listOf(
@@ -101,7 +134,7 @@ object GitHubUpdateManager {
     )
 
     private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        LumaHttpClient.shared.newBuilder()
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .followRedirects(true)
@@ -179,26 +212,30 @@ object GitHubUpdateManager {
         if (!manualCheck && !bypassThrottle && !hasCachedLock && (now - lastCheck) < AUTO_CHECK_INTERVAL_MS) {
             return@withContext _checkOutcome.value
         }
+        // Skip silent background checks while device is offline to avoid socket timeouts
+        if (!manualCheck && !hasCachedLock && !DynamicIslandEventManager.isOnline.value) {
+            return@withContext _checkOutcome.value
+        }
 
         _checkOutcome.value = UpdateCheckOutcome.Checking
         val repo = GITHUB_REPO
         val diagnostics = FetchDiagnostics()
 
-        // 1. GitHub Releases (latest OR newest non-draft release / pre-release with Luma.apk)
-        val releaseData = fetchBestGitHubRelease(repo, diagnostics)
+        // 1. GitHub Releases (conditional GET with ETag / If-None-Match -> 304 = 0 bytes & 0 rate limit)
+        val releaseData = fetchBestGitHubRelease(repo, prefs, diagnostics)
 
-        // 2. Remote update-policy.json (cache-busted)
-        val policyData = fetchRemoteUpdatePolicy(repo, now)
+        // 2. Remote update-policy.json (conditional GET with ETag / If-None-Match)
+        val policyData = fetchRemoteUpdatePolicy(repo, prefs)
 
         // 3. Direct Luma.apk committed inside the repository (if no Release APK found)
         val directApkData = if (releaseData?.hasDirectApk == true) {
             null
         } else {
-            fetchDirectRepoApk(repo, now, diagnostics)
+            fetchDirectRepoApk(repo, prefs, diagnostics)
         }
 
-        // 4. Remote app/build.gradle.kts versionCode / versionName (cache-busted)
-        val gradleVersion = fetchRemoteGradleVersion(repo, now)
+        // 4. Remote app/build.gradle.kts versionCode / versionName (conditional GET with ETag)
+        val gradleVersion = fetchRemoteGradleVersion(repo, prefs)
 
         // 5. GitHub Actions `Build APK` (`Luma-APK`) fallback when no Release or repo APK exists
         val actionsBuild = if (releaseData?.hasDirectApk == true || directApkData != null) {
@@ -207,12 +244,15 @@ object GitHubUpdateManager {
             fetchLatestActionsApkRun(repo, diagnostics)
         }
 
-        // 6. Inspect the actual Luma.apk binary AndroidManifest.xml via lightweight HTTP Range requests
+        // 6. Inspect Luma.apk binary AndroidManifest.xml ONLY when ETag/URL changed (0 Range bytes on cache hit)
         val candidateApkUrl = sanitizeGitHubUrl(policyData?.apkUrl.orEmpty())
             ?.takeIf { it.endsWith(".apk", ignoreCase = true) }
             ?: releaseData?.takeIf { it.hasDirectApk }?.apkDownloadUrl
             ?: directApkData?.downloadUrl
-        val inspectedApkVersion = candidateApkUrl?.let { inspectRemoteApkManifest(it) }
+        val knownApkEtag = if (candidateApkUrl == directApkData?.downloadUrl) directApkData?.sha.orEmpty() else ""
+        val inspectedApkVersion = candidateApkUrl?.let {
+            inspectRemoteApkManifest(apkUrl = it, knownEtag = knownApkEtag, prefs = prefs)
+        }
 
         val anySourceFound = releaseData != null ||
             policyData != null ||
@@ -389,42 +429,76 @@ object GitHubUpdateManager {
         val blockMessage: String
     )
 
-    private fun fetchBestGitHubRelease(repo: String, diag: FetchDiagnostics): GitHubReleasePayload? {
-        // First try /releases/latest (fast path for stable releases)
+    private fun fetchBestGitHubRelease(
+        repo: String,
+        prefs: SharedPreferences,
+        diag: FetchDiagnostics
+    ): GitHubReleasePayload? {
+        // First try /releases/latest with ETag / If-None-Match (304 = 0 bytes, 0 rate-limit cost)
         val latest = runCatching {
-            val request = Request.Builder()
+            val savedEtag = prefs.getString(KEY_ETAG_RELEASES_LATEST, null)?.trim().orEmpty()
+            val cachedJson = prefs.getString(KEY_CACHE_RELEASES_LATEST, null)
+            val reqBuilder = Request.Builder()
                 .url("https://api.github.com/repos/$repo/releases/latest")
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
-                .build()
-            httpClient.newCall(request).execute().use { response ->
+            if (savedEtag.isNotEmpty() && !cachedJson.isNullOrBlank()) {
+                reqBuilder.header("If-None-Match", savedEtag)
+            }
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                if (response.code == 304 && !cachedJson.isNullOrBlank()) {
+                    return@runCatching parseReleaseJson(repo, JSONObject(cachedJson))
+                }
                 when (response.code) {
                     404 -> diag.sawNotFound = true
                     403, 429 -> diag.sawRateLimit = true
                 }
                 if (!response.isSuccessful) return@runCatching null
                 val bodyStr = response.body?.string() ?: return@runCatching null
+                val newEtag = response.header("ETag")?.trim().orEmpty()
+                if (newEtag.isNotEmpty()) {
+                    prefs.edit()
+                        .putString(KEY_ETAG_RELEASES_LATEST, newEtag)
+                        .putString(KEY_CACHE_RELEASES_LATEST, bodyStr)
+                        .apply()
+                }
                 parseReleaseJson(repo, JSONObject(bodyStr))
             }
         }.getOrNull()
 
         if (latest != null && latest.hasDirectApk) return latest
 
-        // Fallback to /releases?per_page=10 (catches pre-releases, rolling Luma.apk releases, etc.)
+        // Fallback to /releases?per_page=10 with ETag / If-None-Match
         val listCandidate = runCatching {
-            val request = Request.Builder()
+            val savedEtag = prefs.getString(KEY_ETAG_RELEASES_LIST, null)?.trim().orEmpty()
+            val cachedJson = prefs.getString(KEY_CACHE_RELEASES_LIST, null)
+            val reqBuilder = Request.Builder()
                 .url("https://api.github.com/repos/$repo/releases?per_page=10")
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
-                .build()
-            httpClient.newCall(request).execute().use { response ->
-                when (response.code) {
-                    404 -> diag.sawNotFound = true
-                    403, 429 -> diag.sawRateLimit = true
+            if (savedEtag.isNotEmpty() && !cachedJson.isNullOrBlank()) {
+                reqBuilder.header("If-None-Match", savedEtag)
+            }
+            httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                val effectiveBody = if (response.code == 304 && !cachedJson.isNullOrBlank()) {
+                    cachedJson
+                } else {
+                    when (response.code) {
+                        404 -> diag.sawNotFound = true
+                        403, 429 -> diag.sawRateLimit = true
+                    }
+                    if (!response.isSuccessful) return@runCatching null
+                    val bodyStr = response.body?.string() ?: return@runCatching null
+                    val newEtag = response.header("ETag")?.trim().orEmpty()
+                    if (newEtag.isNotEmpty()) {
+                        prefs.edit()
+                            .putString(KEY_ETAG_RELEASES_LIST, newEtag)
+                            .putString(KEY_CACHE_RELEASES_LIST, bodyStr)
+                            .apply()
+                    }
+                    bodyStr
                 }
-                if (!response.isSuccessful) return@runCatching null
-                val bodyStr = response.body?.string() ?: return@runCatching null
-                val array = JSONArray(bodyStr)
+                val array = JSONArray(effectiveBody)
                 var firstNonDraft: GitHubReleasePayload? = null
                 for (i in 0 until array.length()) {
                     val obj = array.optJSONObject(i) ?: continue
@@ -486,35 +560,68 @@ object GitHubUpdateManager {
      */
     private fun fetchDirectRepoApk(
         repo: String,
-        timestamp: Long,
+        prefs: SharedPreferences,
         diag: FetchDiagnostics
     ): DirectRepoApkPayload? {
-        // Fast path: raw HTTPS HEAD on main/master for root Luma.apk (zero GitHub API rate-limit usage)
-        for (branch in candidateBranches) {
-            for (path in candidateRepoApkPaths) {
-                val rawUrl = "https://raw.githubusercontent.com/$repo/$branch/$path"
-                val headResult = runCatching {
-                    val req = Request.Builder()
-                        .url("$rawUrl?t=$timestamp")
-                        .head()
-                        .header("Cache-Control", "no-cache")
-                        .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
-                        .build()
-                    httpClient.newCall(req).execute().use { resp ->
-                        if (!resp.isSuccessful) return@runCatching null
-                        val contentLength = resp.header("Content-Length")?.toLongOrNull() ?: 0L
-                        val etag = resp.header("ETag").orEmpty().replace("\"", "")
-                        DirectRepoApkPayload(
+        // Fast path: probe cached (branch, path) first with If-None-Match so unchanged checks use 1 HEAD request
+        val cachedBranch = prefs.getString(KEY_DIRECT_APK_BRANCH, null)
+        val cachedPath = prefs.getString(KEY_DIRECT_APK_PATH, null)
+        val cachedEtag = prefs.getString(KEY_DIRECT_APK_ETAG, null)?.trim().orEmpty()
+        val cachedSize = prefs.getLong(KEY_DIRECT_APK_SIZE, 0L)
+
+        val orderedPairs = buildList {
+            if (!cachedBranch.isNullOrBlank() && !cachedPath.isNullOrBlank()) {
+                add(cachedBranch to cachedPath)
+            }
+            for (branch in candidateBranches) {
+                for (path in candidateRepoApkPaths) {
+                    if (branch != cachedBranch || path != cachedPath) {
+                        add(branch to path)
+                    }
+                }
+            }
+        }
+
+        for ((branch, path) in orderedPairs) {
+            val rawUrl = "https://raw.githubusercontent.com/$repo/$branch/$path"
+            val isCachedTarget = branch == cachedBranch && path == cachedPath && cachedEtag.isNotEmpty()
+            val headResult = runCatching {
+                val reqBuilder = Request.Builder()
+                    .url(rawUrl)
+                    .head()
+                    .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                if (isCachedTarget) {
+                    reqBuilder.header("If-None-Match", cachedEtag)
+                }
+                httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (resp.code == 304 && isCachedTarget) {
+                        return@runCatching DirectRepoApkPayload(
                             path = path,
                             downloadUrl = rawUrl,
                             htmlUrl = "https://github.com/$repo/blob/$branch/$path",
-                            sizeBytes = contentLength,
-                            sha = etag
+                            sizeBytes = cachedSize,
+                            sha = cachedEtag
                         )
                     }
-                }.getOrNull()
-                if (headResult != null) return headResult
-            }
+                    if (!resp.isSuccessful) return@runCatching null
+                    val contentLength = resp.header("Content-Length")?.toLongOrNull() ?: 0L
+                    val etag = resp.header("ETag")?.trim().orEmpty()
+                    prefs.edit()
+                        .putString(KEY_DIRECT_APK_BRANCH, branch)
+                        .putString(KEY_DIRECT_APK_PATH, path)
+                        .putString(KEY_DIRECT_APK_ETAG, etag)
+                        .putLong(KEY_DIRECT_APK_SIZE, contentLength)
+                        .apply()
+                    DirectRepoApkPayload(
+                        path = path,
+                        downloadUrl = rawUrl,
+                        htmlUrl = "https://github.com/$repo/blob/$branch/$path",
+                        sizeBytes = contentLength,
+                        sha = etag
+                    )
+                }
+            }.getOrNull()
+            if (headResult != null) return headResult
         }
 
         // Secondary path: GitHub Contents API (supports custom default branch names)
@@ -549,17 +656,41 @@ object GitHubUpdateManager {
         return null
     }
 
-    private fun fetchRemoteUpdatePolicy(repo: String, timestamp: Long): RemotePolicyPayload? {
-        for (branch in candidateBranches) {
+    private fun fetchRemoteUpdatePolicy(repo: String, prefs: SharedPreferences): RemotePolicyPayload? {
+        val cachedBranch = prefs.getString(KEY_POLICY_BRANCH, null)
+        val savedEtag = prefs.getString(KEY_ETAG_POLICY, null)?.trim().orEmpty()
+        val cachedJson = prefs.getString(KEY_CACHE_POLICY, null)
+        val branches = if (!cachedBranch.isNullOrBlank()) {
+            listOf(cachedBranch) + candidateBranches.filterNot { it == cachedBranch }
+        } else {
+            candidateBranches
+        }
+
+        for (branch in branches) {
+            val canUseCache = branch == cachedBranch && savedEtag.isNotEmpty() && !cachedJson.isNullOrBlank()
             val result = runCatching {
-                val request = Request.Builder()
-                    .url("https://raw.githubusercontent.com/$repo/$branch/update-policy.json?t=$timestamp")
-                    .header("Cache-Control", "no-cache")
+                val reqBuilder = Request.Builder()
+                    .url("https://raw.githubusercontent.com/$repo/$branch/update-policy.json")
                     .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@runCatching null
-                    val bodyStr = response.body?.string() ?: return@runCatching null
+                if (canUseCache) {
+                    reqBuilder.header("If-None-Match", savedEtag)
+                }
+                httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                    val bodyStr = if (response.code == 304 && canUseCache) {
+                        cachedJson!!
+                    } else {
+                        if (!response.isSuccessful) return@runCatching null
+                        val freshBody = response.body?.string() ?: return@runCatching null
+                        val newEtag = response.header("ETag")?.trim().orEmpty()
+                        if (newEtag.isNotEmpty()) {
+                            prefs.edit()
+                                .putString(KEY_POLICY_BRANCH, branch)
+                                .putString(KEY_ETAG_POLICY, newEtag)
+                                .putString(KEY_CACHE_POLICY, freshBody)
+                                .apply()
+                        }
+                        freshBody
+                    }
                     val json = JSONObject(bodyStr)
                     RemotePolicyPayload(
                         latestVersion = json.optString("latestVersion", "").trim(),
@@ -580,24 +711,50 @@ object GitHubUpdateManager {
 
     /**
      * Reads `versionCode` and `versionName` directly from the repository's `app/build.gradle.kts`
-     * so pushing a version bump to `G0uthat/LUNA` is immediately detected even before a Release tag exists.
+     * using conditional GET (`If-None-Match`) so unchanged checks transfer 0 bytes.
      */
-    private fun fetchRemoteGradleVersion(repo: String, timestamp: Long): RemoteGradleVersion? {
-        for (branch in candidateBranches) {
+    private fun fetchRemoteGradleVersion(repo: String, prefs: SharedPreferences): RemoteGradleVersion? {
+        val cachedBranch = prefs.getString(KEY_GRADLE_BRANCH, null)
+        val savedEtag = prefs.getString(KEY_ETAG_GRADLE, null)?.trim().orEmpty()
+        val cachedName = prefs.getString(KEY_CACHE_GRADLE_NAME, null).orEmpty()
+        val cachedCode = prefs.getInt(KEY_CACHE_GRADLE_CODE, 0)
+        val hasCachedValue = cachedName.isNotEmpty() || cachedCode > 0
+
+        val branches = if (!cachedBranch.isNullOrBlank()) {
+            listOf(cachedBranch) + candidateBranches.filterNot { it == cachedBranch }
+        } else {
+            candidateBranches
+        }
+
+        for (branch in branches) {
+            val canUseCache = branch == cachedBranch && savedEtag.isNotEmpty() && hasCachedValue
             val result = runCatching {
-                val request = Request.Builder()
-                    .url("https://raw.githubusercontent.com/$repo/$branch/app/build.gradle.kts?t=$timestamp")
-                    .header("Cache-Control", "no-cache")
+                val reqBuilder = Request.Builder()
+                    .url("https://raw.githubusercontent.com/$repo/$branch/app/build.gradle.kts")
                     .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
-                    .build()
-                httpClient.newCall(request).execute().use { response ->
+                if (canUseCache) {
+                    reqBuilder.header("If-None-Match", savedEtag)
+                }
+                httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                    if (response.code == 304 && canUseCache) {
+                        return@runCatching RemoteGradleVersion(versionName = cachedName, versionCode = cachedCode)
+                    }
                     if (!response.isSuccessful) return@runCatching null
                     val text = response.body?.string() ?: return@runCatching null
-                    val vCode = Regex("""versionCode\s*=\s*(\d+)""")
+                    val vCode = VERSION_CODE_REGEX
                         .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-                    val vName = Regex("""versionName\s*=\s*"([^"]+)"""")
+                    val vName = VERSION_NAME_REGEX
                         .find(text)?.groupValues?.getOrNull(1)?.trim().orEmpty()
                     if (vName.isEmpty() && vCode <= 0) return@runCatching null
+                    val newEtag = response.header("ETag")?.trim().orEmpty()
+                    if (newEtag.isNotEmpty()) {
+                        prefs.edit()
+                            .putString(KEY_GRADLE_BRANCH, branch)
+                            .putString(KEY_ETAG_GRADLE, newEtag)
+                            .putString(KEY_CACHE_GRADLE_NAME, vName)
+                            .putInt(KEY_CACHE_GRADLE_CODE, vCode)
+                            .apply()
+                    }
                     RemoteGradleVersion(versionName = vName, versionCode = vCode)
                 }
             }.getOrNull()
@@ -672,8 +829,55 @@ object GitHubUpdateManager {
     // using only ~30–100 KB of network data instead of downloading the full APK.
     // ---------------------------------------------------------------------------------------------
 
-    private fun inspectRemoteApkManifest(apkUrl: String): ApkManifestVersion? {
+    private fun inspectRemoteApkManifest(
+        apkUrl: String,
+        knownEtag: String,
+        prefs: SharedPreferences
+    ): ApkManifestVersion? {
         return runCatching {
+            val cachedUrl = prefs.getString(KEY_CACHE_APK_URL, null)
+            val cachedEtag = prefs.getString(KEY_CACHE_APK_ETAG, null)?.trim().orEmpty()
+            val cachedVerName = prefs.getString(KEY_CACHE_APK_VER_NAME, null).orEmpty()
+            val cachedVerCode = prefs.getInt(KEY_CACHE_APK_VER_CODE, 0)
+            val hasCachedVersion = cachedUrl == apkUrl &&
+                cachedEtag.isNotEmpty() &&
+                (cachedVerName.isNotEmpty() || cachedVerCode > 0)
+
+            // 1. Short-circuit with 0 Range downloads if ETag already known and unchanged
+            var effectiveEtag = knownEtag.trim()
+            if (hasCachedVersion && effectiveEtag.isNotEmpty() && effectiveEtag == cachedEtag) {
+                return@runCatching ApkManifestVersion(cachedVerName, cachedVerCode)
+            }
+
+            // 2. If no ETag was provided yet, probe via lightweight HEAD + If-None-Match (0 APK bytes)
+            if (effectiveEtag.isEmpty()) {
+                val headReqBuilder = Request.Builder()
+                    .url(apkUrl)
+                    .head()
+                    .header("User-Agent", "Luma-Android-Updater/${BuildConfig.VERSION_NAME}")
+                if (hasCachedVersion) {
+                    headReqBuilder.header("If-None-Match", cachedEtag)
+                }
+                val headOutcome = runCatching {
+                    httpClient.newCall(headReqBuilder.build()).execute().use { resp ->
+                        if (resp.code == 304 && hasCachedVersion) {
+                            return@runCatching "NOT_MODIFIED"
+                        }
+                        resp.header("ETag")?.trim().orEmpty()
+                    }
+                }.getOrNull()
+                if (headOutcome == "NOT_MODIFIED" && hasCachedVersion) {
+                    return@runCatching ApkManifestVersion(cachedVerName, cachedVerCode)
+                }
+                if (!headOutcome.isNullOrEmpty()) {
+                    effectiveEtag = headOutcome
+                    if (hasCachedVersion && effectiveEtag == cachedEtag) {
+                        return@runCatching ApkManifestVersion(cachedVerName, cachedVerCode)
+                    }
+                }
+            }
+
+            // 3. Only when APK ETag/URL changed: fetch lightweight ZIP tail + AndroidManifest.xml Range
             val tailFetch = fetchRangeBytes(apkUrl, "bytes=-65536") ?: return@runCatching null
             val tailBytes = tailFetch.bytes
             val totalSize = tailFetch.totalLength
@@ -739,7 +943,16 @@ object GitHubUpdateManager {
                 else -> return@runCatching null
             }
 
-            parseBinaryAndroidManifest(rawManifestBytes)
+            val parsed = parseBinaryAndroidManifest(rawManifestBytes)
+            if (parsed != null && effectiveEtag.isNotEmpty()) {
+                prefs.edit()
+                    .putString(KEY_CACHE_APK_URL, apkUrl)
+                    .putString(KEY_CACHE_APK_ETAG, effectiveEtag)
+                    .putString(KEY_CACHE_APK_VER_NAME, parsed.versionName)
+                    .putInt(KEY_CACHE_APK_VER_CODE, parsed.versionCode)
+                    .apply()
+            }
+            parsed
         }.getOrNull()
     }
 
@@ -768,7 +981,7 @@ object GitHubUpdateManager {
             val contentRange = response.header("Content-Range").orEmpty()
             var start = 0L
             var total = bytes.size.toLong()
-            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(contentRange)
+            val match = CONTENT_RANGE_REGEX.find(contentRange)
             if (match != null) {
                 start = match.groupValues[1].toLongOrNull() ?: 0L
                 total = match.groupValues[3].toLongOrNull() ?: -1L
@@ -1099,7 +1312,7 @@ object GitHubUpdateManager {
             upper.contains("[OBLIGATORIA]") ||
             upper.contains("[OBLIGATORIO]") ||
             upper.contains("[MANDATORY]") ||
-            Regex("force_update\\s*[:=]\\s*true", RegexOption.IGNORE_CASE).containsMatchIn(text)
+            FORCE_UPDATE_REGEX.containsMatchIn(text)
     }
 
     private fun extractIntMarker(text: String, key: String): Int {
@@ -1121,7 +1334,7 @@ object GitHubUpdateManager {
                     trimmed.startsWith("version_code", ignoreCase = true)
             }
             .joinToString("\n")
-            .replace(Regex("\\[(FORCE|OBLIGATORIA|OBLIGATORIO|MANDATORY|OPTIONAL|SKIPPABLE)]", RegexOption.IGNORE_CASE), "")
+            .replace(CONTROL_TAG_REGEX, "")
             .trim()
     }
 
@@ -1159,7 +1372,7 @@ object GitHubUpdateManager {
     }
 
     fun cleanVersionString(raw: String): String {
-        val match = Regex("(\\d+(?:\\.\\d+)*)").find(raw.trim())
+        val match = SEMVER_REGEX.find(raw.trim())
         return match?.groupValues?.getOrNull(1) ?: ""
     }
 

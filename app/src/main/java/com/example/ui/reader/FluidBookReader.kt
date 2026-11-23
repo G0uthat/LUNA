@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -50,6 +52,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,6 +70,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -74,6 +79,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -151,6 +157,7 @@ fun FluidBookReader(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
+            .displayCutoutPadding()
             .then(
                 if (hasDynamicIsland) {
                     Modifier.statusBarsPadding().padding(top = islandClearanceDp)
@@ -211,30 +218,99 @@ fun FluidBookReader(
         val viewportW = maxWidth.value.coerceAtLeast(320f)
         val viewportH = maxHeight.value.coerceAtLeast(480f)
         val sheetMinHeightDp = maxHeight
+        val widthBucket = (viewportW / 24f).toInt()
+        val heightBucket = (viewportH / 32f).toInt()
 
-        val sheets = remember(
+        val density = LocalDensity.current
+        val textMeasurer = rememberTextMeasurer(cacheSize = 64)
+        val fontFamily = if (prefs.useSystemFont) FontFamily.Default else prefs.font.toFontFamily()
+        val fontKey = if (prefs.useSystemFont) "SYS" else prefs.font.name
+        val metricsCalibration = remember(
+            fontKey,
+            prefs.fontSizeSp,
+            prefs.lineHeightMultiplier,
+            density.density,
+            density.fontScale
+        ) {
+            FluidPaginator.calibrateMetrics(
+                textMeasurer = textMeasurer,
+                fontFamily = fontFamily,
+                fontKey = fontKey,
+                prefs = prefs,
+                density = density
+            )
+        }
+
+        val cachedSheets = remember(
             chapters,
             prefs.fontSizeSp,
             prefs.lineHeightMultiplier,
             prefs.horizontalMarginDp,
-            (viewportW / 24f).toInt(),
-            (viewportH / 32f).toInt()
+            fontKey,
+            widthBucket,
+            heightBucket
         ) {
-            FluidPaginator.paginate(chapters, prefs, viewportW, viewportH)
+            FluidPaginator.getCachedSheets(chapters, prefs, viewportW, viewportH)
+        }
+
+        var sheets by remember { mutableStateOf(cachedSheets.orEmpty()) }
+        var activeLocationKey by remember { mutableStateOf<String?>(null) }
+        var activeSheetIndex by remember {
+            val startIdx = cachedSheets?.indexOfFirst { it.chapterIndex == currentChapterIndex }
+                ?.takeIf { it >= 0 } ?: 0
+            mutableIntStateOf(startIdx)
+        }
+        var pendingScrollToIndex by remember { mutableIntStateOf(-1) }
+
+        LaunchedEffect(
+            chapters,
+            prefs.fontSizeSp,
+            prefs.lineHeightMultiplier,
+            prefs.horizontalMarginDp,
+            fontKey,
+            widthBucket,
+            heightBucket
+        ) {
+            val anchorLoc = activeLocationKey
+            val anchorChapter = sheets.getOrNull(activeSheetIndex)?.chapterIndex ?: currentChapterIndex
+
+            fun applySheetsPreservingPosition(nextSheets: List<FluidSheet>) {
+                if (nextSheets.isEmpty()) return
+                val mappedIdx = (anchorLoc?.let { loc -> nextSheets.indexOfFirst { it.locationKey == loc } }
+                    ?.takeIf { it >= 0 })
+                    ?: nextSheets.indexOfFirst { it.chapterIndex == anchorChapter }.takeIf { it >= 0 }
+                    ?: 0
+                sheets = nextSheets
+                activeSheetIndex = mappedIdx
+                pendingScrollToIndex = mappedIdx
+            }
+
+            if (cachedSheets != null) {
+                applySheetsPreservingPosition(cachedSheets)
+            } else {
+                val full = FluidPaginator.paginateIncremental(
+                    chapters = chapters,
+                    prefs = prefs,
+                    viewportWidthDp = viewportW,
+                    viewportHeightDp = viewportH,
+                    priorityChapterIndex = anchorChapter,
+                    calibration = metricsCalibration,
+                    onPartialReady = { partial ->
+                        applySheetsPreservingPosition(partial)
+                    }
+                )
+                applySheetsPreservingPosition(full)
+            }
         }
 
         if (sheets.isEmpty()) return@BoxWithConstraints
-
-        val initialSheetIdx = remember(chapters) {
-            sheets.indexOfFirst { it.chapterIndex == currentChapterIndex }.coerceAtLeast(0)
-        }
-        var activeSheetIndex by remember { mutableIntStateOf(initialSheetIdx.coerceIn(0, sheets.lastIndex)) }
 
         LaunchedEffect(jumpToChapterTrigger) {
             if (jumpToChapterTrigger > 0) {
                 val target = sheets.indexOfFirst { it.chapterIndex == currentChapterIndex }
                 if (target >= 0) {
                     activeSheetIndex = target
+                    pendingScrollToIndex = target
                 }
             }
         }
@@ -243,8 +319,14 @@ fun FluidBookReader(
 
         LaunchedEffect(clampedSheetIndex, sheets) {
             val s = sheets[clampedSheetIndex]
+            activeLocationKey = s.locationKey
             onActiveSheetChanged(clampedSheetIndex, sheets.size, s.locationKey, s.chapterIndex)
         }
+
+        val highlightsByChapter = remember(highlights) {
+            highlights.groupBy { it.chapterIndex }
+        }
+        val isZoomed by remember { derivedStateOf { zoomScale > 1.02f } }
 
         val zoomLayerMod = Modifier.graphicsLayer {
             scaleX = zoomScale
@@ -257,6 +339,13 @@ fun FluidBookReader(
             PageAnimationMode.VERTICAL_SCROLL -> {
                 val listState = rememberLazyListState(initialFirstVisibleItemIndex = clampedSheetIndex)
 
+                LaunchedEffect(pendingScrollToIndex, sheets.size) {
+                    val target = pendingScrollToIndex
+                    if (target in sheets.indices && listState.firstVisibleItemIndex != target) {
+                        listState.scrollToItem(target)
+                        pendingScrollToIndex = -1
+                    }
+                }
                 LaunchedEffect(jumpToChapterTrigger) {
                     if (jumpToChapterTrigger > 0) {
                         val target = sheets.indexOfFirst { it.chapterIndex == currentChapterIndex }
@@ -265,14 +354,17 @@ fun FluidBookReader(
                         }
                     }
                 }
-                LaunchedEffect(listState.firstVisibleItemIndex) {
-                    val idx = listState.firstVisibleItemIndex.coerceIn(0, sheets.lastIndex)
-                    activeSheetIndex = idx
+                LaunchedEffect(listState, sheets.size) {
+                    snapshotFlow { listState.firstVisibleItemIndex }
+                        .distinctUntilChanged()
+                        .collect { rawIdx ->
+                            activeSheetIndex = rawIdx.coerceIn(0, sheets.lastIndex)
+                        }
                 }
 
                 LazyColumn(
                     state = listState,
-                    userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
+                    userScrollEnabled = !isDrawingMode && !isZoomed,
                     contentPadding = PaddingValues(
                         top = if (hasDynamicIsland) 12.dp else 44.dp,
                         bottom = 84.dp,
@@ -286,7 +378,11 @@ fun FluidBookReader(
                         .background(palette.surfaceAlt.copy(alpha = 0.55f))
                         .then(zoomLayerMod)
                 ) {
-                    itemsIndexed(sheets, key = { _, s -> s.locationKey }) { index, sheet ->
+                    itemsIndexed(
+                        items = sheets,
+                        key = { _, s -> s.locationKey },
+                        contentType = { _, _ -> "fluid_sheet" }
+                    ) { index, sheet ->
                         val sheetStrokes = remember(drawingsByLocation, sheet) {
                             val primary = drawingsByLocation[sheet.locationKey].orEmpty()
                             if (sheet.sheetInChapter == 0) {
@@ -295,12 +391,13 @@ fun FluidBookReader(
                                 primary
                             }
                         }
+                        val chapterHighlights = highlightsByChapter[sheet.chapterIndex].orEmpty()
 
                         FluidSheetSurface(
                             sheet = sheet,
                             totalSheets = sheets.size,
                             prefs = prefs,
-                            chapterHighlights = highlights.filter { it.chapterIndex == sheet.chapterIndex },
+                            chapterHighlights = chapterHighlights,
                             strokes = sheetStrokes,
                             isDrawingMode = isDrawingMode,
                             activeTool = activeTool,
@@ -351,6 +448,14 @@ fun FluidBookReader(
                 var eInkFlash by remember { mutableStateOf(false) }
                 var lastRenderedPage by remember { mutableIntStateOf(clampedSheetIndex) }
 
+                LaunchedEffect(pendingScrollToIndex, sheets.size) {
+                    val target = pendingScrollToIndex
+                    if (target in sheets.indices && pagerState.currentPage != target) {
+                        pagerState.scrollToPage(target)
+                        pendingScrollToIndex = -1
+                    }
+                }
+
                 LaunchedEffect(jumpToChapterTrigger) {
                     if (jumpToChapterTrigger > 0) {
                         val target = sheets.indexOfFirst { it.chapterIndex == currentChapterIndex }
@@ -364,17 +469,21 @@ fun FluidBookReader(
                     }
                 }
 
-                LaunchedEffect(pagerState.currentPage, prefs.pageAnimation) {
-                    val idx = pagerState.currentPage.coerceIn(0, sheets.lastIndex)
-                    activeSheetIndex = idx
-                    zoomScale = 1f
-                    panOffset = Offset.Zero
-                    if (prefs.pageAnimation == PageAnimationMode.E_INK && idx != lastRenderedPage) {
-                        eInkFlash = true
-                        delay(85)
-                        eInkFlash = false
-                    }
-                    lastRenderedPage = idx
+                LaunchedEffect(pagerState, prefs.pageAnimation, sheets.size) {
+                    snapshotFlow { pagerState.currentPage }
+                        .distinctUntilChanged()
+                        .collect { page ->
+                            val idx = page.coerceIn(0, sheets.lastIndex)
+                            activeSheetIndex = idx
+                            zoomScale = 1f
+                            panOffset = Offset.Zero
+                            if (prefs.pageAnimation == PageAnimationMode.E_INK && idx != lastRenderedPage) {
+                                eInkFlash = true
+                                delay(85)
+                                eInkFlash = false
+                            }
+                            lastRenderedPage = idx
+                        }
                 }
 
                 val handlePagedTap: (Float) -> Unit = { xFraction ->
@@ -410,75 +519,83 @@ fun FluidBookReader(
                 Box(modifier = Modifier.fillMaxSize().then(zoomLayerMod)) {
                     HorizontalPager(
                         state = pagerState,
+                        key = { pageIdx -> sheets[pageIdx].locationKey },
                         flingBehavior = PagerDefaults.flingBehavior(
                             state = pagerState,
                             snapAnimationSpec = motion.glideSpring()
                         ),
-                        userScrollEnabled = !isDrawingMode && zoomScale <= 1.02f,
+                        userScrollEnabled = !isDrawingMode && !isZoomed,
                         modifier = Modifier.fillMaxSize()
                     ) { pageIdx ->
                         val sheet = sheets[pageIdx]
-                        val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                        val animModifier = when (prefs.pageAnimation) {
-                            PageAnimationMode.BOOK_CURL -> Modifier
-                                .graphicsLayer {
-                                    val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-                                    cameraDistance = 14f * density
-                                    if (pageOffset >= 0f) {
-                                        transformOrigin = TransformOrigin(0f, 0.5f)
-                                        rotationY = -pageOffset * 52f
-                                        translationX = pageOffset * size.width * 0.14f
-                                        alpha = 1f - absOffset * 0.22f
-                                    } else {
-                                        transformOrigin = TransformOrigin(0.5f, 0.5f)
-                                        scaleX = 0.96f + (1f - absOffset) * 0.04f
-                                        scaleY = 0.96f + (1f - absOffset) * 0.04f
+                        // Read pagerState offset STRICTLY inside draw/graphicsLayer phases -> 0 recompositions during swipe!
+                        val animModifier = remember(prefs.pageAnimation, pagerState, pageIdx) {
+                            when (prefs.pageAnimation) {
+                                PageAnimationMode.BOOK_CURL -> Modifier
+                                    .graphicsLayer {
+                                        val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                        val absOffset = abs(pageOffset).coerceIn(0f, 1f)
+                                        cameraDistance = 14f * this.density
+                                        if (pageOffset >= 0f) {
+                                            transformOrigin = TransformOrigin(0f, 0.5f)
+                                            rotationY = -pageOffset * 52f
+                                            translationX = pageOffset * size.width * 0.14f
+                                            alpha = 1f - absOffset * 0.22f
+                                        } else {
+                                            transformOrigin = TransformOrigin(0.5f, 0.5f)
+                                            scaleX = 0.96f + (1f - absOffset) * 0.04f
+                                            scaleY = 0.96f + (1f - absOffset) * 0.04f
+                                        }
                                     }
-                                }
-                                .drawWithContent {
-                                    drawContent()
-                                    val curlStrength = abs(pageOffset).coerceIn(0f, 1f)
-                                    if (curlStrength > 0.01f) {
-                                        val shadowWidth = size.width * 0.18f * curlStrength
-                                        drawRect(
-                                            brush = Brush.horizontalGradient(
-                                                colors = listOf(
-                                                    Color.Transparent,
-                                                    Color.Black.copy(alpha = 0.16f * curlStrength),
-                                                    Color.White.copy(alpha = 0.12f * curlStrength),
-                                                    Color.Black.copy(alpha = 0.22f * curlStrength)
-                                                ),
-                                                startX = size.width - shadowWidth,
-                                                endX = size.width
+                                    .drawWithContent {
+                                        drawContent()
+                                        val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                        val curlStrength = abs(pageOffset).coerceIn(0f, 1f)
+                                        if (curlStrength > 0.01f) {
+                                            val shadowWidth = size.width * 0.18f * curlStrength
+                                            drawRect(
+                                                brush = Brush.horizontalGradient(
+                                                    colors = listOf(
+                                                        Color.Transparent,
+                                                        Color.Black.copy(alpha = 0.16f * curlStrength),
+                                                        Color.White.copy(alpha = 0.12f * curlStrength),
+                                                        Color.Black.copy(alpha = 0.22f * curlStrength)
+                                                    ),
+                                                    startX = size.width - shadowWidth,
+                                                    endX = size.width
+                                                )
                                             )
-                                        )
+                                        }
+                                    }
+
+                                PageAnimationMode.DEPTH_CARD -> Modifier.graphicsLayer {
+                                    val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                    val absOffset = abs(pageOffset).coerceIn(0f, 1f)
+                                    if (pageOffset < 0f) {
+                                        val scale = 0.88f + (1f - absOffset) * 0.12f
+                                        scaleX = scale
+                                        scaleY = scale
+                                        alpha = 0.45f + (1f - absOffset) * 0.55f
+                                        translationX = -pageOffset * size.width * 0.72f
+                                    } else {
+                                        alpha = 1f - absOffset * 0.15f
                                     }
                                 }
 
-                            PageAnimationMode.DEPTH_CARD -> Modifier.graphicsLayer {
-                                val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-                                if (pageOffset < 0f) {
-                                    val scale = 0.88f + (1f - absOffset) * 0.12f
-                                    scaleX = scale
-                                    scaleY = scale
-                                    alpha = 0.45f + (1f - absOffset) * 0.55f
-                                    translationX = -pageOffset * size.width * 0.72f
-                                } else {
-                                    alpha = 1f - absOffset * 0.15f
+                                PageAnimationMode.FADE -> Modifier.graphicsLayer {
+                                    val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                    translationX = pageOffset * size.width
+                                    alpha = (1f - abs(pageOffset)).coerceIn(0f, 1f)
                                 }
-                            }
 
-                            PageAnimationMode.FADE -> Modifier.graphicsLayer {
-                                translationX = pageOffset * size.width
-                                alpha = (1f - abs(pageOffset)).coerceIn(0f, 1f)
-                            }
+                                PageAnimationMode.E_INK -> Modifier.graphicsLayer {
+                                    val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                    translationX = pageOffset * size.width
+                                    alpha = if (abs(pageOffset) < 0.5f) 1f else 0f
+                                }
 
-                            PageAnimationMode.E_INK -> Modifier.graphicsLayer {
-                                translationX = pageOffset * size.width
-                                alpha = if (abs(pageOffset) < 0.5f) 1f else 0f
+                                else -> Modifier
                             }
-
-                            else -> Modifier
                         }
 
                         val sheetStrokes = remember(drawingsByLocation, sheet) {
@@ -489,12 +606,13 @@ fun FluidBookReader(
                                 primary
                             }
                         }
+                        val chapterHighlights = highlightsByChapter[sheet.chapterIndex].orEmpty()
 
                         FluidSheetSurface(
                             sheet = sheet,
                             totalSheets = sheets.size,
                             prefs = prefs,
-                            chapterHighlights = highlights.filter { it.chapterIndex == sheet.chapterIndex },
+                            chapterHighlights = chapterHighlights,
                             strokes = sheetStrokes,
                             isDrawingMode = isDrawingMode,
                             activeTool = activeTool,

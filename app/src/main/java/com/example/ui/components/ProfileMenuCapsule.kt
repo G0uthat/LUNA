@@ -81,7 +81,6 @@ import kotlin.math.sin
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
 import com.example.ui.theme.LumaBrandFontFamily
-import com.example.ui.theme.LumaLetteringFontFamily
 
 /**
  * Vectorized calligraphic "Luma" brush-lettering wordmark faithful to the custom signature:

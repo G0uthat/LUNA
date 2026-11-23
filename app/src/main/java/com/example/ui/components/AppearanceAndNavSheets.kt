@@ -603,7 +603,11 @@ fun AnnotationsAndBookmarksSheet(
                         modifier = Modifier.heightIn(max = 360.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(highlights, key = { it.id }) { hl ->
+                        items(
+                            items = highlights,
+                            key = { it.id },
+                            contentType = { "highlight_item" }
+                        ) { hl ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -690,7 +694,11 @@ fun AnnotationsAndBookmarksSheet(
                         modifier = Modifier.heightIn(max = 360.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(bookmarks, key = { it.id }) { bm ->
+                        items(
+                            items = bookmarks,
+                            key = { it.id },
+                            contentType = { "bookmark_item" }
+                        ) { bm ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()

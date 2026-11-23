@@ -5,9 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.LruCache
+import com.example.engine.BitmapDecodeUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,45 +18,31 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.CameraAlt
-import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MusicNote
-import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -66,9 +52,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -81,7 +65,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -91,13 +74,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.data.local.DictionarySourceEntity
-import com.example.data.model.FriendChatMessage
-import com.example.data.model.FriendPeer
-import com.example.data.model.MediaPlaybackInfo
-import com.example.data.model.ReaderPreferences
+import com.example.data.model.PrivacySettings
 import com.example.data.model.UserProfile
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
@@ -105,9 +83,11 @@ import com.example.ui.theme.LocalFolioPalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+
+private val AccountCardShape22 = RoundedCornerShape(22.dp)
+private val AccountCardShape20 = RoundedCornerShape(20.dp)
+private val AccountFieldShape14 = RoundedCornerShape(14.dp)
+private val AccountSetupDialogShape = RoundedCornerShape(28.dp)
 
 /**
  * Standalone Account Configuration Dialog (ONLY Profile, Avatar, Friend Code & Privacy).
@@ -124,7 +104,6 @@ fun AccountProfileDialog(
     val context = LocalContext.current
 
     val profile by socialRepo.profile.collectAsStateWithLifecycle()
-    val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
 
     // Zero-permission Android Photo Picker for custom profile avatar
     val avatarPickerLauncher = rememberLauncherForActivityResult(
@@ -191,7 +170,7 @@ fun AccountProfileDialog(
                 )
             }
         }
-        androidx.compose.material3.HorizontalDivider(
+        HorizontalDivider(
             modifier = Modifier.padding(horizontal = 16.dp),
             thickness = 1.dp,
             color = palette.border.copy(alpha = 0.6f)
@@ -204,35 +183,34 @@ fun AccountProfileDialog(
                 .padding(top = 6.dp)
         ) {
             ProfileAndPrivacyTab(
-                    profile = profile,
-                    mediaInfo = mediaInfo,
-                    currentBookTitle = currentOrRecentBookTitle,
-                    currentBookProgressPct = currentOrRecentBookProgressPct,
-                    onPickAvatar = {
-                        avatarPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                profile = profile,
+                currentBookTitle = currentOrRecentBookTitle,
+                currentBookProgressPct = currentOrRecentBookProgressPct,
+                onPickAvatar = {
+                    avatarPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                onSaveName = { socialRepo.updateProfileName(it) },
+                onUpdatePrivacy = { socialRepo.updatePrivacy(it) },
+                onRegenerateCode = { socialRepo.regeneratePeerCode() },
+                onCopyCode = { code ->
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    cm?.setPrimaryClip(ClipData.newPlainText("Código Luma", code))
+                },
+                onShareCode = { code ->
+                    val name = profile.username.ifBlank { "un amigo" }
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(
+                            Intent.EXTRA_TEXT,
+                            "Agrégame en Luma para ver qué leemos y escuchamos. Mi código de amigo es: $code ($name)"
                         )
-                    },
-                    onSaveName = { socialRepo.updateProfileName(it) },
-                    onUpdatePrivacy = { socialRepo.updatePrivacy(it) },
-                    onRegenerateCode = { socialRepo.regeneratePeerCode() },
-                    onCopyCode = { code ->
-                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                        cm?.setPrimaryClip(ClipData.newPlainText("Código Luma", code))
-                    },
-                    onShareCode = { code ->
-                        val name = profile.username.ifBlank { "un amigo" }
-                        val intent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Agrégame en Luma para ver qué leemos y escuchamos. Mi código de amigo es: $code ($name)"
-                            )
-                        }
-                        runCatching {
-                            context.startActivity(Intent.createChooser(intent, "Compartir código de amigo"))
-                        }
                     }
+                    runCatching {
+                        context.startActivity(Intent.createChooser(intent, "Compartir código de amigo"))
+                    }
+                }
             )
         }
     }
@@ -248,12 +226,10 @@ fun FriendsChatDialog(
     currentOrRecentBookTitle: String,
     onDismiss: () -> Unit
 ) {
-    val palette = LocalFolioPalette.current
     val profile by socialRepo.profile.collectAsStateWithLifecycle()
     val friends by socialRepo.friends.collectAsStateWithLifecycle()
     val messagesByFriend by socialRepo.messagesByFriend.collectAsStateWithLifecycle()
     val isSyncing by socialRepo.isSyncing.collectAsStateWithLifecycle()
-    val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
 
     var selectedChatFriendCode by remember { mutableStateOf<String?>(null) }
 
@@ -279,35 +255,34 @@ fun FriendsChatDialog(
                 .weight(1f, fill = false)
                 .padding(top = 6.dp)
         ) {
-                val activeFriend = friends.firstOrNull { it.peerCode == selectedChatFriendCode }
-                if (activeFriend != null) {
-                    val chatMessages = messagesByFriend[activeFriend.peerCode].orEmpty()
-                    FriendSimpleChatPane(
-                        friend = activeFriend,
-                        messages = chatMessages,
-                        currentBookTitle = currentOrRecentBookTitle,
-                        mediaInfo = mediaInfo,
-                        allowChat = profile.privacy.allowFriendChat,
-                        onBack = { selectedChatFriendCode = null },
-                        onMarkRead = { socialRepo.markFriendChatRead(activeFriend.peerCode) },
-                        onSendMessage = { text ->
-                            socialRepo.sendChatMessage(activeFriend.peerCode, text)
-                        }
-                    )
-                } else {
-                    FriendsPeerListTab(
-                        myPeerCode = profile.peerCode,
-                        friends = friends,
-                        isSyncing = isSyncing,
-                        onAddFriend = { code, alias -> socialRepo.addFriendByCode(code, alias) },
-                        onOpenChat = { code ->
-                            socialRepo.markFriendChatRead(code)
-                            selectedChatFriendCode = code
-                        },
-                        onRemoveFriend = { code -> socialRepo.removeFriend(code) },
-                        onSyncNow = { socialRepo.syncNow() }
-                    )
-                }
+            val activeFriend = friends.firstOrNull { it.peerCode == selectedChatFriendCode }
+            if (activeFriend != null) {
+                val chatMessages = messagesByFriend[activeFriend.peerCode].orEmpty()
+                FriendSimpleChatPane(
+                    friend = activeFriend,
+                    messages = chatMessages,
+                    currentBookTitle = currentOrRecentBookTitle,
+                    allowChat = profile.privacy.allowFriendChat,
+                    onBack = { selectedChatFriendCode = null },
+                    onMarkRead = { socialRepo.markFriendChatRead(activeFriend.peerCode) },
+                    onSendMessage = { text ->
+                        socialRepo.sendChatMessage(activeFriend.peerCode, text)
+                    }
+                )
+            } else {
+                FriendsPeerListTab(
+                    myPeerCode = profile.peerCode,
+                    friends = friends,
+                    isSyncing = isSyncing,
+                    onAddFriend = { code, alias -> socialRepo.addFriendByCode(code, alias) },
+                    onOpenChat = { code ->
+                        socialRepo.markFriendChatRead(code)
+                        selectedChatFriendCode = code
+                    },
+                    onRemoveFriend = { code -> socialRepo.removeFriend(code) },
+                    onSyncNow = { socialRepo.syncNow() }
+                )
+            }
         }
     }
 }
@@ -315,12 +290,11 @@ fun FriendsChatDialog(
 @Composable
 private fun ProfileAndPrivacyTab(
     profile: UserProfile,
-    mediaInfo: MediaPlaybackInfo,
     currentBookTitle: String,
     currentBookProgressPct: Int,
     onPickAvatar: () -> Unit,
     onSaveName: (String) -> Unit,
-    onUpdatePrivacy: ((com.example.data.model.PrivacySettings) -> com.example.data.model.PrivacySettings) -> Unit,
+    onUpdatePrivacy: ((PrivacySettings) -> PrivacySettings) -> Unit,
     onRegenerateCode: () -> Unit,
     onCopyCode: (String) -> Unit,
     onShareCode: (String) -> Unit
@@ -341,9 +315,9 @@ private fun ProfileAndPrivacyTab(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
+                .clip(AccountCardShape22)
                 .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                .border(1.dp, palette.border, RoundedCornerShape(22.dp))
+                .border(1.dp, palette.border, AccountCardShape22)
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -394,7 +368,7 @@ private fun ProfileAndPrivacyTab(
                     label = { Text("Nombre de usuario") },
                     placeholder = { Text("Ej. Sofía, Alex…") },
                     singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = AccountFieldShape14,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = palette.accent,
                         unfocusedBorderColor = palette.border,
@@ -408,7 +382,7 @@ private fun ProfileAndPrivacyTab(
                 Box(
                     modifier = Modifier
                         .size(52.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(AccountFieldShape14)
                         .background(palette.accent)
                         .clickable {
                             onSaveName(nameInput)
@@ -440,9 +414,9 @@ private fun ProfileAndPrivacyTab(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
+                .clip(AccountCardShape20)
                 .background(palette.surfaceAlt.copy(alpha = 0.45f))
-                .border(1.dp, palette.border, RoundedCornerShape(20.dp))
+                .border(1.dp, palette.border, AccountCardShape20)
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -474,38 +448,17 @@ private fun ProfileAndPrivacyTab(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.MusicNote,
-                    contentDescription = null,
-                    tint = Color(0xFF1DB954),
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = when {
-                        !profile.privacy.shareMediaActivity -> "Música / video oculto por privacidad"
-                        mediaInfo.hasActiveSession && mediaInfo.title.isNotBlank() ->
-                            "${mediaInfo.appName.ifBlank { "Multimedia" }}: ${mediaInfo.title}"
-                        else -> "Sin música o video activo ahora"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = palette.inkMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            // Narrowly scoped media row so 1Hz music progress ticks NEVER recompose the entire profile form
+            ProfileMediaActivityRow(shareMediaActivity = profile.privacy.shareMediaActivity)
         }
 
         // 3. Peer Friend Code (Direct internet P2P, zero cloud database!)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
+                .clip(AccountCardShape20)
                 .background(palette.accentSoft.copy(alpha = 0.65f))
-                .border(1.dp, palette.accent.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
+                .border(1.dp, palette.accent.copy(alpha = 0.35f), AccountCardShape20)
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -587,9 +540,9 @@ private fun ProfileAndPrivacyTab(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
+                .clip(AccountCardShape20)
                 .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                .border(1.dp, palette.border, RoundedCornerShape(20.dp))
+                .border(1.dp, palette.border, AccountCardShape20)
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -643,6 +596,35 @@ private fun ProfileAndPrivacyTab(
 }
 
 @Composable
+private fun ProfileMediaActivityRow(shareMediaActivity: Boolean) {
+    val palette = LocalFolioPalette.current
+    val mediaInfo by SystemMediaController.mediaState.collectAsStateWithLifecycle()
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.MusicNote,
+            contentDescription = null,
+            tint = Color(0xFF1DB954),
+            modifier = Modifier.size(16.dp)
+        )
+        Text(
+            text = when {
+                !shareMediaActivity -> "Música / video oculto por privacidad"
+                mediaInfo.hasActiveSession && mediaInfo.title.isNotBlank() ->
+                    "${mediaInfo.appName.ifBlank { "Multimedia" }}: ${mediaInfo.title}"
+                else -> "Sin música o video activo ahora"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.inkMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
 private fun PrivacyToggleRow(
     title: String,
     subtitle: String,
@@ -678,613 +660,6 @@ private fun PrivacyToggleRow(
     }
 }
 
-@Composable
-private fun FriendsPeerListTab(
-    myPeerCode: String,
-    friends: List<FriendPeer>,
-    isSyncing: Boolean,
-    onAddFriend: (code: String, alias: String) -> Pair<Boolean, String>,
-    onOpenChat: (friendCode: String) -> Unit,
-    onRemoveFriend: (friendCode: String) -> Unit,
-    onSyncNow: () -> Unit
-) {
-    val palette = LocalFolioPalette.current
-    var codeInput by remember { mutableStateOf("") }
-    var aliasInput by remember { mutableStateOf("") }
-    var feedbackMsg by remember { mutableStateOf<String?>(null) }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item(key = "add_friend_box") {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(palette.surfaceAlt.copy(alpha = 0.55f))
-                    .border(1.dp, palette.border, RoundedCornerShape(20.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Rounded.PersonAdd,
-                            contentDescription = null,
-                            tint = palette.accent,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(7.dp))
-                        Text(
-                            text = "Conectar con un amigo",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = palette.ink
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(palette.surface)
-                            .border(1.dp, palette.border, RoundedCornerShape(50))
-                            .clickable(enabled = !isSyncing, onClick = onSyncNow)
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                            .testTag("friends_sync_now_button")
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (isSyncing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(12.dp),
-                                    strokeWidth = 1.8.dp,
-                                    color = palette.accent
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Rounded.Refresh,
-                                    contentDescription = "Sincronizar amigos",
-                                    tint = palette.accent,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = "Actualizar",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.ink
-                            )
-                        }
-                    }
-                }
-
-                OutlinedTextField(
-                    value = codeInput,
-                    onValueChange = { codeInput = it.uppercase().take(16) },
-                    label = { Text("Código del amigo (ej. LUMA-XXXX-XXXX)") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = palette.accent,
-                        unfocusedBorderColor = palette.border,
-                        focusedContainerColor = palette.surface,
-                        unfocusedContainerColor = palette.surface
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("friend_code_input")
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = aliasInput,
-                        onValueChange = { aliasInput = it.take(24) },
-                        label = { Text("Apodo (opcional)") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = palette.accent,
-                            unfocusedBorderColor = palette.border,
-                            focusedContainerColor = palette.surface,
-                            unfocusedContainerColor = palette.surface
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                    TactileButton(
-                        onClick = {
-                            val (ok, msg) = onAddFriend(codeInput, aliasInput)
-                            feedbackMsg = msg
-                            if (ok) {
-                                codeInput = ""
-                                aliasInput = ""
-                            }
-                        },
-                        cornerRadius = 14.dp,
-                        lipDepth = 2.dp,
-                        modifier = Modifier.testTag("add_friend_submit_button")
-                    ) {
-                        Text("Agregar", fontWeight = FontWeight.Bold)
-                    }
-                }
-
-                if (!feedbackMsg.isNullOrBlank()) {
-                    Text(
-                        text = feedbackMsg!!,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.accent
-                    )
-                }
-            }
-        }
-
-        if (friends.isEmpty()) {
-            item(key = "friends_empty") {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(palette.surfaceAlt.copy(alpha = 0.4f))
-                        .border(1.dp, palette.border, RoundedCornerShape(20.dp))
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Group,
-                        contentDescription = null,
-                        tint = palette.accent,
-                        modifier = Modifier.size(36.dp)
-                    )
-                    Text(
-                        text = "Aún no tienes amigos conectados",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = palette.ink
-                    )
-                    Text(
-                        text = "Intercambien sus códigos ($myPeerCode) para ver qué leen, qué escuchan en Spotify o YouTube, y chatear en vivo sin servidores ni cuentas.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.inkMuted
-                    )
-                }
-            }
-        } else {
-            items(friends, key = { it.peerCode }) { friend ->
-                FriendStatusCard(
-                    friend = friend,
-                    onOpenChat = { onOpenChat(friend.peerCode) },
-                    onRemove = { onRemoveFriend(friend.peerCode) }
-                )
-            }
-        }
-
-        item { Spacer(Modifier.height(12.dp)) }
-    }
-}
-
-@Composable
-private fun FriendStatusCard(
-    friend: FriendPeer,
-    onOpenChat: () -> Unit,
-    onRemove: () -> Unit
-) {
-    val palette = LocalFolioPalette.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(palette.surfaceAlt.copy(alpha = 0.55f))
-            .border(1.dp, palette.border, RoundedCornerShape(20.dp))
-            .clickable(onClick = onOpenChat)
-            .padding(14.dp)
-            .testTag("friend_card_${friend.peerCode}"),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            UserAvatarCircle(
-                displayName = friend.displayName,
-                avatarPath = "",
-                avatarBase64 = friend.avatarBase64,
-                size = 46.dp,
-                showOnlineDot = friend.isOnline
-            )
-            Spacer(Modifier.width(11.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = friend.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = palette.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = if (friend.isOnline) "En línea · ${friend.peerCode}" else friend.peerCode,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (friend.isOnline) Color(0xFF28B97B) else palette.inkMuted,
-                    maxLines = 1
-                )
-            }
-            if (friend.unreadCount > 0) {
-                Box(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(palette.accent)
-                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = "${friend.unreadCount}",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = palette.onAccent
-                    )
-                }
-                Spacer(Modifier.width(6.dp))
-            }
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(palette.surface)
-                    .clickable(onClick = onOpenChat),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.ChatBubbleOutline,
-                    contentDescription = "Chatear con ${friend.displayName}",
-                    tint = palette.accent,
-                    modifier = Modifier.size(17.dp)
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onRemove),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.DeleteOutline,
-                    contentDescription = "Eliminar amigo",
-                    tint = palette.inkMuted,
-                    modifier = Modifier.size(17.dp)
-                )
-            }
-        }
-
-        // Live Book Reading Pill
-        if (friend.readingBookTitle.isNotBlank()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(palette.surface)
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.AutoStories,
-                    contentDescription = null,
-                    tint = palette.accent,
-                    modifier = Modifier.size(15.dp)
-                )
-                Text(
-                    text = "Leyendo: ${friend.readingBookTitle}",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = "${friend.readingProgressPct}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = palette.accent
-                )
-            }
-        }
-
-        // Live Spotify / YouTube / Media Pill
-        if (friend.mediaTitle.isNotBlank()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF1DB954).copy(alpha = 0.13f))
-                    .border(1.dp, Color(0xFF1DB954).copy(alpha = 0.3f), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.MusicNote,
-                    contentDescription = null,
-                    tint = Color(0xFF1DB954),
-                    modifier = Modifier.size(15.dp)
-                )
-                val subtitle = buildString {
-                    if (friend.mediaApp.isNotBlank()) append("${friend.mediaApp} · ")
-                    append(friend.mediaTitle)
-                    if (friend.mediaArtist.isNotBlank()) append(" — ${friend.mediaArtist}")
-                }
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FriendSimpleChatPane(
-    friend: FriendPeer,
-    messages: List<FriendChatMessage>,
-    currentBookTitle: String,
-    mediaInfo: MediaPlaybackInfo,
-    allowChat: Boolean,
-    onBack: () -> Unit,
-    onMarkRead: () -> Unit,
-    onSendMessage: (String) -> Unit
-) {
-    val palette = LocalFolioPalette.current
-    var draft by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
-    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-
-    LaunchedEffect(messages.size) {
-        onMarkRead()
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .testTag("friend_chat_pane")
-    ) {
-        // Chat Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(palette.surfaceAlt.copy(alpha = 0.65f))
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = "Volver a amigos",
-                    tint = palette.ink,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            UserAvatarCircle(
-                displayName = friend.displayName,
-                avatarPath = "",
-                avatarBase64 = friend.avatarBase64,
-                size = 36.dp,
-                showOnlineDot = friend.isOnline
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = friend.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = palette.ink,
-                    maxLines = 1
-                )
-                val liveSub = when {
-                    friend.readingBookTitle.isNotBlank() -> "Leyendo ${friend.readingBookTitle}"
-                    friend.mediaTitle.isNotBlank() -> "Escuchando ${friend.mediaTitle}"
-                    friend.isOnline -> "En línea"
-                    else -> "Chat P2P directo"
-                }
-                Text(
-                    text = liveSub,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = palette.inkMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-
-        // Messages List
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentPadding = PaddingValues(vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (messages.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Envía un mensaje a ${friend.displayName} para empezar a chatear.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = palette.inkMuted
-                        )
-                    }
-                }
-            } else {
-                items(messages, key = { it.id }) { msg ->
-                    val align = if (msg.isFromMe) Alignment.End else Alignment.Start
-                    val bubbleBg = if (msg.isFromMe) palette.accent else palette.surfaceAlt
-                    val bubbleFg = if (msg.isFromMe) palette.onAccent else palette.ink
-                    val bubbleShape = RoundedCornerShape(
-                        topStart = 18.dp,
-                        topEnd = 18.dp,
-                        bottomStart = if (msg.isFromMe) 18.dp else 4.dp,
-                        bottomEnd = if (msg.isFromMe) 4.dp else 18.dp
-                    )
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = align
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .widthIn(max = 270.dp)
-                                .clip(bubbleShape)
-                                .background(bubbleBg)
-                                .padding(horizontal = 13.dp, vertical = 9.dp)
-                        ) {
-                            Text(
-                                text = msg.text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = bubbleFg
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = timeFormat.format(Date(msg.timestampMs)),
-                                fontSize = 10.sp,
-                                color = bubbleFg.copy(alpha = 0.68f),
-                                modifier = Modifier.align(Alignment.End)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Quick Share Chips (share book or Spotify track with 1 tap)
-        if (currentBookTitle.isNotBlank() || (mediaInfo.hasActiveSession && mediaInfo.title.isNotBlank())) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (currentBookTitle.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(palette.accentSoft)
-                            .clickable { onSendMessage("Estoy leyendo \"$currentBookTitle\"") }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text(
-                            text = "Compartir libro",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = palette.accent
-                        )
-                    }
-                }
-                if (mediaInfo.hasActiveSession && mediaInfo.title.isNotBlank()) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(Color(0xFF1DB954).copy(alpha = 0.16f))
-                            .clickable {
-                                val app = mediaInfo.appName.ifBlank { "Música" }
-                                onSendMessage("Escuchando en $app: ${mediaInfo.title}")
-                            }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text(
-                            text = "Compartir música",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF1DB954)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Message Composer
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                placeholder = {
-                    Text(
-                        text = if (allowChat) "Escribe un mensaje…" else "Chat desactivado en Privacidad",
-                        color = palette.inkMuted
-                    )
-                },
-                enabled = allowChat,
-                singleLine = true,
-                shape = RoundedCornerShape(18.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = palette.accent,
-                    unfocusedBorderColor = palette.border,
-                    focusedContainerColor = palette.surfaceAlt.copy(alpha = 0.45f),
-                    unfocusedContainerColor = palette.surfaceAlt.copy(alpha = 0.45f)
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("friend_chat_input")
-            )
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(if (draft.isNotBlank() && allowChat) palette.accent else palette.surfaceAlt)
-                    .clickable(enabled = draft.isNotBlank() && allowChat) {
-                        onSendMessage(draft)
-                        draft = ""
-                    }
-                    .testTag("friend_chat_send_button"),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.Send,
-                    contentDescription = "Enviar mensaje",
-                    tint = if (draft.isNotBlank() && allowChat) palette.onAccent else palette.inkMuted,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-    }
-}
-
 /**
  * First-launch lightweight profile dialog: asks ONLY for a display name and optional photo.
  * Zero accounts, zero passwords, zero cloud database.
@@ -1300,14 +675,13 @@ fun QuickProfileSetupDialog(
     var name by remember(profile.username) { mutableStateOf(profile.username) }
 
     Dialog(onDismissRequest = onSkip) {
-        val shape = RoundedCornerShape(28.dp)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .shadow(20.dp, shape)
-                .clip(shape)
+                .shadow(20.dp, AccountSetupDialogShape)
+                .clip(AccountSetupDialogShape)
                 .background(palette.surface)
-                .border(1.dp, palette.border, shape)
+                .border(1.dp, palette.border, AccountSetupDialogShape)
                 .padding(22.dp)
                 .testTag("quick_profile_setup_dialog"),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1363,7 +737,7 @@ fun QuickProfileSetupDialog(
                 label = { Text("Tu nombre") },
                 placeholder = { Text("Ej. Mateo, Camila…") },
                 singleLine = true,
-                shape = RoundedCornerShape(14.dp),
+                shape = AccountFieldShape14,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("setup_username_input")
@@ -1438,12 +812,11 @@ fun UserAvatarCircle(
             withContext(Dispatchers.IO) {
                 val decoded = when {
                     avatarPath.isNotBlank() -> runCatching {
-                        val f = File(avatarPath)
-                        if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+                        BitmapDecodeUtils.decodeSampledFile(avatarPath, reqWidth = 256, reqHeight = 256)
                     }.getOrNull()
                     avatarBase64.isNotBlank() -> runCatching {
                         val bytes = Base64.decode(avatarBase64, Base64.DEFAULT)
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        BitmapDecodeUtils.decodeSampledBytes(bytes, reqWidth = 256, reqHeight = 256)
                     }.getOrNull()
                     else -> null
                 }
@@ -1454,24 +827,23 @@ fun UserAvatarCircle(
             }
         }
     }
+    val avatarImage = remember(bitmap) { bitmap?.asImageBitmap() }
+    val avatarGradient = remember(palette.accent, palette.accentShadow) {
+        Brush.linearGradient(colors = listOf(palette.accent, palette.accentShadow))
+    }
 
     Box(modifier = modifier.size(size)) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(CircleShape)
-                .background(
-                    Brush.linearGradient(
-                        colors = listOf(palette.accent, palette.accentShadow)
-                    )
-                )
+                .background(avatarGradient)
                 .border(1.5.dp, palette.border, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            val bmp = bitmap
-            if (bmp != null) {
+            if (avatarImage != null) {
                 Image(
-                    bitmap = bmp.asImageBitmap(),
+                    bitmap = avatarImage,
                     contentDescription = "Foto de perfil de $displayName",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()

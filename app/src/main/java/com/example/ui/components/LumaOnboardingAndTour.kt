@@ -62,6 +62,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -544,33 +545,43 @@ fun LumaInteractiveTourOverlay(
             val targetRight = (rawTarget.right + padPx).coerceIn(targetLeft + 32f, screenW - 8f)
             val targetBottom = (rawTarget.bottom + padPx).coerceIn(targetTop + 32f, screenH - 8f)
 
-            val spotlightSpec = tween<Float>(
-                durationMillis = motion.duration(380),
-                easing = LumaEaseInOutCurve
-            )
-            val animLeft by animateFloatAsState(targetLeft, spotlightSpec, label = "tour_left")
-            val animTop by animateFloatAsState(targetTop, spotlightSpec, label = "tour_top")
-            val animRight by animateFloatAsState(targetRight, spotlightSpec, label = "tour_right")
-            val animBottom by animateFloatAsState(targetBottom, spotlightSpec, label = "tour_bottom")
-            val animCorner by animateFloatAsState(cornerPx, spotlightSpec, label = "tour_corner")
+            val spotlightSpec = remember(motion.effectiveHz) {
+                tween<Float>(
+                    durationMillis = motion.duration(380),
+                    easing = LumaEaseInOutCurve
+                )
+            }
+            val animLeftState = animateFloatAsState(targetLeft, spotlightSpec, label = "tour_left")
+            val animTopState = animateFloatAsState(targetTop, spotlightSpec, label = "tour_top")
+            val animRightState = animateFloatAsState(targetRight, spotlightSpec, label = "tour_right")
+            val animBottomState = animateFloatAsState(targetBottom, spotlightSpec, label = "tour_bottom")
+            val animCornerState = animateFloatAsState(cornerPx, spotlightSpec, label = "tour_corner")
 
-            // Soft XLNR-style luminous breathing halo using custom EaseInOut interpolation
-            val infiniteTransition = rememberInfiniteTransition(label = "tour_pulse")
-            val pulseProgress by infiniteTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(motion.ambientDuration(1400), easing = LumaEaseInOutCurve),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "tour_pulse_val"
-            )
+            // Soft XLNR-style luminous breathing halo using custom EaseInOut interpolation;
+            // strictly paused when offscreen/backgrounded and read ONLY in Canvas draw phase (0 recompositions/sec).
+            val isResumed = rememberIsLifecycleResumed()
+            val pulseAnim = remember { androidx.compose.animation.core.Animatable(0f) }
+            LaunchedEffect(visible, isResumed, motion.effectiveHz) {
+                if (!visible || !isResumed) return@LaunchedEffect
+                val dur = motion.ambientDuration(1400)
+                while (true) {
+                    pulseAnim.animateTo(1f, animationSpec = tween(dur, easing = LumaEaseInOutCurve))
+                    pulseAnim.animateTo(0f, animationSpec = tween(dur, easing = LumaEaseInOutCurve))
+                }
+            }
 
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             ) {
+                val animLeft = animLeftState.value
+                val animTop = animTopState.value
+                val animRight = animRightState.value
+                val animBottom = animBottomState.value
+                val animCorner = animCornerState.value
+                val pulseProgress = pulseAnim.value
+
                 // Dimmed spotlight backdrop
                 drawRect(color = Color.Black.copy(alpha = 0.64f))
 
@@ -609,16 +620,19 @@ fun LumaInteractiveTourOverlay(
                 )
             }
 
-            // Smooth 60fps Lottie spotlight beacon gliding along the active spotlight corner
+            // Smooth 60-120fps Lottie spotlight beacon gliding in layout phase only
             val beaconSizePx = with(density) { 44.dp.toPx() }
-            val beaconX = (animRight - beaconSizePx * 0.55f)
-                .coerceIn(6f, (screenW - beaconSizePx - 6f).coerceAtLeast(6f))
-            val beaconY = (animTop - beaconSizePx * 0.45f)
-                .coerceIn(6f, (screenH - beaconSizePx - 6f).coerceAtLeast(6f))
             LumaTourBeaconLottie(
                 tint = palette.accent,
+                isPlaying = visible,
                 modifier = Modifier
-                    .offset { IntOffset(beaconX.roundToInt(), beaconY.roundToInt()) }
+                    .offset {
+                        val bx = (animRightState.value - beaconSizePx * 0.55f)
+                            .coerceIn(6f, (screenW - beaconSizePx - 6f).coerceAtLeast(6f))
+                        val by = (animTopState.value - beaconSizePx * 0.45f)
+                            .coerceIn(6f, (screenH - beaconSizePx - 6f).coerceAtLeast(6f))
+                        IntOffset(bx.roundToInt(), by.roundToInt())
+                    }
                     .size(44.dp)
                     .testTag("tour_lottie_beacon")
             )
@@ -632,12 +646,9 @@ fun LumaInteractiveTourOverlay(
                 (targetTop - with(density) { 250.dp.toPx() })
                     .coerceAtLeast(with(density) { 64.dp.toPx() })
             }
-            val animatedCardY by animateFloatAsState(
+            val animatedCardYState = animateFloatAsState(
                 targetValue = cardYTargetPx,
-                animationSpec = tween(
-                    durationMillis = motion.duration(380),
-                    easing = LumaEaseInOutCurve
-                ),
+                animationSpec = spotlightSpec,
                 label = "tour_card_y"
             )
 
@@ -648,7 +659,7 @@ fun LumaInteractiveTourOverlay(
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .padding(horizontal = 18.dp)
-                    .offset { IntOffset(0, animatedCardY.roundToInt()) },
+                    .offset { IntOffset(0, animatedCardYState.value.roundToInt()) },
                 contentAlignment = Alignment.TopCenter
             ) {
                 val cardShape = RoundedCornerShape(28.dp)

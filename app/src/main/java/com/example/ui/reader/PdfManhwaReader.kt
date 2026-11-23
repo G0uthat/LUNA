@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import android.util.LruCache
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -54,6 +56,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -62,6 +65,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,7 +105,9 @@ import androidx.compose.foundation.pager.PagerDefaults
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -108,6 +115,47 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+/**
+ * Byte-bounded LRU cache for rendered PDF pages.
+ * Stores RGB_565 bitmaps sized to the active viewport width (~3 MB per page vs 17–24 MB previously),
+ * capped at min(maxHeap / 6, 40 MB) to guarantee smooth scrolling with zero OOM spikes.
+ */
+private object PdfPageBitmapCache {
+    private val maxKb: Int = run {
+        val heapKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
+        (heapKb / 6).coerceIn(12 * 1024, 40 * 1024)
+    }
+
+    private val cache = object : LruCache<String, Bitmap>(maxKb) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            (value.allocationByteCount / 1024).coerceAtLeast(1)
+    }
+
+    fun key(filePath: String, pageIndex: Int, widthPx: Int): String = "$filePath#$pageIndex@$widthPx"
+
+    fun get(key: String): Bitmap? = synchronized(cache) {
+        cache.get(key)?.takeIf { !it.isRecycled }
+    }
+
+    fun put(key: String, bitmap: Bitmap) {
+        synchronized(cache) {
+            cache.put(key, bitmap)
+        }
+    }
+
+    fun clearForFile(filePath: String) {
+        synchronized(cache) {
+            val prefix = "$filePath#"
+            val snapshot = cache.snapshot()
+            for (k in snapshot.keys) {
+                if (k.startsWith(prefix)) {
+                    cache.remove(k)
+                }
+            }
+        }
+    }
+}
 
 /**
  * Native PDF & Manhwa Reader:
@@ -162,6 +210,7 @@ fun PdfManhwaReader(
 
     DisposableEffect(filePath) {
         onDispose {
+            PdfPageBitmapCache.clearForFile(filePath)
             runCatching { pfdAndRenderer?.second?.close() }
             runCatching { pfdAndRenderer?.first?.close() }
         }
@@ -169,31 +218,41 @@ fun PdfManhwaReader(
 
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
+    var activeVisiblePage by remember(filePath) { mutableIntStateOf(safeIndex) }
 
     val hasDynamicIsland = prefs.menuStyle == ReaderMenuStyle.DYNAMIC_ISLAND
     val islandClearanceDp = if (hasDynamicIsland) (46.dp * prefs.dockScale.coerceIn(0.88f, 1.25f)) else 0.dp
     val pdfViewportMod = if (hasDynamicIsland) {
-        Modifier.fillMaxSize().statusBarsPadding().padding(top = islandClearanceDp)
+        Modifier.fillMaxSize().displayCutoutPadding().statusBarsPadding().padding(top = islandClearanceDp)
     } else {
-        Modifier.fillMaxSize()
+        Modifier.fillMaxSize().displayCutoutPadding()
     }
     val applyPdfNightFilter = prefs.pdfNightFilter && palette.isDark
     val canDrawOnCanvas = isDrawingMode && !isPanZoomWhileDrawing
 
-    Box(modifier = modifier.fillMaxSize().background(palette.background)) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize().background(palette.background)) {
+        // Quantize viewport width to 64px buckets so rotation/slight inset changes reuse cached bitmaps cleanly
+        val targetRenderWidthPx = ((constraints.maxWidth / 64) * 64).coerceIn(720, 1440)
+
         if (prefs.pageAnimation == PageAnimationMode.VERTICAL_SCROLL) {
             val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeIndex)
+            val isZoomed by remember { derivedStateOf { zoomScale > 1.02f } }
             LaunchedEffect(safeIndex) {
                 if (abs(listState.firstVisibleItemIndex - safeIndex) > 1) {
                     listState.scrollToItem(safeIndex)
                 }
             }
-            LaunchedEffect(listState.firstVisibleItemIndex) {
-                onPageChanged(listState.firstVisibleItemIndex)
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.firstVisibleItemIndex }
+                    .distinctUntilChanged()
+                    .collect {
+                        activeVisiblePage = it
+                        onPageChanged(it)
+                    }
             }
             LazyColumn(
                 state = listState,
-                userScrollEnabled = !canDrawOnCanvas && zoomScale <= 1.02f,
+                userScrollEnabled = !canDrawOnCanvas && !isZoomed,
                 modifier = pdfViewportMod,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -202,8 +261,12 @@ fun PdfManhwaReader(
                     key = { pageIdx -> "pdf_page_$pageIdx" },
                     contentType = { "pdf_page" }
                 ) { pageIdx ->
+                    val inRenderWindow = abs(pageIdx - activeVisiblePage) <= 1
                     PdfInteractivePage(
+                        filePath = filePath,
                         pageIndex = pageIdx,
+                        targetRenderWidthPx = targetRenderWidthPx,
+                        shouldRender = inRenderWindow,
                         renderer = pfdAndRenderer?.second,
                         renderMutex = renderMutex,
                         ocrResult = ocrByPage[pageIdx],
@@ -242,6 +305,7 @@ fun PdfManhwaReader(
             }
         } else {
             val pagerState = rememberPagerState(initialPage = safeIndex) { safePageCount }
+            val isZoomed by remember { derivedStateOf { zoomScale > 1.02f } }
             var eInkFlash by remember { mutableStateOf(false) }
             var lastPdfPage by remember { mutableIntStateOf(safeIndex) }
 
@@ -254,16 +318,21 @@ fun PdfManhwaReader(
                     }
                 }
             }
-            LaunchedEffect(pagerState.currentPage, prefs.pageAnimation) {
-                zoomScale = 1f
-                panOffset = Offset.Zero
-                if (prefs.pageAnimation == PageAnimationMode.E_INK && pagerState.currentPage != lastPdfPage) {
-                    eInkFlash = true
-                    delay(85)
-                    eInkFlash = false
-                }
-                lastPdfPage = pagerState.currentPage
-                onPageChanged(pagerState.currentPage)
+            LaunchedEffect(pagerState, prefs.pageAnimation) {
+                snapshotFlow { pagerState.currentPage }
+                    .distinctUntilChanged()
+                    .collect { page ->
+                        zoomScale = 1f
+                        panOffset = Offset.Zero
+                        if (prefs.pageAnimation == PageAnimationMode.E_INK && page != lastPdfPage) {
+                            eInkFlash = true
+                            delay(85)
+                            eInkFlash = false
+                        }
+                        lastPdfPage = page
+                        activeVisiblePage = page
+                        onPageChanged(page)
+                    }
             }
 
             val handlePdfTap: (Float) -> Unit = { xFraction ->
@@ -299,65 +368,73 @@ fun PdfManhwaReader(
             Box(modifier = pdfViewportMod) {
                 HorizontalPager(
                     state = pagerState,
+                    key = { pageIdx -> "pdf_page_$pageIdx" },
                     flingBehavior = PagerDefaults.flingBehavior(
                         state = pagerState,
                         snapAnimationSpec = motion.glideSpring()
                     ),
-                    userScrollEnabled = !canDrawOnCanvas && zoomScale <= 1.02f,
+                    userScrollEnabled = !canDrawOnCanvas && !isZoomed,
                     modifier = Modifier.fillMaxSize()
                 ) { pageIdx ->
-                    val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                    val animMod = when (prefs.pageAnimation) {
-                        PageAnimationMode.BOOK_CURL -> Modifier
-                            .graphicsLayer {
-                                val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-                                cameraDistance = 14f * density
-                                if (pageOffset >= 0f) {
-                                    transformOrigin = TransformOrigin(0f, 0.5f)
-                                    rotationY = -pageOffset * 48f
-                                    alpha = 1f - absOffset * 0.18f
+                    // Read pagerState offset strictly inside graphicsLayer/drawWithContent (0 recompositions per swipe frame)
+                    val animMod = remember(prefs.pageAnimation, pagerState, pageIdx) {
+                        when (prefs.pageAnimation) {
+                            PageAnimationMode.BOOK_CURL -> Modifier
+                                .graphicsLayer {
+                                    val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                    val absOffset = abs(pageOffset).coerceIn(0f, 1f)
+                                    cameraDistance = 14f * density
+                                    if (pageOffset >= 0f) {
+                                        transformOrigin = TransformOrigin(0f, 0.5f)
+                                        rotationY = -pageOffset * 48f
+                                        alpha = 1f - absOffset * 0.18f
+                                    }
                                 }
-                            }
-                            .drawWithContent {
-                                drawContent()
-                                val curlStrength = abs(pageOffset).coerceIn(0f, 1f)
-                                if (curlStrength > 0.01f) {
-                                    val shadowWidth = size.width * 0.16f * curlStrength
-                                    drawRect(
-                                        brush = Brush.horizontalGradient(
-                                            colors = listOf(
-                                                Color.Transparent,
-                                                Color.Black.copy(alpha = 0.18f * curlStrength)
-                                            ),
-                                            startX = size.width - shadowWidth,
-                                            endX = size.width
+                                .drawWithContent {
+                                    drawContent()
+                                    val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                    val curlStrength = abs(pageOffset).coerceIn(0f, 1f)
+                                    if (curlStrength > 0.01f) {
+                                        val shadowWidth = size.width * 0.16f * curlStrength
+                                        drawRect(
+                                            brush = Brush.horizontalGradient(
+                                                colors = listOf(
+                                                    Color.Transparent,
+                                                    Color.Black.copy(alpha = 0.18f * curlStrength)
+                                                ),
+                                                startX = size.width - shadowWidth,
+                                                endX = size.width
+                                            )
                                         )
-                                    )
+                                    }
+                                }
+
+                            PageAnimationMode.DEPTH_CARD -> Modifier.graphicsLayer {
+                                val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                val absOffset = abs(pageOffset).coerceIn(0f, 1f)
+                                if (pageOffset < 0f) {
+                                    val scale = 0.88f + (1f - absOffset) * 0.12f
+                                    scaleX = scale
+                                    scaleY = scale
+                                    alpha = 0.5f + (1f - absOffset) * 0.5f
+                                    translationX = -pageOffset * size.width * 0.7f
                                 }
                             }
 
-                        PageAnimationMode.DEPTH_CARD -> Modifier.graphicsLayer {
-                            val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-                            if (pageOffset < 0f) {
-                                val scale = 0.88f + (1f - absOffset) * 0.12f
-                                scaleX = scale
-                                scaleY = scale
-                                alpha = 0.5f + (1f - absOffset) * 0.5f
-                                translationX = -pageOffset * size.width * 0.7f
+                            PageAnimationMode.FADE -> Modifier.graphicsLayer {
+                                val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                translationX = pageOffset * size.width
+                                alpha = (1f - abs(pageOffset)).coerceIn(0f, 1f)
                             }
-                        }
 
-                        PageAnimationMode.FADE -> Modifier.graphicsLayer {
-                            translationX = pageOffset * size.width
-                            alpha = (1f - abs(pageOffset)).coerceIn(0f, 1f)
-                        }
+                            PageAnimationMode.E_INK -> Modifier.graphicsLayer {
+                                val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
+                                translationX = pageOffset * size.width
+                                alpha = if (abs(pageOffset) < 0.5f) 1f else 0f
+                            }
 
-                        PageAnimationMode.E_INK -> Modifier.graphicsLayer {
-                            translationX = pageOffset * size.width
-                            alpha = if (abs(pageOffset) < 0.5f) 1f else 0f
+                            else -> Modifier
                         }
-
-                        else -> Modifier
                     }
 
                     Box(
@@ -378,8 +455,12 @@ fun PdfManhwaReader(
                             ),
                         contentAlignment = Alignment.Center
                     ) {
+                        val inRenderWindow = abs(pageIdx - activeVisiblePage) <= 1
                         PdfInteractivePage(
+                            filePath = filePath,
                             pageIndex = pageIdx,
+                            targetRenderWidthPx = targetRenderWidthPx,
+                            shouldRender = inRenderWindow,
                             renderer = pfdAndRenderer?.second,
                             renderMutex = renderMutex,
                             ocrResult = ocrByPage[pageIdx],
@@ -561,7 +642,10 @@ fun PdfManhwaReader(
 
 @Composable
 private fun PdfInteractivePage(
+    filePath: String,
     pageIndex: Int,
+    targetRenderWidthPx: Int,
+    shouldRender: Boolean,
     renderer: PdfRenderer?,
     renderMutex: Mutex,
     ocrResult: OcrPageResult?,
@@ -583,8 +667,19 @@ private fun PdfInteractivePage(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
-    var bitmap by remember(pageIndex, renderer) { mutableStateOf<Bitmap?>(null) }
-    var aspectRatio by remember(pageIndex) { mutableFloatStateOf(0.707f) }
+    val cacheKey = remember(filePath, pageIndex, targetRenderWidthPx) {
+        PdfPageBitmapCache.key(filePath, pageIndex, targetRenderWidthPx)
+    }
+    var bitmap by remember(cacheKey, renderer) {
+        mutableStateOf(if (shouldRender) PdfPageBitmapCache.get(cacheKey) else null)
+    }
+    var aspectRatio by remember(pageIndex) {
+        val cached = PdfPageBitmapCache.get(cacheKey)
+        mutableFloatStateOf(
+            if (cached != null) cached.width.toFloat() / cached.height.toFloat().coerceAtLeast(1f)
+            else 0.707f
+        )
+    }
     var selectedOcrWordBox by remember(pageIndex) { mutableStateOf<com.example.data.model.OcrWordBox?>(null) }
 
     // Always read latest zoom/pan inside gesture coroutines WITHOUT restarting pointerInput!
@@ -594,26 +689,43 @@ private fun PdfInteractivePage(
     val latestOnZoomPan by rememberUpdatedState(onZoomPanChange)
     val latestOnTapX by rememberUpdatedState(onTapAtXFraction)
 
-    LaunchedEffect(pageIndex, renderer) {
+    LaunchedEffect(cacheKey, shouldRender, renderer) {
+        if (!shouldRender) {
+            // Release off-screen page reference immediately (LRU cache retains recent pages within byte cap)
+            bitmap = null
+            return@LaunchedEffect
+        }
+        val cached = PdfPageBitmapCache.get(cacheKey)
+        if (cached != null) {
+            aspectRatio = cached.width.toFloat() / cached.height.toFloat().coerceAtLeast(1f)
+            bitmap = cached
+            onBitmapReady(cached)
+            return@LaunchedEffect
+        }
         if (renderer == null) return@LaunchedEffect
+
         val rendered = withContext(Dispatchers.IO) {
+            currentCoroutineContext().ensureActive()
             renderMutex.withLock {
+                currentCoroutineContext().ensureActive()
+                PdfPageBitmapCache.get(cacheKey)?.let { return@withLock it }
                 runCatching {
                     renderer.openPage(pageIndex).use { page ->
-                        // High-resolution Google Drive-quality bitmap so pinch-zoom stays razor-sharp
-                        val targetWidth = 1720
+                        val targetWidth = targetRenderWidthPx.coerceIn(720, 1440)
                         val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
                         val rawHeight = (page.height * scale).roundToInt().coerceAtLeast(1)
-                        val maxHeightCap = 3600
+                        val maxHeightCap = (targetWidth * 2.4f).roundToInt().coerceAtMost(2880)
                         val (finalW, finalH) = if (rawHeight > maxHeightCap) {
                             val ratio = maxHeightCap.toFloat() / rawHeight
                             (targetWidth * ratio).roundToInt().coerceAtLeast(1) to maxHeightCap
                         } else {
                             targetWidth to rawHeight
                         }
-                        val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
+                        // RGB_565 uses 2 bytes/px (50% less RAM than ARGB_8888) — ideal for opaque white PDF pages!
+                        val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.RGB_565)
                         bmp.eraseColor(AndroidColor.WHITE)
                         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        PdfPageBitmapCache.put(cacheKey, bmp)
                         bmp
                     }
                 }.getOrNull()
@@ -627,7 +739,8 @@ private fun PdfInteractivePage(
     }
 
     val bmp = bitmap
-    if (bmp == null) {
+    val imageBitmap = remember(bmp) { bmp?.asImageBitmap() }
+    if (bmp == null || imageBitmap == null) {
         Box(
             modifier = modifier.aspectRatio(aspectRatio).padding(24.dp),
             contentAlignment = Alignment.Center
@@ -770,7 +883,7 @@ private fun PdfInteractivePage(
             )
         }
         Image(
-            bitmap = bmp.asImageBitmap(),
+            bitmap = imageBitmap,
             contentDescription = "Página PDF ${pageIndex + 1}",
             contentScale = ContentScale.FillBounds,
             colorFilter = nightColorFilter,

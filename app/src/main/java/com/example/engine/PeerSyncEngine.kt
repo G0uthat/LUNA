@@ -2,7 +2,6 @@ package com.example.engine
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import com.example.data.model.FriendChatMessage
@@ -10,6 +9,7 @@ import com.example.data.model.FriendPeer
 import com.example.data.model.MediaPlaybackInfo
 import com.example.data.model.PrivacySettings
 import com.example.data.model.UserProfile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,19 +21,28 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.BufferedWriter
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -42,29 +51,34 @@ import java.util.concurrent.TimeUnit
  * - Stores ONLY the user's chosen username, local avatar photo, privacy toggles, friends list,
  *   and local chat history inside app-private filesDir (`luma_social_local.json`).
  * - NO cloud database, NO accounts, NO passwords, NO registration.
- * - Friends connect directly over the internet using their shared Friend Code (`LUMA-XXXX-XXXX`):
- *   both devices deterministically compute the same private hashed topic and exchange lightweight
- *   real-time presence (book being read + Spotify/YouTube track) and chat packets via ephemeral
- *   stateless HTTPS pub/sub streams (`ntfy.sh`).
+ * - Completely idle when there are no friends or while the app is backgrounded.
+ * - Shares [LumaHttpClient.shared] connection pool and cancels active OkHttp calls immediately
+ *   when streams pause or friends are removed.
  */
 class SocialRepository private constructor(private val context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val streamClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS) // Long-lived streaming SSE/NDJSON
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .build()
+    private val streamClient: OkHttpClient by lazy {
+        LumaHttpClient.shared.newBuilder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.SECONDS) // Long-lived streaming SSE/NDJSON
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
 
-    private val postClient = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .build()
+    private val postClient: OkHttpClient by lazy {
+        LumaHttpClient.shared.newBuilder()
+            .connectTimeout(12, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
 
     private val textMediaType = "text/plain; charset=utf-8".toMediaType()
-    private val storageFile = File(context.filesDir, "luma_social_local.json")
+    private val storageFile by lazy { File(context.filesDir, "luma_social_local.json") }
+    private val diskWriteMutex = Mutex()
+    private var pendingSaveJob: Job? = null
 
     private val _profile = MutableStateFlow(UserProfile())
     val profile: StateFlow<UserProfile> = _profile.asStateFlow()
@@ -78,24 +92,57 @@ class SocialRepository private constructor(private val context: Context) {
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
+    @Volatile
+    private var isAppForeground: Boolean = true
+    @Volatile
     private var currentReadingBook: String = ""
+    @Volatile
     private var currentReadingProgress: Int = 0
     private var lastBroadcastFingerprint: String = ""
     private var lastBroadcastMs: Long = 0L
 
-    private val activeTopicJobs = mutableMapOf<String, Job>()
+    // Cached Base64 avatar thumbnail keyed by "path|lastModified" to avoid repeated disk/JPEG work
+    @Volatile
+    private var cachedAvatarKey: String = ""
+    @Volatile
+    private var cachedAvatarB64: String = ""
+
+    private val activeTopicJobs = ConcurrentHashMap<String, Job>()
+    private val activeTopicCalls = ConcurrentHashMap<String, Call>()
     private val seenPacketIds = LinkedHashSet<String>()
 
     init {
-        loadFromDisk()
-        startAllFriendStreams()
+        scope.launch {
+            loadFromDisk()
+            if (isAppForeground && _friends.value.isNotEmpty()) {
+                startAllFriendStreams()
+            }
+        }
         observeMediaForPresence()
+    }
+
+    /**
+     * Lifecycle hook called by [com.example.MainActivity]:
+     * pauses all long-lived relay streams while backgrounded and resumes them on foreground
+     * ONLY when at least one peer exists.
+     */
+    fun setAppForeground(foreground: Boolean) {
+        if (isAppForeground == foreground) return
+        isAppForeground = foreground
+        if (foreground) {
+            if (_friends.value.isNotEmpty()) {
+                startAllFriendStreams()
+            }
+        } else {
+            stopAllStreams()
+        }
     }
 
     private fun observeMediaForPresence() {
         scope.launch {
             var lastTitle = ""
             SystemMediaController.mediaState.collect { media ->
+                if (!isAppForeground || _friends.value.isEmpty()) return@collect
                 val key = "${media.title}|${media.artist}|${media.isPlaying}"
                 if (key != lastTitle) {
                     lastTitle = key
@@ -145,16 +192,19 @@ class SocialRepository private constructor(private val context: Context) {
             val savedPath = runCatching {
                 val dir = File(context.filesDir, "profile").apply { mkdirs() }
                 val dest = File(dir, "avatar_${System.currentTimeMillis()}.jpg")
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    val raw = BitmapFactory.decodeStream(input) ?: return@use null
-                    val square = centerCropSquare(raw, 256)
-                    FileOutputStream(dest).use { out ->
-                        square.compress(Bitmap.CompressFormat.JPEG, 86, out)
-                    }
-                    if (square !== raw) square.recycle()
-                    raw.recycle()
-                    dest.absolutePath
+                val raw = BitmapDecodeUtils.decodeSampledUri(
+                    contentResolver = context.contentResolver,
+                    uri = uri,
+                    reqWidth = 512,
+                    reqHeight = 512
+                ) ?: return@runCatching null
+                val square = centerCropSquare(raw, 256)
+                FileOutputStream(dest).use { out ->
+                    square.compress(Bitmap.CompressFormat.JPEG, 86, out)
                 }
+                if (square !== raw) square.recycle()
+                raw.recycle()
+                dest.absolutePath
             }.getOrNull()
 
             if (savedPath != null) {
@@ -209,6 +259,7 @@ class SocialRepository private constructor(private val context: Context) {
 
     fun removeFriend(friendCode: String) {
         val topic = computePairTopic(_profile.value.peerCode, friendCode)
+        activeTopicCalls.remove(topic)?.cancel()
         activeTopicJobs.remove(topic)?.cancel()
         _friends.update { list -> list.filterNot { it.peerCode == friendCode } }
         _messagesByFriend.update { map -> map - friendCode }
@@ -338,50 +389,85 @@ class SocialRepository private constructor(private val context: Context) {
         }
     }
 
-    private fun restartAllStreams() {
+    private fun stopAllStreams() {
+        activeTopicCalls.values.forEach { runCatching { it.cancel() } }
+        activeTopicCalls.clear()
         activeTopicJobs.values.forEach { it.cancel() }
         activeTopicJobs.clear()
-        startAllFriendStreams()
+    }
+
+    private fun restartAllStreams() {
+        stopAllStreams()
+        if (isAppForeground && _friends.value.isNotEmpty()) {
+            startAllFriendStreams()
+        }
     }
 
     private fun startAllFriendStreams() {
-        for (friend in _friends.value) {
+        if (!isAppForeground) return
+        val peers = _friends.value
+        if (peers.isEmpty()) return
+        for (friend in peers) {
             ensureStreamForFriend(friend.peerCode)
         }
     }
 
     private fun ensureStreamForFriend(friendCode: String) {
+        if (!isAppForeground) return
         val myCode = _profile.value.peerCode
         if (myCode.isBlank()) return
         val topic = computePairTopic(myCode, friendCode)
         if (activeTopicJobs[topic]?.isActive == true) return
 
-        activeTopicJobs[topic] = scope.launch {
+        val job = scope.launch {
             var backoffMs = 2500L
-            while (isActive) {
+            while (isActive && isAppForeground && _friends.value.any { it.peerCode == friendCode }) {
+                if (!DynamicIslandEventManager.isOnline.value) {
+                    delay(backoffMs)
+                    backoffMs = (backoffMs * 2L).coerceAtMost(30_000L)
+                    continue
+                }
+                var currentCall: Call? = null
                 try {
                     val req = Request.Builder()
                         .url("https://ntfy.sh/$topic/json?since=30m")
                         .build()
-                    streamClient.newCall(req).execute().use { response ->
+                    val call = streamClient.newCall(req)
+                    currentCall = call
+                    activeTopicCalls[topic] = call
+                    call.execute().use { response ->
                         if (response.isSuccessful) {
                             backoffMs = 2500L
                             val source = response.body?.source()
-                            while (isActive && source != null && !source.exhausted()) {
-                                val line = source.readUtf8Line() ?: break
+                            while (isActive && isAppForeground && source != null && !source.exhausted()) {
+                                val line = runCatching { source.readUtf8LineStrict(MAX_RELAY_LINE_BYTES) }
+                                    .getOrNull() ?: break
                                 if (line.isNotBlank()) {
                                     handleIncomingRelayLine(friendCode, line)
                                 }
                             }
                         }
                     }
+                } catch (ce: CancellationException) {
+                    currentCall?.cancel()
+                    throw ce
                 } catch (_: Exception) {
-                    // Offline or transient network issue; retry politely
+                    // Offline or transient network issue; retry politely with bounded backoff
+                } finally {
+                    if (currentCall != null) {
+                        activeTopicCalls.remove(topic, currentCall)
+                    }
                 }
+                if (!isActive || !isAppForeground) break
                 delay(backoffMs)
                 backoffMs = (backoffMs * 2L).coerceAtMost(30_000L)
             }
+            activeTopicJobs.remove(topic)
         }
+        job.invokeOnCompletion {
+            activeTopicCalls.remove(topic)?.cancel()
+        }
+        activeTopicJobs[topic] = job
     }
 
     private fun handleIncomingRelayLine(friendCode: String, rawLine: String) {
@@ -496,15 +582,25 @@ class SocialRepository private constructor(private val context: Context) {
         if (path.isBlank()) return ""
         val file = File(path)
         if (!file.exists()) return ""
-        return runCatching {
-            val bmp = BitmapFactory.decodeFile(file.absolutePath) ?: return ""
+        val cacheKey = "$path|${file.lastModified()}|${file.length()}"
+        if (cachedAvatarKey == cacheKey) return cachedAvatarB64
+
+        val encoded = runCatching {
+            val bmp = BitmapDecodeUtils.decodeSampledFile(
+                path = file.absolutePath,
+                reqWidth = 128,
+                reqHeight = 128
+            ) ?: return ""
             val tiny = Bitmap.createScaledBitmap(bmp, 64, 64, true)
-            val baos = ByteArrayOutputStream()
+            val baos = ByteArrayOutputStream(4096)
             tiny.compress(Bitmap.CompressFormat.JPEG, 58, baos)
             if (tiny !== bmp) tiny.recycle()
             bmp.recycle()
             Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
         }.getOrDefault("")
+        cachedAvatarKey = cacheKey
+        cachedAvatarB64 = encoded
+        return encoded
     }
 
     private fun centerCropSquare(src: Bitmap, size: Int): Bitmap {
@@ -517,10 +613,24 @@ class SocialRepository private constructor(private val context: Context) {
         return scaled
     }
 
+    private fun readStorageFileStreaming(file: File): String? {
+        if (!file.exists() || file.length() <= 0L || file.length() > MAX_SOCIAL_STORAGE_BYTES) return null
+        val sb = StringBuilder(file.length().toInt().coerceAtMost(256 * 1024))
+        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), 8 * 1024).use { reader ->
+            val buf = CharArray(4096)
+            while (true) {
+                val n = reader.read(buf)
+                if (n <= 0) break
+                sb.append(buf, 0, n)
+            }
+        }
+        return sb.toString()
+    }
+
     private fun loadFromDisk() {
         val loaded = runCatching {
-            if (!storageFile.exists()) return@runCatching false
-            val root = JSONObject(storageFile.readText())
+            val rawJson = readStorageFileStreaming(storageFile) ?: return@runCatching false
+            val root = JSONObject(rawJson)
             val pObj = root.optJSONObject("profile")
             val privObj = pObj?.optJSONObject("privacy")
             val code = pObj?.optString("peerCode").orEmpty().ifBlank { generatePeerCode() }
@@ -598,76 +708,86 @@ class SocialRepository private constructor(private val context: Context) {
     }
 
     private fun saveToDiskAsync() {
-        val prof = _profile.value
-        val fList = _friends.value
-        val msgMap = _messagesByFriend.value
-        scope.launch {
-            runCatching {
-                val root = JSONObject()
-                root.put(
-                    "profile",
-                    JSONObject().apply {
-                        put("username", prof.username)
-                        put("avatarPath", prof.avatarPath)
-                        put("peerCode", prof.peerCode)
-                        put("profileConfigured", prof.profileConfigured)
-                        put(
-                            "privacy",
-                            JSONObject().apply {
-                                put("showOnlineStatus", prof.privacy.showOnlineStatus)
-                                put("shareReadingBook", prof.privacy.shareReadingBook)
-                                put("shareMediaActivity", prof.privacy.shareMediaActivity)
-                                put("allowFriendChat", prof.privacy.allowFriendChat)
-                            }
-                        )
-                    }
-                )
-                val fArr = JSONArray()
-                for (f in fList) {
-                    fArr.put(
+        pendingSaveJob?.cancel()
+        pendingSaveJob = scope.launch {
+            delay(250L) // Coalesce bursts of presence/chat updates into a single atomic disk write
+            diskWriteMutex.withLock {
+                val prof = _profile.value
+                val fList = _friends.value
+                val msgMap = _messagesByFriend.value
+                runCatching {
+                    val root = JSONObject()
+                    root.put(
+                        "profile",
                         JSONObject().apply {
-                            put("peerCode", f.peerCode)
-                            put("displayName", f.displayName)
-                            put("avatarBase64", f.avatarBase64)
-                            put("readingBookTitle", f.readingBookTitle)
-                            put("readingProgressPct", f.readingProgressPct)
-                            put("mediaTitle", f.mediaTitle)
-                            put("mediaArtist", f.mediaArtist)
-                            put("mediaApp", f.mediaApp)
-                            put("lastSeenEpochMs", f.lastSeenEpochMs)
-                            put("unreadCount", f.unreadCount)
+                            put("username", prof.username)
+                            put("avatarPath", prof.avatarPath)
+                            put("peerCode", prof.peerCode)
+                            put("profileConfigured", prof.profileConfigured)
+                            put(
+                                "privacy",
+                                JSONObject().apply {
+                                    put("showOnlineStatus", prof.privacy.showOnlineStatus)
+                                    put("shareReadingBook", prof.privacy.shareReadingBook)
+                                    put("shareMediaActivity", prof.privacy.shareMediaActivity)
+                                    put("allowFriendChat", prof.privacy.allowFriendChat)
+                                }
+                            )
                         }
                     )
-                }
-                root.put("friends", fArr)
-
-                val mObj = JSONObject()
-                for ((k, list) in msgMap) {
-                    val arr = JSONArray()
-                    for (m in list.takeLast(120)) {
-                        arr.put(
+                    val fArr = JSONArray()
+                    for (f in fList) {
+                        fArr.put(
                             JSONObject().apply {
-                                put("id", m.id)
-                                put("senderCode", m.senderCode)
-                                put("senderName", m.senderName)
-                                put("text", m.text)
-                                put("timestampMs", m.timestampMs)
-                                put("isFromMe", m.isFromMe)
+                                put("peerCode", f.peerCode)
+                                put("displayName", f.displayName)
+                                put("avatarBase64", f.avatarBase64)
+                                put("readingBookTitle", f.readingBookTitle)
+                                put("readingProgressPct", f.readingProgressPct)
+                                put("mediaTitle", f.mediaTitle)
+                                put("mediaArtist", f.mediaArtist)
+                                put("mediaApp", f.mediaApp)
+                                put("lastSeenEpochMs", f.lastSeenEpochMs)
+                                put("unreadCount", f.unreadCount)
                             }
                         )
                     }
-                    mObj.put(k, arr)
-                }
-                root.put("messages", mObj)
+                    root.put("friends", fArr)
 
-                val tmp = File(context.filesDir, "luma_social_local.tmp")
-                tmp.writeText(root.toString())
-                tmp.renameTo(storageFile)
+                    val mObj = JSONObject()
+                    for ((k, list) in msgMap) {
+                        val arr = JSONArray()
+                        for (m in list.takeLast(120)) {
+                            arr.put(
+                                JSONObject().apply {
+                                    put("id", m.id)
+                                    put("senderCode", m.senderCode)
+                                    put("senderName", m.senderName)
+                                    put("text", m.text)
+                                    put("timestampMs", m.timestampMs)
+                                    put("isFromMe", m.isFromMe)
+                                }
+                            )
+                        }
+                        mObj.put(k, arr)
+                    }
+                    root.put("messages", mObj)
+
+                    val tmp = File(context.filesDir, "luma_social_local.tmp")
+                    BufferedWriter(OutputStreamWriter(FileOutputStream(tmp), Charsets.UTF_8), 8 * 1024).use { writer ->
+                        writer.write(root.toString())
+                    }
+                    tmp.renameTo(storageFile)
+                }
             }
         }
     }
 
     companion object {
+        private const val MAX_RELAY_LINE_BYTES = 64L * 1024L
+        private const val MAX_SOCIAL_STORAGE_BYTES = 4L * 1024L * 1024L
+        private val HEX_CHARS = "0123456789abcdef".toCharArray()
+
         @Volatile
         private var INSTANCE: SocialRepository? = null
 
@@ -691,9 +811,15 @@ class SocialRepository private constructor(private val context: Context) {
         fun computePairTopic(codeA: String, codeB: String): String {
             val sorted = listOf(normalizeCode(codeA), normalizeCode(codeB)).sorted()
             val seed = "luma-p2p-channel::${sorted[0]}::${sorted[1]}"
-            val digest = MessageDigest.getInstance("SHA-256").digest(seed.toByteArray())
-            val hex = digest.joinToString("") { "%02x".format(it) }
-            return "luma_p2p_${hex.take(24)}"
+            val digest = MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8))
+            val sb = StringBuilder(24)
+            // First 12 bytes = 24 lowercase hex chars (preserves protocol compatibility with existing peers)
+            for (i in 0 until 12) {
+                val v = digest[i].toInt() and 0xFF
+                sb.append(HEX_CHARS[v ushr 4])
+                sb.append(HEX_CHARS[v and 0x0F])
+            }
+            return "luma_p2p_$sb"
         }
     }
 }

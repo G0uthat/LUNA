@@ -2,7 +2,6 @@ package com.example.engine
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -44,7 +43,7 @@ object CoverManager {
         accentColorHex: Long
     ): String = withContext(Dispatchers.IO) {
         val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-        val safeKey = "${abs(sourceFile.absolutePath.hashCode())}_${System.currentTimeMillis()}.png"
+        val safeKey = "${abs(sourceFile.absolutePath.hashCode())}_${System.currentTimeMillis()}.jpg"
         val outFile = File(coversDir, safeKey)
 
         val extracted: Bitmap? = when (format) {
@@ -63,7 +62,7 @@ object CoverManager {
 
         runCatching {
             FileOutputStream(outFile).use { fos ->
-                finalBitmap.compress(Bitmap.CompressFormat.PNG, 92, fos)
+                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 88, fos)
             }
         }
         finalBitmap.recycle()
@@ -76,10 +75,13 @@ object CoverManager {
     ): String? = withContext(Dispatchers.IO) {
         runCatching {
             val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-            val outFile = File(coversDir, "custom_${System.currentTimeMillis()}.png")
-            val decoded = context.contentResolver.openInputStream(imageUri)?.use { input ->
-                BitmapFactory.decodeStream(input)
-            } ?: return@runCatching null
+            val outFile = File(coversDir, "custom_${System.currentTimeMillis()}.jpg")
+            val decoded = BitmapDecodeUtils.decodeSampledUri(
+                contentResolver = context.contentResolver,
+                uri = imageUri,
+                reqWidth = 480,
+                reqHeight = 860
+            ) ?: return@runCatching null
 
             val ratio = decoded.width.toFloat() / decoded.height.toFloat().coerceAtLeast(1f)
             val targetW = 480
@@ -88,7 +90,7 @@ object CoverManager {
             if (scaled !== decoded) decoded.recycle()
 
             FileOutputStream(outFile).use { fos ->
-                scaled.compress(Bitmap.CompressFormat.PNG, 92, fos)
+                scaled.compress(Bitmap.CompressFormat.JPEG, 88, fos)
             }
             scaled.recycle()
             outFile.absolutePath
@@ -103,7 +105,7 @@ object CoverManager {
         accentColorHex: Long
     ): String = withContext(Dispatchers.IO) {
         val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-        val outFile = File(coversDir, "art_${System.currentTimeMillis()}.png")
+        val outFile = File(coversDir, "art_${System.currentTimeMillis()}.jpg")
         val bmp = renderArtisticPosterCover(
             title = title,
             author = author,
@@ -112,7 +114,7 @@ object CoverManager {
         )
         runCatching {
             FileOutputStream(outFile).use { fos ->
-                bmp.compress(Bitmap.CompressFormat.PNG, 92, fos)
+                bmp.compress(Bitmap.CompressFormat.JPEG, 88, fos)
             }
         }
         bmp.recycle()
@@ -126,7 +128,7 @@ object CoverManager {
                 renderer.openPage(0).use { page ->
                     val scale = COVER_W.toFloat() / page.width.coerceAtLeast(1)
                     val targetH = (page.height * scale).toInt().coerceIn(280, 900)
-                    val bmp = Bitmap.createBitmap(COVER_W, targetH, Bitmap.Config.ARGB_8888)
+                    val bmp = Bitmap.createBitmap(COVER_W, targetH, Bitmap.Config.RGB_565)
                     bmp.eraseColor(Color.WHITE)
                     page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     bmp
@@ -151,8 +153,12 @@ object CoverManager {
                 ?: imageEntries.maxByOrNull { it.size }
                 ?: return@runCatching null
 
-            val bytes = zip.getInputStream(preferred).use { it.readBytes() }
-            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+            val decoded = BitmapDecodeUtils.decodeSampledZipEntry(
+                zip = zip,
+                entry = preferred,
+                reqWidth = COVER_W,
+                reqHeight = COVER_H
+            ) ?: return@runCatching null
             val scaled = Bitmap.createScaledBitmap(decoded, COVER_W, COVER_H, true)
             if (scaled !== decoded) decoded.recycle()
             scaled
@@ -173,11 +179,15 @@ object CoverManager {
                     .maxByOrNull { it.size }
                 ?: return@runCatching null
 
-            val bytes = zip.getInputStream(preferred).use { it.readBytes() }
-            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching null
+            val decoded = BitmapDecodeUtils.decodeSampledZipEntry(
+                zip = zip,
+                entry = preferred,
+                reqWidth = COVER_W,
+                reqHeight = COVER_H
+            ) ?: return@runCatching null
 
             // Frame widescreen slide thumbnail cleanly onto a studio vertical book cover
-            val out = Bitmap.createBitmap(COVER_W, COVER_H, Bitmap.Config.ARGB_8888)
+            val out = Bitmap.createBitmap(COVER_W, COVER_H, Bitmap.Config.RGB_565)
             val canvas = Canvas(out)
             canvas.drawColor(Color.parseColor("#182032"))
 

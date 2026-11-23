@@ -54,7 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.data.local.DocumentEntity
+import com.example.data.local.LibraryDocumentItem
 import com.example.data.model.DocumentFormat
 import com.example.ui.theme.LocalFolioPalette
 import kotlinx.coroutines.launch
@@ -84,7 +84,7 @@ private data class PracticeFormatRow(
  */
 @Composable
 fun LumaAppGuideDialog(
-    documents: List<DocumentEntity>,
+    documents: List<LibraryDocumentItem>,
     onOpenSampleDocument: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {

@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.Looper
 import android.service.notification.StatusBarNotification
 import android.util.LruCache
+import androidx.compose.runtime.Immutable
 import com.example.data.model.DEFAULT_ISLAND_ALLOWED_PACKAGES
 import com.example.data.model.IslandNotificationFilterMode
 import com.example.data.model.ReaderPreferences
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicLong
 
+@Immutable
 data class BatteryTelemetry(
     val levelPct: Int = 100,
     val isCharging: Boolean = false
@@ -46,12 +48,14 @@ enum class CriticalEventKind {
     CRITICAL_ERROR
 }
 
+@Immutable
 sealed interface DynamicIslandEvent {
     val id: Long
     val priority: Int
     val durationMs: Long
     val dedupeKey: String
 
+    @Immutable
     data class CriticalState(
         override val id: Long = System.nanoTime(),
         val kind: CriticalEventKind,
@@ -67,6 +71,7 @@ sealed interface DynamicIslandEvent {
         override val priority: Int = 2
     }
 
+    @Immutable
     data class AllowedAppAlert(
         val notification: IncomingAppNotification,
         override val durationMs: Long = 4800L
@@ -77,12 +82,14 @@ sealed interface DynamicIslandEvent {
     }
 }
 
+@Immutable
 data class CuratedIslandApp(
     val packageName: String,
     val displayName: String,
     val category: String
 )
 
+@Immutable
 data class DiscoveredIslandApp(
     val packageName: String,
     val appName: String,
@@ -149,7 +156,8 @@ object DynamicIslandEventManager {
         val id = modalHostIdGen.getAndIncrement()
         synchronized(activeModalHosts) {
             activeModalHosts.add(id)
-            _topModalHostId.value = activeModalHosts.lastOrNull()
+            val next = activeModalHosts.lastOrNull()
+            if (_topModalHostId.value != next) _topModalHostId.value = next
         }
         return id
     }
@@ -157,7 +165,8 @@ object DynamicIslandEventManager {
     fun unregisterModalHost(hostId: Long) {
         synchronized(activeModalHosts) {
             activeModalHosts.remove(hostId)
-            _topModalHostId.value = activeModalHosts.lastOrNull()
+            val next = activeModalHosts.lastOrNull()
+            if (_topModalHostId.value != next) _topModalHostId.value = next
         }
     }
 
@@ -176,18 +185,114 @@ object DynamicIslandEventManager {
     @Volatile
     private var allowIncomingCalls: Boolean = true
 
-    private var started = false
+    @Volatile
+    private var isAppInForeground = false
+    @Volatile
+    private var foregroundSessionStartMs: Long = Long.MAX_VALUE
+    private val preSessionSignatures = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var appContext: Context? = null
+    private var batteryReceiver: BroadcastReceiver? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var notifiedLowBattery = false
     private var notifiedCriticalBattery = false
     private var hadOfflineDrop = false
     private var initialConnectivityObserved = false
 
     fun start(context: Context) {
-        if (started) return
-        started = true
+        onAppForeground(context)
+    }
+
+    /**
+     * Marks the exact timestamp when the user enters the app so any notification posted prior to
+     * this moment (or already sitting in the system shade) is never displayed in the Dynamic Island.
+     */
+    fun markForegroundSessionStart(activeNotifications: Array<StatusBarNotification>? = null) {
+        foregroundSessionStartMs = System.currentTimeMillis()
+        isAppInForeground = true
+        if (activeNotifications != null) {
+            seedPreExistingNotifications(activeNotifications)
+        }
+    }
+
+    /**
+     * Records notifications that were already present in the status bar before the user entered Luma
+     * so Android's NotificationListenerService replay/refresh never floods the Dynamic Island.
+     */
+    internal fun seedPreExistingNotifications(notifications: Array<StatusBarNotification>?) {
+        if (notifications == null) return
+        preSessionSignatures.clear()
+        for (sbn in notifications) {
+            val key = sbn.key ?: continue
+            val sig = buildNotificationSignature(sbn)
+            preSessionSignatures[key] = sig
+        }
+    }
+
+    private fun buildNotificationSignature(sbn: StatusBarNotification): String {
+        val extras = sbn.notification?.extras
+        val title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val shortText = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+        val bigText = extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()
+        val body = shortText.ifBlank { bigText }
+        return "$title|$body|${sbn.postTime}"
+    }
+
+    /**
+     * Registers battery & connectivity monitors while the app is in the foreground and establishes
+     * a clean foreground session boundary (clearing any stale pre-session queue).
+     */
+    fun onAppForeground(context: Context) {
         val appCtx = context.applicationContext
+        appContext = appCtx
+        if (!isAppInForeground) {
+            foregroundSessionStartMs = System.currentTimeMillis()
+            isAppInForeground = true
+        } else if (foregroundSessionStartMs == Long.MAX_VALUE) {
+            foregroundSessionStartMs = System.currentTimeMillis()
+        }
+        // Snapshot whatever is already sitting in the status bar right now so it won't replay
+        seedPreExistingNotifications(LumaMediaListenerService.snapshotActiveNotifications())
         registerBatteryMonitor(appCtx)
         registerConnectivityMonitor(appCtx)
+        mainHandler.post {
+            // Never replay queued alerts from a previous session when entering the app
+            val active = _activeEvent.value
+            if (active != null && clearRunnable == null) {
+                scheduleAutoClear(active)
+            }
+        }
+    }
+
+    /**
+     * Unregisters system broadcast receivers & network callbacks, cancels pending Handler timers,
+     * and clears active/queued banners while the app is backgrounded so returning later starts clean.
+     */
+    fun onAppBackground() {
+        isAppInForeground = false
+        foregroundSessionStartMs = Long.MAX_VALUE
+        unregisterMonitors()
+        mainHandler.post {
+            clearRunnable?.let { mainHandler.removeCallbacks(it) }
+            clearRunnable = null
+            pendingQueue.clear()
+            if (_queuedCount.value != 0) _queuedCount.value = 0
+            if (_activeEvent.value != null) _activeEvent.value = null
+        }
+    }
+
+    private fun unregisterMonitors() {
+        val ctx = appContext ?: return
+        synchronized(this) {
+            batteryReceiver?.let { receiver ->
+                runCatching { ctx.unregisterReceiver(receiver) }
+                batteryReceiver = null
+            }
+            networkCallback?.let { cb ->
+                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                runCatching { cm?.unregisterNetworkCallback(cb) }
+                networkCallback = null
+            }
+        }
     }
 
     fun updatePolicy(prefs: ReaderPreferences) {
@@ -284,9 +389,10 @@ object DynamicIslandEventManager {
 
     internal fun onSystemNotificationRemoved(sbn: StatusBarNotification) {
         val removedKey = sbn.key ?: return
+        preSessionSignatures.remove(removedKey)
         mainHandler.post {
             pendingQueue.removeAll { it.dedupeKey == removedKey }
-            _queuedCount.value = pendingQueue.size
+            updateQueuedCountIfChanged()
             if (_activeEvent.value?.dedupeKey == removedKey) {
                 clearRunnable?.let { mainHandler.removeCallbacks(it) }
                 clearRunnable = null
@@ -297,10 +403,33 @@ object DynamicIslandEventManager {
     }
 
     internal fun onSystemNotificationPosted(context: Context, sbn: StatusBarNotification) {
+        // Hard gate 1: Only surface notifications arriving WHILE the user is actively inside Luma
+        if (!isAppInForeground) return
+
+        // Hard gate 2: Reject any historical notification posted BEFORE entering this foreground session
+        val sessionStart = foregroundSessionStartMs
+        if (sbn.postTime < sessionStart) return
+
         val pkg = sbn.packageName.orEmpty()
         if (pkg.isBlank() || pkg == context.packageName) return
 
         val notif = sbn.notification ?: return
+        // Hard gate 3: Reject notifications already sitting in the status bar before entering Luma
+        // (even if OEM/Android replays them or re-delivers them on listener bind without new content)
+        val key = sbn.key
+        if (key != null) {
+            val preSig = preSessionSignatures[key]
+            if (preSig != null) {
+                val newSig = buildNotificationSignature(sbn)
+                val prevContent = preSig.substringBeforeLast('|')
+                val newContent = newSig.substringBeforeLast('|')
+                if (prevContent == newContent) {
+                    return
+                }
+                // Genuine new message/update arrived on an existing thread during the session -> clear baseline
+                preSessionSignatures.remove(key)
+            }
+        }
         val category = notif.category
         val isCallOrAlarm = category == Notification.CATEGORY_CALL || category == Notification.CATEGORY_ALARM
 
@@ -385,12 +514,23 @@ object DynamicIslandEventManager {
 
     private fun recordDiscoveredApp(packageName: String, appName: String, wasBlocked: Boolean) {
         mainHandler.post {
-            val existing = _discoveredApps.value.filterNot { it.packageName == packageName }
+            val currentList = _discoveredApps.value
+            val now = System.currentTimeMillis()
+            val head = currentList.firstOrNull()
+            if (head != null &&
+                head.packageName == packageName &&
+                head.appName == appName &&
+                head.wasBlocked == wasBlocked &&
+                (now - head.lastSeenMs) < 30_000L
+            ) {
+                return@post
+            }
+            val existing = currentList.filterNot { it.packageName == packageName }
             val updated = listOf(
                 DiscoveredIslandApp(
                     packageName = packageName,
                     appName = appName,
-                    lastSeenMs = System.currentTimeMillis(),
+                    lastSeenMs = now,
                     wasBlocked = wasBlocked
                 )
             ) + existing.take(24)
@@ -399,6 +539,8 @@ object DynamicIslandEventManager {
     }
 
     private fun enqueueEvent(event: DynamicIslandEvent) {
+        // Never enqueue alerts while the app is backgrounded — only show events during the user's stay
+        if (!isAppInForeground) return
         mainHandler.post {
             val current = _activeEvent.value
             if (current == null) {
@@ -418,7 +560,7 @@ object DynamicIslandEventManager {
                     pendingQueue.addFirst(current)
                 }
                 presentNow(event)
-                _queuedCount.value = pendingQueue.size
+                updateQueuedCountIfChanged()
                 return@post
             }
 
@@ -432,15 +574,22 @@ object DynamicIslandEventManager {
                 }
                 pendingQueue.addLast(event)
             }
-            _queuedCount.value = pendingQueue.size
+            updateQueuedCountIfChanged()
         }
     }
 
     private fun presentNow(event: DynamicIslandEvent) {
         _activeEvent.value = event
-        _queuedCount.value = pendingQueue.size
+        updateQueuedCountIfChanged()
+        scheduleAutoClear(event)
+    }
+
+    private fun scheduleAutoClear(event: DynamicIslandEvent) {
         clearRunnable?.let { mainHandler.removeCallbacks(it) }
+        clearRunnable = null
+        if (!isAppInForeground) return
         val task = Runnable {
+            clearRunnable = null
             if (_activeEvent.value?.id == event.id) {
                 _activeEvent.value = null
                 drainNextIfIdle()
@@ -451,15 +600,25 @@ object DynamicIslandEventManager {
     }
 
     private fun drainNextIfIdle() {
-        if (_activeEvent.value != null) return
+        if (!isAppInForeground || _activeEvent.value != null) return
         val next = pendingQueue.removeFirstOrNull()
-        _queuedCount.value = pendingQueue.size
+        updateQueuedCountIfChanged()
         if (next != null) {
             presentNow(next)
         }
     }
 
+    private fun updateQueuedCountIfChanged() {
+        val nextSize = pendingQueue.size
+        if (_queuedCount.value != nextSize) {
+            _queuedCount.value = nextSize
+        }
+    }
+
     private fun registerBatteryMonitor(context: Context) {
+        synchronized(this) {
+            if (batteryReceiver != null) return
+        }
         fun processBatteryIntent(intent: Intent?) {
             if (intent == null) return
             val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
@@ -470,7 +629,9 @@ object DynamicIslandEventManager {
                 status == BatteryManager.BATTERY_STATUS_FULL
 
             val prev = _batteryState.value
-            _batteryState.value = BatteryTelemetry(levelPct = pct, isCharging = charging)
+            val next = BatteryTelemetry(levelPct = pct, isCharging = charging)
+            if (next == prev) return
+            _batteryState.value = next
 
             if (!showCriticalBattery) return
 
@@ -530,26 +691,37 @@ object DynamicIslandEventManager {
                 processBatteryIntent(intent)
             }
         }
+        synchronized(this) {
+            if (batteryReceiver != null) return
+            batteryReceiver = receiver
+        }
         val sticky = runCatching {
             context.registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        }.onFailure {
+            synchronized(this) { batteryReceiver = null }
         }.getOrNull()
         processBatteryIntent(sticky)
     }
 
     private fun registerConnectivityMonitor(context: Context) {
+        synchronized(this) {
+            if (networkCallback != null) return
+        }
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val currentlyConnected = runCatching {
             val active = cm.activeNetwork
             val caps = active?.let { cm.getNetworkCapabilities(it) }
             caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         }.getOrDefault(true)
-        _isOnline.value = currentlyConnected
+        if (_isOnline.value != currentlyConnected) {
+            _isOnline.value = currentlyConnected
+        }
         initialConnectivityObserved = true
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val wasOffline = !_isOnline.value
-                _isOnline.value = true
+                if (wasOffline) _isOnline.value = true
                 if (wasOffline && hadOfflineDrop && showCriticalConnectivity) {
                     hadOfflineDrop = false
                     enqueueEvent(
@@ -573,7 +745,7 @@ object DynamicIslandEventManager {
                 }.getOrDefault(false)
                 if (!stillHasOther) {
                     val wasOnline = _isOnline.value
-                    _isOnline.value = false
+                    if (wasOnline) _isOnline.value = false
                     if (initialConnectivityObserved && wasOnline && showCriticalConnectivity) {
                         hadOfflineDrop = true
                         enqueueEvent(
@@ -590,7 +762,12 @@ object DynamicIslandEventManager {
                 }
             }
         }
+        synchronized(this) {
+            if (networkCallback != null) return
+            networkCallback = callback
+        }
         runCatching { cm.registerDefaultNetworkCallback(callback) }
+            .onFailure { synchronized(this) { networkCallback = null } }
     }
 
     private fun extractAppIconBitmap(context: Context, packageName: String): Bitmap? {

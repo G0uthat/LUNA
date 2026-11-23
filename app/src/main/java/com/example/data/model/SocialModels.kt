@@ -1,10 +1,12 @@
 package com.example.data.model
 
 import android.graphics.Bitmap
+import androidx.compose.runtime.Immutable
 
 /**
  * Live playback snapshot from Spotify, YouTube, YouTube Music, or any active Android MediaSession.
  */
+@Immutable
 data class MediaPlaybackInfo(
     val isNotificationAccessGranted: Boolean = false,
     val hasActiveSession: Boolean = false,
@@ -22,6 +24,7 @@ data class MediaPlaybackInfo(
 /**
  * Local-only user profile (no cloud database, no login, no stored accounts — only name & photo).
  */
+@Immutable
 data class UserProfile(
     val username: String = "",
     val avatarPath: String = "",
@@ -30,6 +33,7 @@ data class UserProfile(
     val privacy: PrivacySettings = PrivacySettings()
 )
 
+@Immutable
 data class PrivacySettings(
     val showOnlineStatus: Boolean = true,
     val shareReadingBook: Boolean = true,
@@ -40,6 +44,7 @@ data class PrivacySettings(
 /**
  * A peer friend added via Friend Code; presence & reading/media info synced directly over internet P2P relay.
  */
+@Immutable
 data class FriendPeer(
     val peerCode: String,
     val displayName: String,
@@ -54,6 +59,7 @@ data class FriendPeer(
     val unreadCount: Int = 0
 )
 
+@Immutable
 data class FriendChatMessage(
     val id: String,
     val friendCode: String,

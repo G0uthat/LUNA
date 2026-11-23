@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.map
 
 class FolioRepository(private val dao: FolioDao) {
 
-    val documents: Flow<List<DocumentEntity>> = dao.observeAllDocuments()
+    val documents: Flow<List<LibraryDocumentItem>> = dao.observeLibraryDocuments()
     val playlists: Flow<List<PlaylistEntity>> = dao.observeAllPlaylists()
     val playlistRefs: Flow<List<PlaylistDocumentCrossRef>> = dao.observeAllPlaylistRefs()
     val dictionarySources: Flow<List<DictionarySourceEntity>> = dao.observeDictionarySources()
@@ -44,7 +44,11 @@ class FolioRepository(private val dao: FolioDao) {
         }
     }
 
-    suspend fun getAllDocumentsOnce(): List<DocumentEntity> = dao.getAllDocumentsOnce()
+    suspend fun getDocumentsForCoverCheck(): List<DocumentCoverCheckItem> =
+        dao.getDocumentsForCoverCheck()
+
+    suspend fun getDocumentSynopsis(id: Long): String =
+        dao.getDocumentSynopsis(id).orEmpty()
 
     suspend fun getDocumentCount(): Int = dao.getDocumentCount()
 

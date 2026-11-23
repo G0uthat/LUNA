@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -58,7 +59,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -146,15 +146,20 @@ fun LumaFloatingDropdownDialog(
             dialogWindow?.setDimAmount(0f)
         }
 
-        val screenHeightDp = LocalConfiguration.current.screenHeightDp.dp
-        val maxCardHeight = (screenHeightDp * maxHeightFraction).coerceAtLeast(260.dp)
         val capsuleShape = RoundedCornerShape(32.dp)
         val dialogContext = LocalContext.current
         val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
         val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
         val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val isCompactHeight = this.maxHeight < 500.dp
+            val effectiveHeightFraction = if (isCompactHeight) maxOf(maxHeightFraction, 0.92f) else maxHeightFraction
+            val maxCardHeight = (this.maxHeight * effectiveHeightFraction).coerceAtLeast(220.dp)
+            val effectiveMaxWidth = if (isCompactHeight) maxOf(maxWidth, 560.dp) else maxWidth
+            val outerVerticalPad = if (isCompactHeight) 8.dp else 18.dp
+            val outerHorizontalPad = if (isCompactHeight) 14.dp else 16.dp
+
             // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay (stronger for mandatory blockers)
             AnimatedVisibility(
                 visible = isVisible,
@@ -174,7 +179,7 @@ fun LumaFloatingDropdownDialog(
                 )
             }
 
-            // Floating dropdown card with comfortable breathing space all around
+            // Floating dropdown card with comfortable breathing space all around (adapts to landscape cleanly)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -182,7 +187,7 @@ fun LumaFloatingDropdownDialog(
                     .statusBarsPadding()
                     .navigationBarsPadding()
                     .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 18.dp),
+                    .padding(horizontal = outerHorizontalPad, vertical = outerVerticalPad),
                 contentAlignment = alignment
             ) {
                 AnimatedVisibility(
@@ -207,7 +212,7 @@ fun LumaFloatingDropdownDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .widthIn(max = maxWidth)
+                            .widthIn(max = effectiveMaxWidth)
                             .heightIn(max = maxCardHeight)
                             .shadow(
                                 elevation = if (palette.isDark) 20.dp else 16.dp,

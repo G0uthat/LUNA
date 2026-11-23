@@ -83,6 +83,8 @@ import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.launch
 
+private val BatteryPillShape = RoundedCornerShape(50)
+
 /**
  * Ultra-minimal, distraction-free battery-only indicator shown in the reader while
  * Android's system status bar & notification icons are hidden.
@@ -90,7 +92,8 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun ReaderBatteryOnlyIndicator(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
     val palette = LocalFolioPalette.current
     val battery by DynamicIslandEventManager.batteryState.collectAsStateWithLifecycle()
@@ -100,13 +103,15 @@ fun ReaderBatteryOnlyIndicator(
     val fillColor = when {
         isCharging -> Color(0xFF22C55E)
         batteryPct <= 15 -> Color(0xFFEF4444)
-        else -> palette.ink.copy(alpha = 0.74f)
+        else -> palette.ink.copy(alpha = 0.78f)
     }
-    val outlineColor = palette.ink.copy(alpha = 0.52f)
+    val outlineColor = palette.ink.copy(alpha = 0.54f)
 
     Row(
         modifier = modifier
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .then(
+                if (compact) Modifier else Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+            )
             .testTag("reader_battery_only_indicator"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
@@ -114,11 +119,13 @@ fun ReaderBatteryOnlyIndicator(
         Text(
             text = "$batteryPct%",
             fontSize = 10.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = if (!isCharging && batteryPct <= 15) Color(0xFFEF4444) else palette.ink.copy(alpha = 0.68f)
+            fontWeight = FontWeight.Bold,
+            color = if (!isCharging && batteryPct <= 15) Color(0xFFEF4444) else palette.ink.copy(alpha = 0.80f),
+            maxLines = 1,
+            softWrap = false
         )
         Box(
-            modifier = Modifier.size(width = 22.dp, height = 11.dp),
+            modifier = Modifier.size(width = 21.dp, height = 10.5.dp),
             contentAlignment = Alignment.CenterStart
         ) {
             Canvas(modifier = Modifier.matchParentSize()) {
@@ -162,6 +169,28 @@ fun ReaderBatteryOnlyIndicator(
                 modifier = Modifier.size(12.dp)
             )
         }
+    }
+}
+
+/**
+ * Self-contained floating capsule bubble for battery telemetry that matches the reader top bar
+ * aesthetic and sits beside other floating pills with zero overlap.
+ */
+@Composable
+fun ReaderBatteryPillBubble(
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalFolioPalette.current
+    Box(
+        modifier = modifier
+            .shadow(8.dp, BatteryPillShape, ambientColor = Color.Black.copy(alpha = 0.22f))
+            .clip(BatteryPillShape)
+            .background(palette.surface.copy(alpha = 0.96f))
+            .border(1.dp, palette.border, BatteryPillShape)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        ReaderBatteryOnlyIndicator(compact = true)
     }
 }
 
@@ -499,25 +528,26 @@ private fun DynamicIslandEventPillCard(
 }
 
 /**
- * Isolated GPU-composited pulsing dot so the parent Dynamic Island card NEVER recomposes at 60-120Hz.
+ * Isolated GPU-composited pulsing dot so the parent Dynamic Island card NEVER recomposes at 60-120Hz,
+ * and pauses immediately when backgrounded or offscreen.
  */
 @Composable
 private fun PulsingCriticalDot(color: Color) {
     val motion = LocalLumaMotion.current
-    val pulseTransition = rememberInfiniteTransition(label = "island_critical_pulse")
-    val dotAlpha by pulseTransition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(motion.ambientDuration(720), easing = motion.standardEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "island_critical_dot_alpha"
-    )
+    val isResumed = rememberIsLifecycleResumed()
+    val alphaAnim = remember { Animatable(0.35f) }
+    LaunchedEffect(isResumed, motion.effectiveHz) {
+        if (!isResumed) return@LaunchedEffect
+        val dur = motion.ambientDuration(720)
+        while (true) {
+            alphaAnim.animateTo(1f, animationSpec = tween(dur, easing = motion.standardEasing))
+            alphaAnim.animateTo(0.35f, animationSpec = tween(dur, easing = motion.standardEasing))
+        }
+    }
     Box(
         modifier = Modifier
             .size(6.dp)
-            .graphicsLayer { alpha = dotAlpha }
+            .graphicsLayer { alpha = alphaAnim.value }
             .clip(CircleShape)
             .background(color)
     )

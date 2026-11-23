@@ -1,8 +1,6 @@
 package com.example.ui.components
 
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,12 +39,17 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
 
+private val ChipShape = RoundedCornerShape(18.dp)
+private val IconButtonShape = RoundedCornerShape(15.dp)
+
 /**
  * Soft tactile button with gentle spring press depth and rounded geometry.
+ * Reads press offset inside Modifier.offset { } (layout phase only — zero recompositions per press frame).
  */
 @Composable
 fun TactileButton(
@@ -65,7 +68,7 @@ fun TactileButton(
     val motion = LocalLumaMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
-    val pressOffset by animateDpAsState(
+    val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed && enabled) lipDepth else 0.dp,
         animationSpec = motion.tactileSpring(),
         label = "tactile_press_offset"
@@ -73,7 +76,7 @@ fun TactileButton(
 
     val actualBg = if (enabled) containerColor else containerColor.copy(alpha = 0.45f)
     val actualShadow = if (enabled) shadowColor.copy(alpha = 0.72f) else shadowColor.copy(alpha = 0.28f)
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
 
     Box(
         modifier = modifier
@@ -83,7 +86,7 @@ fun TactileButton(
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .offset(y = lipDepth)
+                .offset { IntOffset(0, lipDepth.roundToPx()) }
                 .clip(shape)
                 .background(actualShadow)
         )
@@ -91,7 +94,7 @@ fun TactileButton(
             modifier = Modifier
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = 48.dp)
-                .offset(y = pressOffset)
+                .offset { IntOffset(0, pressOffsetState.value.roundToPx()) }
                 .clip(shape)
                 .background(actualBg)
                 .then(
@@ -125,7 +128,7 @@ fun TactileChip(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val lip = 2.dp
-    val pressOffset by animateDpAsState(
+    val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed) lip else 0.dp,
         animationSpec = motion.tactileSpring(),
         label = "chip_offset"
@@ -134,23 +137,22 @@ fun TactileChip(
     val shadow = if (selected) palette.accentShadow.copy(alpha = 0.7f) else palette.borderShadow.copy(alpha = 0.65f)
     val textColor = if (selected) palette.onAccent else palette.ink
     val border = if (selected) palette.accent else palette.border
-    val shape = RoundedCornerShape(18.dp)
 
     Box(modifier = modifier.padding(bottom = lip)) {
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .offset(y = lip)
-                .clip(shape)
+                .offset { IntOffset(0, lip.roundToPx()) }
+                .clip(ChipShape)
                 .background(shadow)
         )
         Row(
             modifier = Modifier
                 .defaultMinSize(minHeight = 40.dp)
-                .offset(y = pressOffset)
-                .clip(shape)
+                .offset { IntOffset(0, pressOffsetState.value.roundToPx()) }
+                .clip(ChipShape)
                 .background(bg)
-                .border(1.dp, border, shape)
+                .border(1.dp, border, ChipShape)
                 .clickable(
                     interactionSource = interactionSource,
                     indication = ripple(),
@@ -197,7 +199,7 @@ fun TactileIconButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val lip = 2.dp
-    val pressOffset by animateDpAsState(
+    val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed) lip else 0.dp,
         animationSpec = motion.tactileSpring(),
         label = "icon_btn_offset"
@@ -205,23 +207,22 @@ fun TactileIconButton(
     val bg = containerColor ?: if (selected) palette.accent else palette.surface
     val shadow = if (selected) palette.accentShadow.copy(alpha = 0.7f) else palette.borderShadow.copy(alpha = 0.6f)
     val fg = contentColor ?: if (selected) palette.onAccent else palette.ink
-    val shape = RoundedCornerShape(15.dp)
 
     Box(modifier = modifier.padding(bottom = lip)) {
         Box(
             modifier = Modifier
                 .size(size)
-                .offset(y = lip)
-                .clip(shape)
+                .offset { IntOffset(0, lip.roundToPx()) }
+                .clip(IconButtonShape)
                 .background(shadow)
         )
         Box(
             modifier = Modifier
                 .size(size)
-                .offset(y = pressOffset)
-                .clip(shape)
+                .offset { IntOffset(0, pressOffsetState.value.roundToPx()) }
+                .clip(IconButtonShape)
                 .background(bg)
-                .border(1.dp, if (selected) palette.accent else palette.border, shape)
+                .border(1.dp, if (selected) palette.accent else palette.border, IconButtonShape)
                 .clickable(
                     interactionSource = interactionSource,
                     indication = ripple(),
@@ -253,25 +254,25 @@ fun TactileCard(
     val motion = LocalLumaMotion.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
-    val pressOffset by animateDpAsState(
+    val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed && onClick != null) lipDepth * 0.7f else 0.dp,
         animationSpec = motion.tactileSpring(),
         label = "card_offset"
     )
-    val shape = RoundedCornerShape(cornerRadius)
+    val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
 
     Box(modifier = modifier.padding(bottom = lipDepth)) {
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .offset(y = lipDepth)
+                .offset { IntOffset(0, lipDepth.roundToPx()) }
                 .clip(shape)
                 .background(shadowColor)
         )
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .offset(y = pressOffset)
+                .offset { IntOffset(0, pressOffsetState.value.roundToPx()) }
                 .clip(shape)
                 .background(containerColor)
                 .border(1.dp, borderColor, shape)

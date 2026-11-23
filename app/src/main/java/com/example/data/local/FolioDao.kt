@@ -9,17 +9,32 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface FolioDao {
-    // Documents
-    @Query("SELECT * FROM documents ORDER BY lastOpenedAt DESC")
-    fun observeAllDocuments(): Flow<List<DocumentEntity>>
+    // Documents — lightweight projection for Library listing (omits heavy synopsis & unused columns)
+    @Query(
+        "SELECT id, title, author, format, filePath, coverImagePath, progressPercent, " +
+            "totalWords, coverColorHex, badgeTag, genre, publisherYear, lastOpenedAt " +
+            "FROM documents ORDER BY lastOpenedAt DESC"
+    )
+    fun observeLibraryDocuments(): Flow<List<LibraryDocumentItem>>
 
-    @Query("SELECT * FROM documents ORDER BY lastOpenedAt DESC")
-    suspend fun getAllDocumentsOnce(): List<DocumentEntity>
+    // Minimal projection for background cover integrity check
+    @Query(
+        "SELECT id, title, author, format, filePath, coverImagePath, coverColorHex " +
+            "FROM documents ORDER BY lastOpenedAt DESC"
+    )
+    suspend fun getDocumentsForCoverCheck(): List<DocumentCoverCheckItem>
+
+    @Query("SELECT synopsis FROM documents WHERE id = :id LIMIT 1")
+    suspend fun getDocumentSynopsis(id: Long): String?
 
     @Query("SELECT COUNT(*) FROM documents")
     suspend fun getDocumentCount(): Int
 
-    @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
+    @Query(
+        "SELECT id, title, author, format, filePath, coverImagePath, totalUnits, currentUnit, " +
+            "progressPercent, totalWords, coverColorHex, badgeTag, genre, publisherYear, " +
+            "synopsis, lastOpenedAt, addedAt FROM documents WHERE id = :id LIMIT 1"
+    )
     suspend fun getDocumentById(id: Long): DocumentEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -49,10 +64,10 @@ interface FolioDao {
     suspend fun deleteDocumentById(id: Long)
 
     // Playlists (Spotify-style book collections / sagas)
-    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    @Query("SELECT id, name, description, accentColorHex, createdAt FROM playlists ORDER BY createdAt DESC")
     fun observeAllPlaylists(): Flow<List<PlaylistEntity>>
 
-    @Query("SELECT * FROM playlist_documents")
+    @Query("SELECT playlistId, documentId, addedAt FROM playlist_documents")
     fun observeAllPlaylistRefs(): Flow<List<PlaylistDocumentCrossRef>>
 
     @Query("SELECT COUNT(*) FROM playlists")
@@ -71,10 +86,18 @@ interface FolioDao {
     suspend fun removeDocumentFromPlaylist(playlistId: Long, documentId: Long)
 
     // Highlights & Notes
-    @Query("SELECT * FROM highlights_notes WHERE documentId = :documentId ORDER BY chapterIndex ASC, blockIndex ASC, startChar ASC")
+    @Query(
+        "SELECT id, documentId, locationKey, chapterIndex, blockIndex, startChar, endChar, " +
+            "quotedText, colorArgb, noteText, createdAt FROM highlights_notes " +
+            "WHERE documentId = :documentId ORDER BY chapterIndex ASC, blockIndex ASC, startChar ASC"
+    )
     fun observeHighlights(documentId: Long): Flow<List<HighlightNoteEntity>>
 
-    @Query("SELECT * FROM highlights_notes WHERE documentId = :documentId")
+    @Query(
+        "SELECT id, documentId, locationKey, chapterIndex, blockIndex, startChar, endChar, " +
+            "quotedText, colorArgb, noteText, createdAt FROM highlights_notes " +
+            "WHERE documentId = :documentId"
+    )
     suspend fun getHighlightsOnce(documentId: Long): List<HighlightNoteEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -87,7 +110,10 @@ interface FolioDao {
     suspend fun deleteHighlight(id: Long)
 
     // Bookmarks
-    @Query("SELECT * FROM bookmarks WHERE documentId = :documentId ORDER BY unitIndex ASC, createdAt DESC")
+    @Query(
+        "SELECT id, documentId, locationKey, unitIndex, label, createdAt FROM bookmarks " +
+            "WHERE documentId = :documentId ORDER BY unitIndex ASC, createdAt DESC"
+    )
     fun observeBookmarks(documentId: Long): Flow<List<BookmarkEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -100,10 +126,10 @@ interface FolioDao {
     suspend fun deleteBookmarkByLocation(documentId: Long, locationKey: String)
 
     // Drawing Layers
-    @Query("SELECT * FROM drawing_layers WHERE documentId = :documentId")
+    @Query("SELECT documentId, locationKey, strokesJson, updatedAt FROM drawing_layers WHERE documentId = :documentId")
     fun observeDrawingLayers(documentId: Long): Flow<List<DrawingLayerEntity>>
 
-    @Query("SELECT * FROM drawing_layers WHERE documentId = :documentId")
+    @Query("SELECT documentId, locationKey, strokesJson, updatedAt FROM drawing_layers WHERE documentId = :documentId")
     suspend fun getDrawingLayersOnce(documentId: Long): List<DrawingLayerEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -113,17 +139,17 @@ interface FolioDao {
     suspend fun deleteDrawingLayer(documentId: Long, locationKey: String)
 
     // OCR Cache
-    @Query("SELECT * FROM ocr_page_cache WHERE documentId = :documentId")
+    @Query("SELECT documentId, pageIndex, ocrJson, updatedAt FROM ocr_page_cache WHERE documentId = :documentId")
     fun observeOcrPages(documentId: Long): Flow<List<OcrPageCacheEntity>>
 
-    @Query("SELECT * FROM ocr_page_cache WHERE documentId = :documentId")
+    @Query("SELECT documentId, pageIndex, ocrJson, updatedAt FROM ocr_page_cache WHERE documentId = :documentId")
     suspend fun getOcrPagesOnce(documentId: Long): List<OcrPageCacheEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertOcrPage(entity: OcrPageCacheEntity)
 
     // Dictionary Sources
-    @Query("SELECT * FROM dictionary_sources ORDER BY sortOrder ASC, id ASC")
+    @Query("SELECT id, name, urlTemplate, isWikipediaApi, isEnabled, sortOrder FROM dictionary_sources ORDER BY sortOrder ASC, id ASC")
     fun observeDictionarySources(): Flow<List<DictionarySourceEntity>>
 
     @Query("SELECT COUNT(*) FROM dictionary_sources")

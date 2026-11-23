@@ -1,7 +1,6 @@
 package com.example.engine
 
 import android.content.Context
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -530,7 +529,11 @@ object MergedDocumentExporter {
                 if (hasImages) {
                     val imgPath = slide.imagePaths.first()
                     runCatching {
-                        val bmp = BitmapFactory.decodeFile(imgPath)
+                        val bmp = BitmapDecodeUtils.decodeSampledFile(
+                            path = imgPath,
+                            reqWidth = (pageWidth * 2).coerceIn(480, 1600),
+                            reqHeight = (pageHeight * 2).coerceIn(480, 1600)
+                        )
                         if (bmp != null) {
                             val destRect = if (pageWidth > pageHeight) {
                                 val left = marginX + textAreaWidth + marginX * 0.5f
@@ -590,7 +593,11 @@ object MergedDocumentExporter {
 
         slide.backgroundImagePath?.let { path ->
             runCatching {
-                val bmp = BitmapFactory.decodeFile(path)
+                val bmp = BitmapDecodeUtils.decodeSampledFile(
+                    path = path,
+                    reqWidth = (pageWidth.toInt() * 2).coerceIn(640, 1600),
+                    reqHeight = (pageHeight.toInt() * 2).coerceIn(480, 1600)
+                )
                 if (bmp != null) {
                     canvas.drawBitmap(bmp, null, RectF(0f, 0f, pageWidth, pageHeight), Paint(Paint.FILTER_BITMAP_FLAG))
                     bmp.recycle()
@@ -611,7 +618,11 @@ object MergedDocumentExporter {
             when (el) {
                 is SlideElement.Picture -> {
                     runCatching {
-                        val bmp = BitmapFactory.decodeFile(el.imagePath)
+                        val bmp = BitmapDecodeUtils.decodeSampledFile(
+                            path = el.imagePath,
+                            reqWidth = (width.toInt() * 2).coerceIn(240, 1440),
+                            reqHeight = (height.toInt() * 2).coerceIn(240, 1440)
+                        )
                         if (bmp != null) {
                             canvas.save()
                             if (el.rotationDeg != 0f) {

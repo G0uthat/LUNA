@@ -9,8 +9,12 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
 
@@ -20,17 +24,26 @@ object OcrEngine {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
 
+    // Single-flight lock: prevents parallel ML Kit invocations from saturating CPU/GPU during navigation
+    private val ocrMutex = Mutex()
+
     /**
-     * Runs on-device ML Kit OCR, clusters nearby lines/blocks inside the same speech bubble
-     * so translations NEVER split or overlap awkwardly, and samples the actual speech-bubble
-     * background & contrasting ink color for seamless borderless lettering!
+     * Runs on-device ML Kit OCR (strictly single-flight via [ocrMutex]), clusters nearby lines/blocks
+     * inside the same speech bubble so translations NEVER split or overlap awkwardly, and samples the
+     * actual speech-bubble background & contrasting ink color for seamless borderless lettering.
      */
     suspend fun recognizePage(bitmap: Bitmap, pageIndex: Int): OcrPageResult =
-        withContext(Dispatchers.Default) {
-            val w = bitmap.width.toFloat().coerceAtLeast(1f)
-            val h = bitmap.height.toFloat().coerceAtLeast(1f)
-            val inputImage = InputImage.fromBitmap(bitmap, 0)
-            val visionText = recognizer.process(inputImage).await()
+        ocrMutex.withLock {
+            withContext(Dispatchers.Default) {
+                coroutineContext.ensureActive()
+                if (bitmap.isRecycled) {
+                    return@withContext OcrPageResult(pageIndex = pageIndex, blocks = emptyList(), isTranslated = false)
+                }
+                val w = bitmap.width.toFloat().coerceAtLeast(1f)
+                val h = bitmap.height.toFloat().coerceAtLeast(1f)
+                val inputImage = InputImage.fromBitmap(bitmap, 0)
+                val visionText = recognizer.process(inputImage).await()
+                coroutineContext.ensureActive()
 
             val rawBlocks = visionText.textBlocks.mapNotNull { block ->
                 val rect = block.boundingBox ?: return@mapNotNull null
@@ -102,11 +115,12 @@ object OcrEngine {
                 )
             }
 
-            OcrPageResult(
-                pageIndex = pageIndex,
-                blocks = finalBlocks,
-                isTranslated = false
-            )
+                OcrPageResult(
+                    pageIndex = pageIndex,
+                    blocks = finalBlocks,
+                    isTranslated = false
+                )
+            }
         }
 
     private data class MutableCluster(

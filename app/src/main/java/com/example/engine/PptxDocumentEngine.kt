@@ -510,8 +510,8 @@ object PptxDocumentEngine {
     private fun readXmlDoc(zip: ZipFile, path: String): Document? {
         val entry = zip.getEntry(path) ?: zip.getEntry(path.removePrefix("/")) ?: return null
         return runCatching {
-            zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { reader ->
-                Jsoup.parse(reader.readText(), "", Parser.xmlParser())
+            zip.getInputStream(entry).buffered(16 * 1024).use { stream ->
+                Jsoup.parse(stream, "UTF-8", "", Parser.xmlParser())
             }
         }.getOrNull()
     }

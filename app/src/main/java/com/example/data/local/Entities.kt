@@ -1,19 +1,28 @@
 package com.example.data.local
 
+import androidx.compose.runtime.Immutable
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "documents")
+@Immutable
+@Entity(
+    tableName = "documents",
+    indices = [
+        Index(value = ["lastOpenedAt"]),
+        Index(value = ["format"]),
+        Index(value = ["addedAt"])
+    ]
+)
 data class DocumentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
     val author: String,
-    val format: String, // EPUB, PDF, DOCX, TXT, FB2
+    val format: String, // EPUB, PDF, DOCX, PPTX, TXT, FB2
     val filePath: String,
     val coverImagePath: String = "",
-    val totalUnits: Int, // chapters or PDF pages
+    val totalUnits: Int, // chapters, slides, or PDF pages
     val currentUnit: Int = 0,
     val progressPercent: Float = 0f,
     val totalWords: Int = 0,
@@ -26,7 +35,46 @@ data class DocumentEntity(
     val addedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "playlists")
+/**
+ * Lightweight Room projection for LibraryScreen cards, Continue Reading hero, search & series.
+ * Intentionally omits heavy text columns like `synopsis` (loaded on-demand only when opening
+ * book options / metadata editor) and avoids `SELECT *`.
+ */
+@Immutable
+data class LibraryDocumentItem(
+    val id: Long,
+    val title: String,
+    val author: String,
+    val format: String,
+    val filePath: String,
+    val coverImagePath: String,
+    val progressPercent: Float,
+    val totalWords: Int,
+    val coverColorHex: Long,
+    val badgeTag: String,
+    val genre: String,
+    val publisherYear: String,
+    val lastOpenedAt: Long
+)
+
+/**
+ * Minimal Room projection used solely during background cover verification.
+ */
+data class DocumentCoverCheckItem(
+    val id: Long,
+    val title: String,
+    val author: String,
+    val format: String,
+    val filePath: String,
+    val coverImagePath: String,
+    val coverColorHex: Long
+)
+
+@Immutable
+@Entity(
+    tableName = "playlists",
+    indices = [Index(value = ["createdAt"])]
+)
 data class PlaylistEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
@@ -60,6 +108,7 @@ data class PlaylistDocumentCrossRef(
     val addedAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 @Entity(
     tableName = "highlights_notes",
     foreignKeys = [
@@ -70,7 +119,11 @@ data class PlaylistDocumentCrossRef(
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index("documentId"), Index("locationKey")]
+    indices = [
+        Index("documentId"),
+        Index("locationKey"),
+        Index(value = ["documentId", "chapterIndex", "blockIndex", "startChar"])
+    ]
 )
 data class HighlightNoteEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -86,6 +139,7 @@ data class HighlightNoteEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Immutable
 @Entity(
     tableName = "bookmarks",
     foreignKeys = [
@@ -96,7 +150,11 @@ data class HighlightNoteEntity(
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index("documentId")]
+    indices = [
+        Index("documentId"),
+        Index(value = ["documentId", "unitIndex", "createdAt"]),
+        Index(value = ["documentId", "locationKey"])
+    ]
 )
 data class BookmarkEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -147,7 +205,11 @@ data class OcrPageCacheEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "dictionary_sources")
+@Immutable
+@Entity(
+    tableName = "dictionary_sources",
+    indices = [Index(value = ["sortOrder", "id"])]
+)
 data class DictionarySourceEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,

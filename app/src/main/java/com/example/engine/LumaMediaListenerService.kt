@@ -13,17 +13,20 @@ import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.view.KeyEvent
+import androidx.compose.runtime.Immutable
 import androidx.core.app.NotificationManagerCompat
 import com.example.data.model.MediaPlaybackInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+@Immutable
 data class IncomingAppNotification(
     val id: Long = System.nanoTime(),
     val key: String,
@@ -48,12 +51,17 @@ class LumaMediaListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        connectedInstance = java.lang.ref.WeakReference(this)
+        // Snapshot already-present notifications immediately so re-deliveries never flood the Dynamic Island
+        val current = runCatching { activeNotifications }.getOrNull()
+        DynamicIslandEventManager.seedPreExistingNotifications(current)
         SystemMediaController.bindActiveSessions(applicationContext)
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        SystemMediaController.refreshPermissionStatus(applicationContext)
+        connectedInstance = null
+        SystemMediaController.onServiceDisconnected(applicationContext)
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -67,11 +75,28 @@ class LumaMediaListenerService : NotificationListenerService() {
         if (sbn == null) return
         DynamicIslandEventManager.onSystemNotificationRemoved(sbn)
     }
+
+    companion object {
+        @Volatile
+        private var connectedInstance: java.lang.ref.WeakReference<LumaMediaListenerService>? = null
+
+        internal fun snapshotActiveNotifications(): Array<StatusBarNotification>? {
+            val service = connectedInstance?.get() ?: return null
+            return runCatching { service.activeNotifications }.getOrNull()
+        }
+    }
 }
 
 /**
  * Real-time Android MediaSession controller with graceful AudioManager media-key fallback.
- * External app notifications are handled centrally by [DynamicIslandEventManager].
+ *
+ * Lifecycle & power guarantees:
+ * - Holds ONLY `applicationContext` (never an Activity).
+ * - `progressTicker` runs ONLY while the app is foreground, the screen is interactive, the reader
+ *   is open, AND an active media session is playing with remaining duration (or in fallback mode
+ *   while the reader is open).
+ * - Stops immediately when paused, stopped, screen off, backgrounded, or reader closed.
+ * - Deduplicates all `_mediaState` updates so UI collectors never recompose without real changes.
  */
 object SystemMediaController {
 
@@ -79,6 +104,7 @@ object SystemMediaController {
     val mediaState: StateFlow<MediaPlaybackInfo> = _mediaState.asStateFlow()
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile
     private var appContext: Context? = null
     private var sessionManager: MediaSessionManager? = null
     private var activeController: MediaController? = null
@@ -105,44 +131,96 @@ object SystemMediaController {
 
     private var tickerRunning = false
     @Volatile
-    private var isForegroundActive = true
+    private var isForegroundActive = false
+    @Volatile
+    private var isReaderActive = false
 
     fun setForegroundActive(active: Boolean) {
+        if (isForegroundActive == active) return
         isForegroundActive = active
-        if (active) {
-            if (!tickerRunning && appContext != null) {
-                tickerRunning = true
-                mainHandler.postDelayed(progressTicker, 600L)
-            }
+        mainHandler.post { updateTickerState() }
+    }
+
+    fun setReaderActive(active: Boolean) {
+        if (isReaderActive == active) return
+        isReaderActive = active
+        mainHandler.post { updateTickerState() }
+    }
+
+    private fun isScreenInteractive(context: Context?): Boolean {
+        val pm = context?.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return true
+        return runCatching { pm.isInteractive }.getOrDefault(true)
+    }
+
+    private fun shouldTickNow(): Boolean {
+        val ctx = appContext ?: return false
+        if (!isForegroundActive || !isReaderActive) return false
+        if (!isScreenInteractive(ctx)) return false
+        val current = _mediaState.value
+        return if (current.isNotificationAccessGranted) {
+            current.hasActiveSession &&
+                current.isPlaying &&
+                current.durationMs > 0L &&
+                current.positionMs < current.durationMs
         } else {
+            // Fallback AudioManager polling only while reader is actively visible on screen
+            true
+        }
+    }
+
+    private fun updateTickerState() {
+        if (shouldTickNow()) {
+            if (!tickerRunning) {
+                tickerRunning = true
+                val delayMs = if (_mediaState.value.isNotificationAccessGranted) 1000L else 1500L
+                mainHandler.postDelayed(progressTicker, delayMs)
+            }
+        } else if (tickerRunning) {
             tickerRunning = false
             mainHandler.removeCallbacks(progressTicker)
         }
     }
 
+    private fun stopTicker() {
+        tickerRunning = false
+        mainHandler.removeCallbacks(progressTicker)
+    }
+
     private val progressTicker = object : Runnable {
         override fun run() {
-            if (!isForegroundActive) {
+            if (!shouldTickNow()) {
                 tickerRunning = false
                 return
             }
             val ctx = appContext
             val current = _mediaState.value
             if (current.isNotificationAccessGranted) {
-                if (current.hasActiveSession && current.isPlaying && current.durationMs > 0L) {
-                    val now = SystemClock.elapsedRealtime()
-                    val elapsed = (now - current.lastUpdatedRealtimeMs).coerceAtLeast(0L)
-                    val projected = (current.positionMs + elapsed).coerceAtMost(current.durationMs)
+                val now = SystemClock.elapsedRealtime()
+                val elapsed = (now - current.lastUpdatedRealtimeMs).coerceAtLeast(0L)
+                val projected = (current.positionMs + elapsed).coerceAtMost(current.durationMs)
+                if (projected != current.positionMs) {
                     _mediaState.value = current.copy(
                         positionMs = projected,
                         lastUpdatedRealtimeMs = now
                     )
                 }
+                if (projected >= current.durationMs) {
+                    tickerRunning = false
+                    return
+                }
             } else if (ctx != null) {
                 pollAudioManagerFallback(ctx)
             }
-            if (isForegroundActive) {
-                mainHandler.postDelayed(this, 1000L)
+
+            if (shouldTickNow()) {
+                val nextIntervalMs = if (_mediaState.value.isNotificationAccessGranted) {
+                    1000L
+                } else if (_mediaState.value.isPlaying) {
+                    1200L
+                } else {
+                    2500L
+                }
+                mainHandler.postDelayed(this, nextIntervalMs)
             } else {
                 tickerRunning = false
             }
@@ -157,10 +235,14 @@ object SystemMediaController {
             lastFallbackAudioActiveMs = now
         }
         val recentlyPaused = lastFallbackAudioActiveMs > 0L && (now - lastFallbackAudioActiveMs) <= 120_000L
+        val prev = _mediaState.value
         if (activeNow || recentlyPaused) {
-            val prev = _mediaState.value
             val nextTitle = if (activeNow) "Reproduciendo audio" else "Audio en pausa"
-            if (!prev.hasActiveSession || prev.isPlaying != activeNow || prev.title != nextTitle) {
+            if (!prev.hasActiveSession ||
+                prev.isNotificationAccessGranted ||
+                prev.isPlaying != activeNow ||
+                prev.title != nextTitle
+            ) {
                 _mediaState.value = MediaPlaybackInfo(
                     isNotificationAccessGranted = false,
                     hasActiveSession = true,
@@ -171,7 +253,7 @@ object SystemMediaController {
                     lastUpdatedRealtimeMs = now
                 )
             }
-        } else if (_mediaState.value.hasActiveSession) {
+        } else if (prev.hasActiveSession || prev.isNotificationAccessGranted) {
             _mediaState.value = MediaPlaybackInfo(
                 isNotificationAccessGranted = false,
                 hasActiveSession = false
@@ -180,21 +262,39 @@ object SystemMediaController {
     }
 
     fun start(context: Context) {
-        appContext = context.applicationContext
-        if (!tickerRunning) {
-            tickerRunning = true
-            mainHandler.postDelayed(progressTicker, 1000L)
+        val ctx = context.applicationContext
+        appContext = ctx
+        bindActiveSessions(ctx)
+        mainHandler.post { updateTickerState() }
+    }
+
+    internal fun onServiceDisconnected(context: Context) {
+        mainHandler.post {
+            stopTicker()
+            detachController()
+            if (sessionsListenerRegistered) {
+                runCatching { sessionManager?.removeOnActiveSessionsChangedListener(activeSessionsListener) }
+                sessionsListenerRegistered = false
+            }
         }
-        bindActiveSessions(context.applicationContext)
+        refreshPermissionStatus(context.applicationContext)
     }
 
     fun refreshPermissionStatus(context: Context) {
-        val granted = isNotificationListenerEnabled(context)
+        val ctx = context.applicationContext
+        val granted = isNotificationListenerEnabled(ctx)
         if (granted) {
-            bindActiveSessions(context.applicationContext)
+            bindActiveSessions(ctx)
         } else {
-            detachController()
-            pollAudioManagerFallback(context.applicationContext)
+            mainHandler.post {
+                detachController()
+                if (sessionsListenerRegistered) {
+                    runCatching { sessionManager?.removeOnActiveSessionsChangedListener(activeSessionsListener) }
+                    sessionsListenerRegistered = false
+                }
+            }
+            pollAudioManagerFallback(ctx)
+            mainHandler.post { updateTickerState() }
         }
     }
 
@@ -220,6 +320,7 @@ object SystemMediaController {
         val granted = isNotificationListenerEnabled(ctx)
         if (!granted) {
             pollAudioManagerFallback(ctx)
+            mainHandler.post { updateTickerState() }
             return
         }
 
@@ -236,7 +337,10 @@ object SystemMediaController {
             val controllers = mgr.getActiveSessions(component)
             selectBestController(controllers)
         }.onFailure {
-            _mediaState.value = _mediaState.value.copy(isNotificationAccessGranted = granted)
+            val prev = _mediaState.value
+            if (prev.isNotificationAccessGranted != granted) {
+                _mediaState.value = prev.copy(isNotificationAccessGranted = granted)
+            }
         }
     }
 
@@ -265,11 +369,15 @@ object SystemMediaController {
     private fun publishFromController(controller: MediaController?) {
         val ctx = appContext
         val granted = ctx != null && isNotificationListenerEnabled(ctx)
+        val prev = _mediaState.value
         if (controller == null) {
-            _mediaState.value = MediaPlaybackInfo(
-                isNotificationAccessGranted = granted,
-                hasActiveSession = false
-            )
+            if (prev.hasActiveSession || prev.isNotificationAccessGranted != granted) {
+                _mediaState.value = MediaPlaybackInfo(
+                    isNotificationAccessGranted = granted,
+                    hasActiveSession = false
+                )
+            }
+            mainHandler.post { updateTickerState() }
             return
         }
 
@@ -300,19 +408,37 @@ object SystemMediaController {
             rawPos
         }
 
-        _mediaState.value = MediaPlaybackInfo(
-            isNotificationAccessGranted = granted,
-            hasActiveSession = title.isNotBlank() || playback != null,
-            isPlaying = isPlaying,
-            title = title.ifBlank { friendlyApp.ifBlank { "Reproduciendo multimedia" } },
-            artist = artist,
-            appName = friendlyApp,
-            packageName = pkg,
-            albumArt = art,
-            positionMs = currentPos,
-            durationMs = duration,
-            lastUpdatedRealtimeMs = SystemClock.elapsedRealtime()
-        )
+        val resolvedTitle = title.ifBlank { friendlyApp.ifBlank { "Reproduciendo multimedia" } }
+        val resolvedHasSession = title.isNotBlank() || playback != null
+
+        // Deduplicate unchanged emissions so UI collectors never recompose without semantic delta
+        val unchanged = prev.isNotificationAccessGranted == granted &&
+            prev.hasActiveSession == resolvedHasSession &&
+            prev.isPlaying == isPlaying &&
+            prev.title == resolvedTitle &&
+            prev.artist == artist &&
+            prev.appName == friendlyApp &&
+            prev.packageName == pkg &&
+            prev.durationMs == duration &&
+            prev.albumArt === art &&
+            kotlin.math.abs(prev.positionMs - currentPos) < 500L
+
+        if (!unchanged) {
+            _mediaState.value = MediaPlaybackInfo(
+                isNotificationAccessGranted = granted,
+                hasActiveSession = resolvedHasSession,
+                isPlaying = isPlaying,
+                title = resolvedTitle,
+                artist = artist,
+                appName = friendlyApp,
+                packageName = pkg,
+                albumArt = art,
+                positionMs = currentPos,
+                durationMs = duration,
+                lastUpdatedRealtimeMs = SystemClock.elapsedRealtime()
+            )
+        }
+        mainHandler.post { updateTickerState() }
     }
 
     fun togglePlayPause(context: Context) {
@@ -347,12 +473,16 @@ object SystemMediaController {
 
     fun seekTo(positionMs: Long) {
         val ctrl = activeController ?: return
+        val clamped = positionMs.coerceAtLeast(0L)
         runCatching {
-            ctrl.transportControls.seekTo(positionMs.coerceAtLeast(0L))
-            _mediaState.value = _mediaState.value.copy(
-                positionMs = positionMs.coerceAtLeast(0L),
-                lastUpdatedRealtimeMs = SystemClock.elapsedRealtime()
-            )
+            ctrl.transportControls.seekTo(clamped)
+            val prev = _mediaState.value
+            if (prev.positionMs != clamped) {
+                _mediaState.value = prev.copy(
+                    positionMs = clamped,
+                    lastUpdatedRealtimeMs = SystemClock.elapsedRealtime()
+                )
+            }
         }
     }
 

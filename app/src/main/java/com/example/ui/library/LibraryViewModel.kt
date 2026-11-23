@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.DictionarySourceEntity
 import com.example.data.local.DocumentEntity
 import com.example.data.local.FolioRepository
+import com.example.data.local.LibraryDocumentItem
 import com.example.data.local.PlaylistDocumentCrossRef
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PreferencesRepository
@@ -25,7 +26,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,7 +38,8 @@ class LibraryViewModel(
     private val preferencesRepository: PreferencesRepository
 ) : AndroidViewModel(application) {
 
-    val documents: StateFlow<List<DocumentEntity>> = repository.documents.stateIn(
+    // Lightweight Room projection (omits synopsis & reader-only columns)
+    val documents: StateFlow<List<LibraryDocumentItem>> = repository.documents.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
@@ -56,11 +57,7 @@ class LibraryViewModel(
         initialValue = emptyList()
     )
 
-    val preferences: StateFlow<ReaderPreferences> = preferencesRepository.preferencesFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = ReaderPreferences()
-    )
+    val preferences: StateFlow<ReaderPreferences> = preferencesRepository.preferencesFlow
 
     val dictionarySources: StateFlow<List<DictionarySourceEntity>> = repository.dictionarySources.stateIn(
         scope = viewModelScope,
@@ -71,8 +68,8 @@ class LibraryViewModel(
     private val _isImporting = MutableStateFlow(false)
     val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
 
-    private val _preferencesLoaded = MutableStateFlow(false)
-    val preferencesLoaded: StateFlow<Boolean> = _preferencesLoaded.asStateFlow()
+    // Directly reflects DataStore initial load without waiting for sample seeding or cover verification
+    val preferencesLoaded: StateFlow<Boolean> = preferencesRepository.isLoaded
 
     private val _feedbackEvent = MutableStateFlow<LumaFeedbackEvent?>(null)
     val feedbackEvent: StateFlow<LumaFeedbackEvent?> = _feedbackEvent.asStateFlow()
@@ -87,10 +84,11 @@ class LibraryViewModel(
     )
 
     init {
-        viewModelScope.launch {
+        // Run all seeding, dictionary initialization, and file-system cover checks strictly on Dispatchers.IO
+        // so the first frame of LibraryScreen renders immediately with zero main-thread I/O.
+        viewModelScope.launch(Dispatchers.IO) {
             repository.ensureDefaultDictionarySources()
-            val currentPrefs = preferencesRepository.preferencesFlow.first()
-            _preferencesLoaded.value = true
+            val currentPrefs = preferencesRepository.awaitInitialPreferences()
             if (repository.getDocumentCount() == 0 ||
                 currentPrefs.seededSampleVersion < SampleLibraryGenerator.CURRENT_SAMPLE_VERSION
             ) {
@@ -101,6 +99,10 @@ class LibraryViewModel(
             }
             ensureAllCoversExist(silent = true)
         }
+    }
+
+    suspend fun loadDocumentSynopsis(id: Long): String = withContext(Dispatchers.IO) {
+        repository.getDocumentSynopsis(id)
     }
 
     fun clearFeedbackEvent() {
@@ -128,21 +130,21 @@ class LibraryViewModel(
     fun createPlaylist(name: String, description: String, accentColorHex: Long) {
         val cleanName = name.trim()
         if (cleanName.isEmpty()) return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.createPlaylist(cleanName, description.trim(), accentColorHex)
             emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
     fun deletePlaylist(playlist: PlaylistEntity) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.deletePlaylist(playlist.id)
             emitFeedback(LumaActionAnimType.DELETED)
         }
     }
 
     fun toggleBookInPlaylist(playlistId: Long, documentId: Long, currentlyInPlaylist: Boolean) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             if (currentlyInPlaylist) {
                 repository.removeBookFromPlaylist(playlistId, documentId)
             } else {
@@ -153,18 +155,17 @@ class LibraryViewModel(
 
     // Automatic cover extraction / generation for any books missing covers
     fun regenerateMissingCovers() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             ensureAllCoversExist(silent = false)
         }
     }
 
-    private suspend fun ensureAllCoversExist(silent: Boolean) {
+    private suspend fun ensureAllCoversExist(silent: Boolean) = withContext(Dispatchers.IO) {
         val context = getApplication<Application>()
-        val allDocs = repository.getAllDocumentsOnce()
-        var updatedCount = 0
+        val allDocs = repository.getDocumentsForCoverCheck()
         for (doc in allDocs) {
             val existing = doc.coverImagePath
-            if (existing.isNullOrBlank() || !File(existing).exists()) {
+            if (existing.isBlank() || !File(existing).exists()) {
                 val file = File(doc.filePath)
                 if (!file.exists()) continue
                 val format = DocumentFormat.fromExtension(doc.format) ?: DocumentFormat.EPUB
@@ -177,7 +178,6 @@ class LibraryViewModel(
                     accentColorHex = doc.coverColorHex
                 )
                 repository.updateDocumentCover(doc.id, coverPath)
-                updatedCount++
             }
         }
         if (!silent) {
@@ -186,7 +186,7 @@ class LibraryViewModel(
     }
 
     fun updateBookMetadata(
-        doc: DocumentEntity,
+        doc: LibraryDocumentItem,
         title: String,
         author: String,
         genre: String,
@@ -201,7 +201,7 @@ class LibraryViewModel(
         val cleanSynopsis = synopsis.trim()
         val cleanBadge = badgeTag.trim().ifEmpty { doc.badgeTag.ifBlank { doc.format } }
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.updateDocumentMetadata(
                 id = doc.id,
                 title = cleanTitle,
@@ -215,14 +215,14 @@ class LibraryViewModel(
         }
     }
 
-    fun updateBookCoverFromUri(doc: DocumentEntity, imageUri: Uri) {
-        viewModelScope.launch {
+    fun updateBookCoverFromUri(doc: LibraryDocumentItem, imageUri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
             val savedPath = CoverManager.saveCustomCoverFromUri(getApplication(), imageUri)
             if (savedPath != null) {
                 val oldPath = doc.coverImagePath
                 repository.updateDocumentCover(doc.id, savedPath)
                 if (oldPath.isNotBlank() && oldPath != savedPath) {
-                    withContext(Dispatchers.IO) { runCatching { File(oldPath).delete() } }
+                    runCatching { File(oldPath).delete() }
                 }
                 emitFeedback(LumaActionAnimType.UPDATED)
             } else {
@@ -231,8 +231,8 @@ class LibraryViewModel(
         }
     }
 
-    fun regenerateBookCover(doc: DocumentEntity) {
-        viewModelScope.launch {
+    fun regenerateBookCover(doc: LibraryDocumentItem) {
+        viewModelScope.launch(Dispatchers.IO) {
             val format = DocumentFormat.fromExtension(doc.format) ?: DocumentFormat.EPUB
             val newPath = CoverManager.regenerateArtisticCover(
                 context = getApplication(),
@@ -244,34 +244,36 @@ class LibraryViewModel(
             val oldPath = doc.coverImagePath
             repository.updateDocumentCover(doc.id, newPath)
             if (oldPath.isNotBlank() && oldPath != newPath) {
-                withContext(Dispatchers.IO) { runCatching { File(oldPath).delete() } }
+                runCatching { File(oldPath).delete() }
             }
             emitFeedback(LumaActionAnimType.UPDATED)
         }
     }
 
     fun addDictionarySource(name: String, urlTemplate: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.addDictionarySource(name, urlTemplate)
             emitFeedback(LumaActionAnimType.SAVED)
         }
     }
 
     fun toggleDictionarySource(source: DictionarySourceEntity) {
-        viewModelScope.launch { repository.toggleDictionarySource(source) }
+        viewModelScope.launch(Dispatchers.IO) { repository.toggleDictionarySource(source) }
     }
 
     fun deleteDictionarySource(id: Long) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             repository.deleteDictionarySource(id)
             emitFeedback(LumaActionAnimType.DELETED)
         }
     }
 
-    fun deleteDocument(doc: DocumentEntity) {
+    fun deleteDocument(doc: LibraryDocumentItem) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { File(doc.filePath).delete() }
-            doc.coverImagePath?.let { path -> runCatching { File(path).delete() } }
+            if (doc.coverImagePath.isNotBlank()) {
+                runCatching { File(doc.coverImagePath).delete() }
+            }
             repository.deleteDocument(doc.id)
             emitFeedback(LumaActionAnimType.DELETED)
         }
@@ -282,59 +284,61 @@ class LibraryViewModel(
             _isImporting.value = true
             try {
                 val context = getApplication<Application>()
-                val displayName = resolveDisplayName(uri) ?: "documento_${System.currentTimeMillis()}.epub"
+                val displayName = withContext(Dispatchers.IO) {
+                    resolveDisplayName(uri) ?: "documento_${System.currentTimeMillis()}.epub"
+                }
                 val format = detectFormat(displayName, context.contentResolver.getType(uri))
                 if (format == null) {
                     emitFeedback(LumaActionAnimType.ERROR, "Usa EPUB, PDF, DOCX, PPTX, TXT o FB2")
                     return@launch
                 }
 
-                val booksDir = File(context.filesDir, "books").apply { mkdirs() }
-                val safeName = "${System.currentTimeMillis()}_${displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
-                val destFile = File(booksDir, safeName)
+                val newId = withContext(Dispatchers.IO) {
+                    val booksDir = File(context.filesDir, "books").apply { mkdirs() }
+                    val safeName = "${System.currentTimeMillis()}_${displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
+                    val destFile = File(booksDir, safeName)
 
-                withContext(Dispatchers.IO) {
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(destFile).use { output ->
                             input.copyTo(output)
                         }
                     } ?: error("No se pudo leer el archivo seleccionado.")
-                }
 
-                val parsed = DocumentParser.parse(context, destFile, format)
-                val units = when (format) {
-                    DocumentFormat.PDF -> parsed.pdfPageCount
-                    DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
-                    else -> parsed.chapters.size
-                }
-                val isImagePdf = format == DocumentFormat.PDF && parsed.pdfPageTexts.all { it.length < 30 }
-                val accentColor = coverColors[(destFile.name.hashCode().and(0x7FFFFFFF)) % coverColors.size]
+                    val parsed = DocumentParser.parse(context, destFile, format)
+                    val units = when (format) {
+                        DocumentFormat.PDF -> parsed.pdfPageCount
+                        DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+                        else -> parsed.chapters.size
+                    }
+                    val isImagePdf = format == DocumentFormat.PDF && parsed.pdfPageTexts.all { it.length < 30 }
+                    val accentColor = coverColors[(destFile.name.hashCode().and(0x7FFFFFFF)) % coverColors.size]
 
-                // Automatically extract embedded cover (PDF page 1 / EPUB cover) or synthesize poster artwork
-                val coverPath = CoverManager.generateOrExtractCover(
-                    context = context,
-                    sourceFile = destFile,
-                    format = format,
-                    title = parsed.title,
-                    author = parsed.author,
-                    accentColorHex = accentColor
-                )
-
-                val newId = repository.insertDocument(
-                    DocumentEntity(
+                    // Automatically extract embedded cover (PDF page 1 / EPUB cover) or synthesize poster artwork
+                    val coverPath = CoverManager.generateOrExtractCover(
+                        context = context,
+                        sourceFile = destFile,
+                        format = format,
                         title = parsed.title,
                         author = parsed.author,
-                        format = format.name,
-                        filePath = destFile.absolutePath,
-                        totalUnits = units.coerceAtLeast(1),
-                        currentUnit = 0,
-                        progressPercent = 0f,
-                        totalWords = parsed.totalWords,
-                        coverColorHex = accentColor,
-                        coverImagePath = coverPath,
-                        badgeTag = if (isImagePdf) "Manhwa OCR" else format.label
+                        accentColorHex = accentColor
                     )
-                )
+
+                    repository.insertDocument(
+                        DocumentEntity(
+                            title = parsed.title,
+                            author = parsed.author,
+                            format = format.name,
+                            filePath = destFile.absolutePath,
+                            totalUnits = units.coerceAtLeast(1),
+                            currentUnit = 0,
+                            progressPercent = 0f,
+                            totalWords = parsed.totalWords,
+                            coverColorHex = accentColor,
+                            coverImagePath = coverPath,
+                            badgeTag = if (isImagePdf) "Manhwa OCR" else format.label
+                        )
+                    )
+                }
                 emitFeedback(LumaActionAnimType.IMPORTED)
                 onImportedOpen(newId)
             } catch (e: Exception) {

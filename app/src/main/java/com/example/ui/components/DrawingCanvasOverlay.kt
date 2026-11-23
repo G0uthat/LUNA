@@ -38,20 +38,18 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -73,9 +71,117 @@ val DrawingPaletteColors = listOf(
     0xFF7C3AEDL  // Study Violet
 )
 
+private class CachedStrokeRender(
+    val path: Path,
+    val color: Color,
+    val stroke: Stroke
+)
+
+private class DrawingStrokePathCache {
+    private var lastStrokes: List<DrawingStroke>? = null
+    private var lastWidth: Float = -1f
+    private var lastHeight: Float = -1f
+    private var cached: List<CachedStrokeRender> = emptyList()
+
+    fun getOrBuild(strokes: List<DrawingStroke>, width: Float, height: Float): List<CachedStrokeRender> {
+        if (strokes === lastStrokes && width == lastWidth && height == lastHeight) {
+            return cached
+        }
+        lastStrokes = strokes
+        lastWidth = width
+        lastHeight = height
+        cached = strokes.mapNotNull { stroke ->
+            if (stroke.points.size < 2) return@mapNotNull null
+            val path = Path()
+            val first = stroke.points[0]
+            path.moveTo(first.x * width, first.y * height)
+            for (i in 1 until stroke.points.size) {
+                val prev = stroke.points[i - 1]
+                val curr = stroke.points[i]
+                val midX = ((prev.x + curr.x) * 0.5f) * width
+                val midY = ((prev.y + curr.y) * 0.5f) * height
+                path.quadraticTo(prev.x * width, prev.y * height, midX, midY)
+            }
+            val last = stroke.points[stroke.points.lastIndex]
+            path.lineTo(last.x * width, last.y * height)
+            CachedStrokeRender(
+                path = path,
+                color = Color(stroke.colorArgb.toInt()).copy(alpha = stroke.alpha),
+                stroke = Stroke(
+                    width = (stroke.widthNorm * width).coerceIn(2f, 44f),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+        }
+        return cached
+    }
+}
+
+private class LiveStrokeBuffer {
+    val points = ArrayList<StrokePoint>(128)
+    val path = Path()
+    var isActive: Boolean = false
+    var colorArgb: Long = 0xFF1D5BFFL
+    var alpha: Float = 1f
+    var widthNorm: Float = 0.008f
+    private var lastPxX: Float = 0f
+    private var lastPxY: Float = 0f
+
+    fun start(
+        firstPt: StrokePoint,
+        canvasW: Float,
+        canvasH: Float,
+        tool: DrawingTool,
+        colorArgb: Long,
+        widthNorm: Float
+    ) {
+        points.clear()
+        points.add(firstPt)
+        path.reset()
+        val x = firstPt.x * canvasW
+        val y = firstPt.y * canvasH
+        path.moveTo(x, y)
+        lastPxX = x
+        lastPxY = y
+        this.colorArgb = colorArgb
+        this.alpha = if (tool == DrawingTool.HIGHLIGHTER) 0.36f else 1f
+        this.widthNorm = if (tool == DrawingTool.HIGHLIGHTER) widthNorm * 2.7f else widthNorm
+        this.isActive = true
+    }
+
+    fun append(nextPt: StrokePoint, canvasW: Float, canvasH: Float): Boolean {
+        val last = points.lastOrNull()
+        if (last != null && hypot(nextPt.x - last.x, nextPt.y - last.y) <= 0.0025f) {
+            return false
+        }
+        points.add(nextPt)
+        val x = nextPt.x * canvasW
+        val y = nextPt.y * canvasH
+        val midX = (lastPxX + x) * 0.5f
+        val midY = (lastPxY + y) * 0.5f
+        path.quadraticTo(lastPxX, lastPxY, midX, midY)
+        lastPxX = x
+        lastPxY = y
+        return true
+    }
+
+    fun finish(): List<StrokePoint> {
+        isActive = false
+        val snapshot = if (points.size >= 2) points.toList() else emptyList()
+        points.clear()
+        path.reset()
+        return snapshot
+    }
+}
+
 /**
  * Renders persisted normalized strokes over any page (EPUB/DOCX/PDF/Manhwa).
- * When [isInteractive] is true, captures finger, mouse, and stylus input for smooth drawing/erasing.
+ * Zero-recomposition live drawing:
+ * - Active stroke accumulates incrementally into a reusable [Path] in O(1) per pointer sample.
+ * - Draw phase invalidates via a single [mutableIntStateOf] read strictly inside [drawBehind].
+ * - Persisted strokes are cached as pre-built [Path] objects per canvas dimensions.
+ * - Persists to storage ONLY when the stroke finishes (pointer release).
  */
 @Composable
 fun DrawingCanvasOverlay(
@@ -88,11 +194,20 @@ fun DrawingCanvasOverlay(
     onEraseStrokeIds: (Set<String>) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activePoints = remember { mutableStateListOf<StrokePoint>() }
-    var isDrawingNow by remember { mutableStateOf(false) }
+    val liveBuffer = remember { LiveStrokeBuffer() }
+    val staticPathCache = remember { DrawingStrokePathCache() }
+    // Read ONLY inside drawBehind -> 0 recompositions on every pointer move!
+    val drawTick = remember { mutableIntStateOf(0) }
+
+    val latestStrokes = rememberUpdatedState(strokes)
+    val latestTool = rememberUpdatedState(activeTool)
+    val latestColor = rememberUpdatedState(activeColorArgb)
+    val latestWidth = rememberUpdatedState(activeWidthNorm)
+    val latestOnStrokeCompleted = rememberUpdatedState(onStrokeCompleted)
+    val latestOnErase = rememberUpdatedState(onEraseStrokeIds)
 
     val inputModifier = if (isInteractive) {
-        Modifier.pointerInput(activeTool, activeColorArgb, activeWidthNorm, strokes) {
+        Modifier.pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
                 down.consume()
@@ -104,10 +219,15 @@ fun DrawingCanvasOverlay(
                     y = (down.position.y / h).coerceIn(0f, 1f)
                 )
 
-                if (activeTool == DrawingTool.ERASER) {
-                    val erased = mutableSetOf<String>()
-                    findHitStrokes(strokes, firstPt, 0.035f, erased)
-                    if (erased.isNotEmpty()) onEraseStrokeIds(erased.toSet())
+                val tool = latestTool.value
+                if (tool == DrawingTool.ERASER) {
+                    val erasedAlready = mutableSetOf<String>()
+                    val firstHits = mutableSetOf<String>()
+                    findHitStrokes(latestStrokes.value, firstPt, 0.035f, firstHits)
+                    if (firstHits.isNotEmpty()) {
+                        erasedAlready.addAll(firstHits)
+                        latestOnErase.value(firstHits)
+                    }
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull() ?: break
@@ -118,13 +238,18 @@ fun DrawingCanvasOverlay(
                             y = (change.position.y / h).coerceIn(0f, 1f)
                         )
                         val newlyHit = mutableSetOf<String>()
-                        findHitStrokes(strokes, pt, 0.038f, newlyHit)
-                        if (newlyHit.isNotEmpty()) onEraseStrokeIds(newlyHit)
+                        findHitStrokes(latestStrokes.value, pt, 0.038f, newlyHit)
+                        newlyHit.removeAll(erasedAlready)
+                        if (newlyHit.isNotEmpty()) {
+                            erasedAlready.addAll(newlyHit)
+                            latestOnErase.value(newlyHit)
+                        }
                     }
                 } else {
-                    activePoints.clear()
-                    activePoints.add(firstPt)
-                    isDrawingNow = true
+                    val color = latestColor.value
+                    val widthNorm = latestWidth.value
+                    liveBuffer.start(firstPt, w, h, tool, color, widthNorm)
+                    drawTick.intValue = drawTick.intValue + 1
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull() ?: break
@@ -137,27 +262,26 @@ fun DrawingCanvasOverlay(
                             x = (change.position.x / w).coerceIn(0f, 1f),
                             y = (change.position.y / h).coerceIn(0f, 1f)
                         )
-                        val last = activePoints.lastOrNull()
-                        if (last == null || hypot(nextPt.x - last.x, nextPt.y - last.y) > 0.0025f) {
-                            activePoints.add(nextPt)
+                        if (liveBuffer.append(nextPt, w, h)) {
+                            drawTick.intValue = drawTick.intValue + 1
                         }
                     }
-                    isDrawingNow = false
-                    if (activePoints.size >= 2) {
-                        val alpha = if (activeTool == DrawingTool.HIGHLIGHTER) 0.36f else 1f
-                        val width = if (activeTool == DrawingTool.HIGHLIGHTER) activeWidthNorm * 2.7f else activeWidthNorm
-                        onStrokeCompleted(
+                    val alpha = liveBuffer.alpha
+                    val width = liveBuffer.widthNorm
+                    val completedPoints = liveBuffer.finish()
+                    drawTick.intValue = drawTick.intValue + 1
+                    if (completedPoints.size >= 2) {
+                        latestOnStrokeCompleted.value(
                             DrawingStroke(
                                 id = UUID.randomUUID().toString(),
-                                tool = activeTool,
-                                colorArgb = activeColorArgb,
+                                tool = tool,
+                                colorArgb = color,
                                 widthNorm = width,
                                 alpha = alpha,
-                                points = activePoints.toList()
+                                points = completedPoints
                             )
                         )
                     }
-                    activePoints.clear()
                 }
             }
         }
@@ -165,51 +289,34 @@ fun DrawingCanvasOverlay(
         Modifier
     }
 
-    Canvas(
+    Box(
         modifier = modifier
             .then(inputModifier)
+            .drawBehind {
+                // Subscribe draw phase ONLY to live stroke ticks (0 composition invalidations)
+                @Suppress("UNUSED_VARIABLE")
+                val tick = drawTick.intValue
+                val persisted = staticPathCache.getOrBuild(latestStrokes.value, size.width, size.height)
+                for (item in persisted) {
+                    drawPath(
+                        path = item.path,
+                        color = item.color,
+                        style = item.stroke
+                    )
+                }
+                if (liveBuffer.isActive && liveBuffer.points.size >= 2) {
+                    drawPath(
+                        path = liveBuffer.path,
+                        color = Color(liveBuffer.colorArgb.toInt()).copy(alpha = liveBuffer.alpha),
+                        style = Stroke(
+                            width = (liveBuffer.widthNorm * size.width).coerceIn(2f, 44f),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round
+                        )
+                    )
+                }
+            }
             .testTag("drawing_canvas_overlay")
-    ) {
-        for (stroke in strokes) {
-            drawSmoothStroke(stroke)
-        }
-        if (isDrawingNow && activePoints.size >= 2) {
-            val preview = DrawingStroke(
-                id = "live",
-                tool = activeTool,
-                colorArgb = activeColorArgb,
-                widthNorm = if (activeTool == DrawingTool.HIGHLIGHTER) activeWidthNorm * 2.7f else activeWidthNorm,
-                alpha = if (activeTool == DrawingTool.HIGHLIGHTER) 0.36f else 1f,
-                points = activePoints
-            )
-            drawSmoothStroke(preview)
-        }
-    }
-}
-
-private fun DrawScope.drawSmoothStroke(stroke: DrawingStroke) {
-    if (stroke.points.size < 2) return
-    val path = Path()
-    val first = stroke.points.first()
-    path.moveTo(first.x * size.width, first.y * size.height)
-    for (i in 1 until stroke.points.size) {
-        val prev = stroke.points[i - 1]
-        val curr = stroke.points[i]
-        val midX = ((prev.x + curr.x) * 0.5f) * size.width
-        val midY = ((prev.y + curr.y) * 0.5f) * size.height
-        path.quadraticTo(prev.x * size.width, prev.y * size.height, midX, midY)
-    }
-    val last = stroke.points.last()
-    path.lineTo(last.x * size.width, last.y * size.height)
-
-    drawPath(
-        path = path,
-        color = Color(stroke.colorArgb.toInt()).copy(alpha = stroke.alpha),
-        style = Stroke(
-            width = (stroke.widthNorm * size.width).coerceIn(2f, 44f),
-            cap = StrokeCap.Round,
-            join = StrokeJoin.Round
-        )
     )
 }
 
@@ -219,9 +326,15 @@ private fun findHitStrokes(
     threshold: Float,
     outIds: MutableSet<String>
 ) {
+    val thresholdSq = threshold * threshold
     for (stroke in strokes) {
-        if (stroke.points.any { hypot(it.x - point.x, it.y - point.y) <= threshold }) {
-            outIds.add(stroke.id)
+        for (pt in stroke.points) {
+            val dx = pt.x - point.x
+            val dy = pt.y - point.y
+            if (dx * dx + dy * dy <= thresholdSq) {
+                outIds.add(stroke.id)
+                break
+            }
         }
     }
 }
