@@ -281,11 +281,17 @@ private fun LumaFloatingDropdownSurface(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isCompactHeight = this.maxHeight < 500.dp
+        val isTabletWidth = this.maxWidth >= 680.dp
         val effectiveHeightFraction = if (isCompactHeight) maxOf(maxHeightFraction, 0.92f) else maxHeightFraction
         val maxCardHeight = (this.maxHeight * effectiveHeightFraction).coerceAtLeast(220.dp)
-        val effectiveMaxWidth = if (isCompactHeight) maxOf(maxWidth, 560.dp) else maxWidth
+        // On tablets, keep modals proportioned cleanly like a centered phone-width card rather than stretching edge-to-edge
+        val effectiveMaxWidth = when {
+            isTabletWidth -> minOf(maxWidth, if (isCompactHeight) 480.dp else 460.dp)
+            isCompactHeight -> maxOf(maxWidth, 520.dp)
+            else -> maxWidth
+        }
         val outerVerticalPad = if (isCompactHeight) 8.dp else 18.dp
-        val outerHorizontalPad = if (isCompactHeight) 14.dp else 16.dp
+        val outerHorizontalPad = if (isTabletWidth) 24.dp else if (isCompactHeight) 14.dp else 16.dp
 
         // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
@@ -332,8 +338,8 @@ private fun LumaFloatingDropdownSurface(
             ) {
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
                         .widthIn(max = effectiveMaxWidth)
+                        .fillMaxWidth()
                         .heightIn(max = maxCardHeight)
                         .shadow(
                             elevation = cardElevation,

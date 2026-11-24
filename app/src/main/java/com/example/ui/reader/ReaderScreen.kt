@@ -352,6 +352,8 @@ fun ReaderScreen(
                             activeTool = state.activeTool,
                             activeColorArgb = state.activeColorArgb,
                             activeWidthNorm = state.activeWidthNorm,
+                            activeAlpha = state.activeAlpha,
+                            activeShapeFilled = state.activeShapeFilled,
                             onPageChanged = { idx -> viewModel.onUnitChanged(idx) },
                             onPageBitmapReady = viewModel::onPdfPageBitmapReady,
                             onWordSelected = viewModel::onWordSelected,
@@ -378,6 +380,8 @@ fun ReaderScreen(
                             activeTool = state.activeTool,
                             activeColorArgb = state.activeColorArgb,
                             activeWidthNorm = state.activeWidthNorm,
+                            activeAlpha = state.activeAlpha,
+                            activeShapeFilled = state.activeShapeFilled,
                             onActiveSheetChanged = viewModel::onFluidSheetChanged,
                             onSelectStandardFormat = { fmt ->
                                 wakeReaderChrome()
@@ -408,6 +412,8 @@ fun ReaderScreen(
                             activeTool = state.activeTool,
                             activeColorArgb = state.activeColorArgb,
                             activeWidthNorm = state.activeWidthNorm,
+                            activeAlpha = state.activeAlpha,
+                            activeShapeFilled = state.activeShapeFilled,
                             activeSelection = state.selectedWord,
                             onActiveSheetChanged = viewModel::onFluidSheetChanged,
                             onWordSelected = { wordCtx ->
@@ -417,6 +423,7 @@ fun ReaderScreen(
                             onStrokeCompleted = viewModel::addStroke,
                             onEraseStrokes = viewModel::eraseStrokes,
                             onTapPageCenter = handleTapCenter,
+                            chromeAlpha = readerChromeAlpha,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -556,12 +563,15 @@ fun ReaderScreen(
                     }
                 }
 
-                // 4. Floating Drawing & Signature Toolbar (only when drawing mode is active)
+                // 4. Adaptive Floating Drawing Studio Toolbar (translucent side dock on tablets, bottom bar on phones)
                 if (state.isDrawingMode) {
                     DrawingFloatingToolbar(
                         activeTool = state.activeTool,
                         activeColorArgb = state.activeColorArgb,
                         activeWidthNorm = state.activeWidthNorm,
+                        activeAlpha = state.activeAlpha,
+                        activeShapeFilled = state.activeShapeFilled,
+                        customColors = state.customDrawingColors,
                         canUndo = state.canUndo,
                         canRedo = state.canRedo,
                         isStandardPageView = showOriginalView,
@@ -571,7 +581,10 @@ fun ReaderScreen(
                         isPanZoomMode = state.isPanZoomWhileDrawing,
                         onSelectTool = viewModel::setDrawingTool,
                         onSelectColor = viewModel::setDrawingColor,
+                        onAddCustomColor = viewModel::addCustomDrawingColor,
                         onWidthChange = viewModel::setDrawingWidth,
+                        onAlphaChange = viewModel::setDrawingAlpha,
+                        onToggleShapeFilled = viewModel::toggleDrawingShapeFilled,
                         onToggleStandardPageView = viewModel::toggleStandardPageViewForCurrentDoc,
                         onTogglePanZoomMode = viewModel::togglePanZoomWhileDrawing,
                         onApplySignaturePreset = viewModel::applySignaturePreset,
@@ -579,7 +592,7 @@ fun ReaderScreen(
                         onRedo = viewModel::redoDrawing,
                         onClearPage = viewModel::clearCurrentPageDrawings,
                         onDone = { viewModel.toggleDrawingMode(false) },
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
 

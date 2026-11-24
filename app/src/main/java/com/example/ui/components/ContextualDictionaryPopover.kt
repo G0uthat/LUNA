@@ -716,8 +716,16 @@ private fun EmbeddedDictionaryWebView(
     val palette = LocalFolioPalette.current
     val motion = LocalLumaMotion.current
     var progress by remember(url) { mutableIntStateOf(15) }
+    var isContentVisible by remember(url) { mutableStateOf(false) }
     var failed by remember(url) { mutableStateOf(false) }
     var retryNonce by remember(url) { mutableIntStateOf(0) }
+
+    // Hard failsafe so third-party trackers (e.g., WordReference ad scripts) never trap the loading veil
+    androidx.compose.runtime.LaunchedEffect(url, retryNonce) {
+        isContentVisible = false
+        kotlinx.coroutines.delay(2400L)
+        isContentVisible = true
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (failed) {
@@ -738,6 +746,7 @@ private fun EmbeddedDictionaryWebView(
                         selected = false,
                         onClick = {
                             failed = false
+                            isContentVisible = false
                             progress = 15
                             retryNonce++
                         }
@@ -759,6 +768,7 @@ private fun EmbeddedDictionaryWebView(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT
                             )
+                            setBackgroundColor(android.graphics.Color.WHITE)
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             settings.loadWithOverviewMode = true
@@ -773,6 +783,46 @@ private fun EmbeddedDictionaryWebView(
                                     view: WebView?,
                                     request: WebResourceRequest?
                                 ): Boolean = false
+
+                                override fun shouldInterceptRequest(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): android.webkit.WebResourceResponse? {
+                                    val host = request?.url?.host?.lowercase().orEmpty()
+                                    val isBlockingTracker = host.contains("googlesyndication") ||
+                                        host.contains("doubleclick") ||
+                                        host.contains("amazon-adsystem") ||
+                                        host.contains("adnxs") ||
+                                        host.contains("criteo") ||
+                                        host.contains("taboola") ||
+                                        host.contains("outbrain") ||
+                                        host.contains("pubmatic") ||
+                                        host.contains("rubiconproject") ||
+                                        host.contains("scorecardresearch") ||
+                                        host.contains("googletagmanager") ||
+                                        host.contains("google-analytics")
+                                    return if (isBlockingTracker) {
+                                        android.webkit.WebResourceResponse(
+                                            "text/plain",
+                                            "utf-8",
+                                            java.io.ByteArrayInputStream(ByteArray(0))
+                                        )
+                                    } else {
+                                        super.shouldInterceptRequest(view, request)
+                                    }
+                                }
+
+                                override fun onPageCommitVisible(view: WebView?, pageUrl: String?) {
+                                    super.onPageCommitVisible(view, pageUrl)
+                                    isContentVisible = true
+                                    if (progress < 90) progress = 90
+                                }
+
+                                override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                                    super.onPageFinished(view, pageUrl)
+                                    isContentVisible = true
+                                    progress = 100
+                                }
 
                                 override fun onReceivedError(
                                     view: WebView?,
@@ -800,6 +850,9 @@ private fun EmbeddedDictionaryWebView(
                             webChromeClient = object : WebChromeClient() {
                                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
                                     progress = newProgress
+                                    if (newProgress >= 65) {
+                                        isContentVisible = true
+                                    }
                                 }
                             }
                             tag = url
@@ -811,6 +864,7 @@ private fun EmbeddedDictionaryWebView(
                         // changes on redirects and would otherwise trigger an infinite reload loop)
                         if (webView.tag != url) {
                             failed = false
+                            isContentVisible = false
                             progress = 15
                             webView.tag = url
                             webView.loadUrl(url)
@@ -830,7 +884,7 @@ private fun EmbeddedDictionaryWebView(
                     modifier = Modifier.fillMaxSize()
                 )
             }
-            if (progress < 95) {
+            if (progress < 95 && !isContentVisible) {
                 LinearProgressIndicator(
                     progress = { progress / 100f },
                     modifier = Modifier
@@ -842,15 +896,15 @@ private fun EmbeddedDictionaryWebView(
                 )
             }
             AnimatedVisibility(
-                visible = progress < 85,
-                enter = fadeIn(tween(motion.duration(200), easing = LumaEaseInOutCurve)),
-                exit = fadeOut(tween(motion.duration(260), easing = LumaEaseInOutCurve)),
+                visible = !isContentVisible && progress < 65,
+                enter = fadeIn(tween(motion.duration(180), easing = LumaEaseInOutCurve)),
+                exit = fadeOut(tween(motion.duration(220), easing = LumaEaseInOutCurve)),
                 modifier = Modifier.fillMaxSize()
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(palette.surface.copy(alpha = 0.92f)),
+                        .background(palette.surface.copy(alpha = 0.94f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(

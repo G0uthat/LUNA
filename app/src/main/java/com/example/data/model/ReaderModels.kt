@@ -347,6 +347,7 @@ enum class DrawingTool(val displayName: String) {
     PEN("Lápiz"),
     HIGHLIGHTER("Resaltador"),
     LINE("Línea"),
+    ARROW("Flecha"),
     RECTANGLE("Cuadrado"),
     CIRCLE("Círculo"),
     ERASER("Borrador")
@@ -365,7 +366,8 @@ data class DrawingStroke(
     val colorArgb: Long,
     val widthNorm: Float,
     val alpha: Float,
-    val points: List<StrokePoint>
+    val points: List<StrokePoint>,
+    val isFilled: Boolean = false
 )
 
 @Immutable

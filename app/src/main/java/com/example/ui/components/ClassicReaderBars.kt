@@ -135,8 +135,8 @@ internal fun ClassicKindleOverlayBars(
         ) {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
                     .widthIn(max = 640.dp)
+                    .fillMaxWidth()
                     .shadow(
                         elevation = if (motion.isLowRam) 4.dp else 12.dp,
                         shape = ClassicCapsuleShape,
@@ -231,8 +231,8 @@ internal fun ClassicKindleOverlayBars(
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
                     .widthIn(max = 640.dp)
+                    .fillMaxWidth()
                     .shadow(16.dp, ClassicCapsuleShape, ambientColor = Color.Black.copy(alpha = 0.25f))
                     .clip(ClassicCapsuleShape)
                     .background(palette.surface.copy(alpha = 0.98f))

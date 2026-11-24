@@ -37,7 +37,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.FitScreen
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -105,6 +107,7 @@ import com.example.ui.theme.LocalLumaMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Sheet-paginated reflowable book reader for EPUB, DOCX, TXT, and FB2.
@@ -127,12 +130,15 @@ fun FluidBookReader(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
     activeSelection: SelectedWordContext? = null,
     onActiveSheetChanged: (sheetIndex: Int, totalSheets: Int, locationKey: String, chapterIndex: Int) -> Unit,
     onWordSelected: (SelectedWordContext) -> Unit,
     onStrokeCompleted: (String, DrawingStroke) -> Unit,
     onEraseStrokes: (String, Set<String>) -> Unit,
     onTapPageCenter: () -> Unit,
+    chromeAlpha: Float = 1f,
     modifier: Modifier = Modifier
 ) {
     if (chapters.isEmpty()) return
@@ -178,9 +184,9 @@ fun FluidBookReader(
                             val centroid = event.calculateCentroid(useCurrent = true)
                             if (zoomChange != 1f || panChange != Offset.Zero) {
                                 val oldZoom = latestZoom
-                                val newZoom = (oldZoom * zoomChange).coerceIn(1f, 3.2f)
+                                val newZoom = (oldZoom * zoomChange).coerceIn(0.55f, 3.2f)
                                 if (newZoom <= 1.01f) {
-                                    zoomScale = 1f
+                                    zoomScale = newZoom
                                     panOffset = Offset.Zero
                                 } else {
                                     val center = Offset(size.width / 2f, size.height / 2f)
@@ -403,6 +409,8 @@ fun FluidBookReader(
                             activeTool = activeTool,
                             activeColorArgb = activeColorArgb,
                             activeWidthNorm = activeWidthNorm,
+                            activeAlpha = activeAlpha,
+                            activeShapeFilled = activeShapeFilled,
                             activeSelection = activeSelection,
                             isVerticalScrollCard = true,
                             minSheetHeightDp = (sheetMinHeightDp - 96.dp).coerceAtLeast(360.dp),
@@ -434,8 +442,8 @@ fun FluidBookReader(
                                 }
                             },
                             modifier = Modifier
-                                .fillMaxWidth()
                                 .widthIn(max = 760.dp)
+                                .fillMaxWidth()
                         )
                     }
                 }
@@ -618,6 +626,8 @@ fun FluidBookReader(
                             activeTool = activeTool,
                             activeColorArgb = activeColorArgb,
                             activeWidthNorm = activeWidthNorm,
+                            activeAlpha = activeAlpha,
+                            activeShapeFilled = activeShapeFilled,
                             activeSelection = activeSelection,
                             isVerticalScrollCard = false,
                             minSheetHeightDp = sheetMinHeightDp,
@@ -646,37 +656,89 @@ fun FluidBookReader(
             }
         }
 
-        // Discreet reset zoom pill at bottom-center (never touches Dynamic Island or top bar!)
-        if (!isDrawingMode && zoomScale > 1.05f) {
+        // Compact floating − / % / + zoom preview pill (shown on tablets or whenever zoomed, auto-fades in immersive mode)
+        val isZoomModified = abs(zoomScale - 1f) > 0.03f
+        val showZoomPill = chromeAlpha > 0.02f && !isDrawingMode && (maxWidth >= 680.dp || isZoomModified)
+        if (showZoomPill) {
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(bottom = 42.dp)
+                    .graphicsLayer { alpha = chromeAlpha }
                     .shadow(8.dp, RoundedCornerShape(50))
                     .clip(RoundedCornerShape(50))
                     .background(palette.surface.copy(alpha = 0.94f))
-                    .border(1.dp, palette.border, RoundedCornerShape(50))
-                    .clickable {
-                        zoomScale = 1f
-                        panOffset = Offset.Zero
-                    }
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .border(
+                        1.dp,
+                        if (isZoomModified) palette.accent.copy(alpha = 0.55f) else palette.border,
+                        RoundedCornerShape(50)
+                    )
+                    .padding(horizontal = 4.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.FitScreen,
-                    contentDescription = "Restablecer zoom",
-                    tint = palette.accent,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = "Ajustar (${(zoomScale * 100).toInt()}%)",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.ink
-                )
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable(enabled = zoomScale > 0.56f) {
+                            val next = (zoomScale - 0.15f).coerceIn(0.55f, 3.2f)
+                            zoomScale = next
+                            if (next <= 1.01f) panOffset = Offset.Zero
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Remove,
+                        contentDescription = "Alejar hoja",
+                        tint = if (zoomScale > 0.56f) palette.ink else palette.inkMuted.copy(alpha = 0.35f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (isZoomModified) palette.accentSoft else Color.Transparent)
+                        .clickable {
+                            zoomScale = 1f
+                            panOffset = Offset.Zero
+                        }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    if (isZoomModified) {
+                        Icon(
+                            imageVector = Icons.Rounded.FitScreen,
+                            contentDescription = "Restablecer zoom al 100%",
+                            tint = palette.accent,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
+                    Text(
+                        text = "${(zoomScale * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isZoomModified) palette.accent else palette.ink
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable(enabled = zoomScale < 3.15f) {
+                            zoomScale = (zoomScale + 0.25f).coerceIn(0.55f, 3.2f)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = "Acercar hoja",
+                        tint = if (zoomScale < 3.15f) palette.ink else palette.inkMuted.copy(alpha = 0.35f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
     }
@@ -700,6 +762,8 @@ private fun FluidSheetSurface(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
     activeSelection: SelectedWordContext?,
     isVerticalScrollCard: Boolean,
     minSheetHeightDp: Dp,
@@ -744,8 +808,8 @@ private fun FluidSheetSurface(
         // Unified sheet box: BOTH text and drawings live in this exact same coordinate frame!
         Box(
             modifier = Modifier
-                .fillMaxWidth()
                 .widthIn(max = 760.dp)
+                .fillMaxWidth()
                 .defaultMinSize(minHeight = minSheetHeightDp)
                 .onGloballyPositioned { coords ->
                     sheetRootSizePx = coords.size.width.toFloat().coerceAtLeast(1f) to
@@ -823,6 +887,8 @@ private fun FluidSheetSurface(
                 activeTool = activeTool,
                 activeColorArgb = activeColorArgb,
                 activeWidthNorm = activeWidthNorm,
+                activeAlpha = activeAlpha,
+                activeShapeFilled = activeShapeFilled,
                 onStrokeCompleted = onStrokeCompleted,
                 onEraseStrokeIds = onEraseStrokes,
                 modifier = Modifier.matchParentSize()

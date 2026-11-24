@@ -8,9 +8,11 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -30,7 +32,9 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.FormatColorFill
 import androidx.compose.material.icons.rounded.HorizontalRule
+import androidx.compose.material.icons.rounded.NorthEast
 import androidx.compose.material.icons.rounded.OpenWith
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.Icon
@@ -39,9 +43,12 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -63,9 +71,13 @@ import com.example.data.model.StrokePoint
 import com.example.ui.theme.LocalFolioPalette
 import java.util.UUID
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 val DrawingPaletteColors = listOf(
     0xFF1D5BFFL, // Cobalt
@@ -77,7 +89,10 @@ val DrawingPaletteColors = listOf(
 )
 
 private fun DrawingTool.isGeometricShape(): Boolean =
-    this == DrawingTool.LINE || this == DrawingTool.RECTANGLE || this == DrawingTool.CIRCLE
+    this == DrawingTool.LINE || this == DrawingTool.ARROW || this == DrawingTool.RECTANGLE || this == DrawingTool.CIRCLE
+
+private fun DrawingTool.isFillableShape(): Boolean =
+    this == DrawingTool.RECTANGLE || this == DrawingTool.CIRCLE
 
 private fun buildShapePath(
     target: Path,
@@ -96,6 +111,24 @@ private fun buildShapePath(
         DrawingTool.LINE -> {
             target.moveTo(x0, y0)
             target.lineTo(x1, y1)
+        }
+        DrawingTool.ARROW -> {
+            target.moveTo(x0, y0)
+            target.lineTo(x1, y1)
+            val len = hypot(x1 - x0, y1 - y0)
+            if (len > 4f) {
+                val angle = atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())
+                val headLen = (len * 0.24f).coerceIn(14f, 52f)
+                val spread = Math.toRadians(28.0)
+                val hx1 = x1 - (headLen * cos(angle - spread)).toFloat()
+                val hy1 = y1 - (headLen * sin(angle - spread)).toFloat()
+                val hx2 = x1 - (headLen * cos(angle + spread)).toFloat()
+                val hy2 = y1 - (headLen * sin(angle + spread)).toFloat()
+                target.moveTo(x1, y1)
+                target.lineTo(hx1, hy1)
+                target.moveTo(x1, y1)
+                target.lineTo(hx2, hy2)
+            }
         }
         DrawingTool.RECTANGLE -> {
             target.addRect(
@@ -127,7 +160,8 @@ private fun buildShapePath(
 private class CachedStrokeRender(
     val path: Path,
     val color: Color,
-    val stroke: Stroke
+    val stroke: Stroke,
+    val isFilled: Boolean
 )
 
 private class DrawingStrokePathCache {
@@ -168,7 +202,8 @@ private class DrawingStrokePathCache {
                     width = (stroke.widthNorm * width).coerceIn(2f, 44f),
                     cap = StrokeCap.Round,
                     join = if (stroke.tool == DrawingTool.RECTANGLE) StrokeJoin.Miter else StrokeJoin.Round
-                )
+                ),
+                isFilled = stroke.isFilled && stroke.tool.isFillableShape()
             )
         }
         return cached
@@ -183,6 +218,7 @@ private class LiveStrokeBuffer {
     var colorArgb: Long = 0xFF1D5BFFL
     var alpha: Float = 1f
     var widthNorm: Float = 0.008f
+    var isFilled: Boolean = false
     private var lastPxX: Float = 0f
     private var lastPxY: Float = 0f
 
@@ -192,7 +228,9 @@ private class LiveStrokeBuffer {
         canvasH: Float,
         tool: DrawingTool,
         colorArgb: Long,
-        widthNorm: Float
+        widthNorm: Float,
+        alpha: Float,
+        shapeFilled: Boolean
     ) {
         points.clear()
         points.add(firstPt)
@@ -204,8 +242,9 @@ private class LiveStrokeBuffer {
         lastPxY = y
         this.tool = tool
         this.colorArgb = colorArgb
-        this.alpha = if (tool == DrawingTool.HIGHLIGHTER) 0.36f else 1f
+        this.alpha = alpha.coerceIn(0.15f, 1f)
         this.widthNorm = if (tool == DrawingTool.HIGHLIGHTER) widthNorm * 2.7f else widthNorm
+        this.isFilled = shapeFilled && tool.isFillableShape()
         this.isActive = true
     }
 
@@ -271,6 +310,8 @@ fun DrawingCanvasOverlay(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
     onStrokeCompleted: (DrawingStroke) -> Unit,
     onEraseStrokeIds: (Set<String>) -> Unit,
     modifier: Modifier = Modifier
@@ -284,6 +325,8 @@ fun DrawingCanvasOverlay(
     val latestTool = rememberUpdatedState(activeTool)
     val latestColor = rememberUpdatedState(activeColorArgb)
     val latestWidth = rememberUpdatedState(activeWidthNorm)
+    val latestAlpha = rememberUpdatedState(activeAlpha)
+    val latestFilled = rememberUpdatedState(activeShapeFilled)
     val latestOnStrokeCompleted = rememberUpdatedState(onStrokeCompleted)
     val latestOnErase = rememberUpdatedState(onEraseStrokeIds)
 
@@ -329,7 +372,13 @@ fun DrawingCanvasOverlay(
                 } else {
                     val color = latestColor.value
                     val widthNorm = latestWidth.value
-                    liveBuffer.start(firstPt, w, h, tool, color, widthNorm)
+                    val effectiveAlpha = if (tool == DrawingTool.HIGHLIGHTER && latestAlpha.value >= 0.98f) {
+                        0.36f
+                    } else {
+                        latestAlpha.value
+                    }
+                    val shapeFilled = latestFilled.value
+                    liveBuffer.start(firstPt, w, h, tool, color, widthNorm, effectiveAlpha, shapeFilled)
                     drawTick.intValue = drawTick.intValue + 1
                     while (true) {
                         val event = awaitPointerEvent()
@@ -349,6 +398,7 @@ fun DrawingCanvasOverlay(
                     }
                     val alpha = liveBuffer.alpha
                     val width = liveBuffer.widthNorm
+                    val filled = liveBuffer.isFilled
                     val completedPoints = liveBuffer.finish()
                     drawTick.intValue = drawTick.intValue + 1
                     if (completedPoints.size >= 2) {
@@ -359,7 +409,8 @@ fun DrawingCanvasOverlay(
                                 colorArgb = color,
                                 widthNorm = width,
                                 alpha = alpha,
-                                points = completedPoints
+                                points = completedPoints,
+                                isFilled = filled
                             )
                         )
                     }
@@ -379,6 +430,9 @@ fun DrawingCanvasOverlay(
                 val tick = drawTick.intValue
                 val persisted = staticPathCache.getOrBuild(latestStrokes.value, size.width, size.height)
                 for (item in persisted) {
+                    if (item.isFilled) {
+                        drawPath(path = item.path, color = item.color, style = Fill)
+                    }
                     drawPath(
                         path = item.path,
                         color = item.color,
@@ -386,9 +440,13 @@ fun DrawingCanvasOverlay(
                     )
                 }
                 if (liveBuffer.isActive && liveBuffer.points.size >= 2) {
+                    val liveColor = Color(liveBuffer.colorArgb.toInt()).copy(alpha = liveBuffer.alpha)
+                    if (liveBuffer.isFilled) {
+                        drawPath(path = liveBuffer.path, color = liveColor, style = Fill)
+                    }
                     drawPath(
                         path = liveBuffer.path,
-                        color = Color(liveBuffer.colorArgb.toInt()).copy(alpha = liveBuffer.alpha),
+                        color = liveColor,
                         style = Stroke(
                             width = (liveBuffer.widthNorm * size.width).coerceIn(2f, 44f),
                             cap = StrokeCap.Round,
@@ -429,7 +487,7 @@ private fun findHitStrokes(
     for (stroke in strokes) {
         if (stroke.points.size < 2) continue
         when (stroke.tool) {
-            DrawingTool.LINE -> {
+            DrawingTool.LINE, DrawingTool.ARROW -> {
                 val a = stroke.points.first()
                 val b = stroke.points.last()
                 if (distancePointToSegment(point.x, point.y, a.x, a.y, b.x, b.y) <= threshold) {
@@ -443,12 +501,19 @@ private fun findHitStrokes(
                 val right = max(a.x, b.x)
                 val top = min(a.y, b.y)
                 val bottom = max(a.y, b.y)
-                val hitTop = distancePointToSegment(point.x, point.y, left, top, right, top) <= threshold
-                val hitBottom = distancePointToSegment(point.x, point.y, left, bottom, right, bottom) <= threshold
-                val hitLeft = distancePointToSegment(point.x, point.y, left, top, left, bottom) <= threshold
-                val hitRight = distancePointToSegment(point.x, point.y, right, top, right, bottom) <= threshold
-                if (hitTop || hitBottom || hitLeft || hitRight) {
+                if (stroke.isFilled &&
+                    point.x in (left - threshold)..(right + threshold) &&
+                    point.y in (top - threshold)..(bottom + threshold)
+                ) {
                     outIds.add(stroke.id)
+                } else {
+                    val hitTop = distancePointToSegment(point.x, point.y, left, top, right, top) <= threshold
+                    val hitBottom = distancePointToSegment(point.x, point.y, left, bottom, right, bottom) <= threshold
+                    val hitLeft = distancePointToSegment(point.x, point.y, left, top, left, bottom) <= threshold
+                    val hitRight = distancePointToSegment(point.x, point.y, right, top, right, bottom) <= threshold
+                    if (hitTop || hitBottom || hitLeft || hitRight) {
+                        outIds.add(stroke.id)
+                    }
                 }
             }
             DrawingTool.CIRCLE -> {
@@ -461,10 +526,13 @@ private fun findHitStrokes(
                 val dx = point.x - cx
                 val dy = point.y - cy
                 val normDist = hypot(dx / rx, dy / ry)
-                // Convert radial error into approximate normalized distance
-                val approxDist = abs(normDist - 1f) * min(rx, ry)
-                if (approxDist <= threshold) {
+                if (stroke.isFilled && normDist <= 1.05f) {
                     outIds.add(stroke.id)
+                } else {
+                    val approxDist = abs(normDist - 1f) * min(rx, ry)
+                    if (approxDist <= threshold) {
+                        outIds.add(stroke.id)
+                    }
                 }
             }
             else -> {
@@ -486,6 +554,9 @@ fun DrawingFloatingToolbar(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
+    customColors: List<Long> = emptyList(),
     canUndo: Boolean,
     canRedo: Boolean,
     isStandardPageView: Boolean = false,
@@ -495,7 +566,10 @@ fun DrawingFloatingToolbar(
     isPanZoomMode: Boolean = false,
     onSelectTool: (DrawingTool) -> Unit,
     onSelectColor: (Long) -> Unit,
+    onAddCustomColor: (Long) -> Unit = onSelectColor,
     onWidthChange: (Float) -> Unit,
+    onAlphaChange: (Float) -> Unit = {},
+    onToggleShapeFilled: () -> Unit = {},
     onToggleStandardPageView: () -> Unit = {},
     onTogglePanZoomMode: () -> Unit = {},
     onApplySignaturePreset: () -> Unit = {},
@@ -505,8 +579,103 @@ fun DrawingFloatingToolbar(
     onDone: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        if (maxWidth >= 680.dp) {
+            TabletDrawingStudioDock(
+                activeTool = activeTool,
+                activeColorArgb = activeColorArgb,
+                activeWidthNorm = activeWidthNorm,
+                activeAlpha = activeAlpha,
+                activeShapeFilled = activeShapeFilled,
+                customColors = customColors,
+                canUndo = canUndo,
+                canRedo = canRedo,
+                isStandardPageView = isStandardPageView,
+                standardFormatLabel = standardFormatLabel,
+                showStandardViewToggle = showStandardViewToggle,
+                canTogglePanZoom = canTogglePanZoom,
+                isPanZoomMode = isPanZoomMode,
+                onSelectTool = onSelectTool,
+                onSelectColor = onSelectColor,
+                onAddCustomColor = onAddCustomColor,
+                onWidthChange = onWidthChange,
+                onAlphaChange = onAlphaChange,
+                onToggleShapeFilled = onToggleShapeFilled,
+                onToggleStandardPageView = onToggleStandardPageView,
+                onTogglePanZoomMode = onTogglePanZoomMode,
+                onApplySignaturePreset = onApplySignaturePreset,
+                onUndo = onUndo,
+                onRedo = onRedo,
+                onClearPage = onClearPage,
+                onDone = onDone
+            )
+        } else {
+            PhoneDrawingBottomToolbar(
+                activeTool = activeTool,
+                activeColorArgb = activeColorArgb,
+                activeWidthNorm = activeWidthNorm,
+                activeAlpha = activeAlpha,
+                activeShapeFilled = activeShapeFilled,
+                customColors = customColors,
+                canUndo = canUndo,
+                canRedo = canRedo,
+                isStandardPageView = isStandardPageView,
+                standardFormatLabel = standardFormatLabel,
+                showStandardViewToggle = showStandardViewToggle,
+                canTogglePanZoom = canTogglePanZoom,
+                isPanZoomMode = isPanZoomMode,
+                onSelectTool = onSelectTool,
+                onSelectColor = onSelectColor,
+                onAddCustomColor = onAddCustomColor,
+                onWidthChange = onWidthChange,
+                onAlphaChange = onAlphaChange,
+                onToggleShapeFilled = onToggleShapeFilled,
+                onToggleStandardPageView = onToggleStandardPageView,
+                onTogglePanZoomMode = onTogglePanZoomMode,
+                onApplySignaturePreset = onApplySignaturePreset,
+                onUndo = onUndo,
+                onRedo = onRedo,
+                onClearPage = onClearPage,
+                onDone = onDone,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PhoneDrawingBottomToolbar(
+    activeTool: DrawingTool,
+    activeColorArgb: Long,
+    activeWidthNorm: Float,
+    activeAlpha: Float,
+    activeShapeFilled: Boolean,
+    customColors: List<Long>,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    isStandardPageView: Boolean,
+    standardFormatLabel: String,
+    showStandardViewToggle: Boolean,
+    canTogglePanZoom: Boolean,
+    isPanZoomMode: Boolean,
+    onSelectTool: (DrawingTool) -> Unit,
+    onSelectColor: (Long) -> Unit,
+    onAddCustomColor: (Long) -> Unit,
+    onWidthChange: (Float) -> Unit,
+    onAlphaChange: (Float) -> Unit,
+    onToggleShapeFilled: () -> Unit,
+    onToggleStandardPageView: () -> Unit,
+    onTogglePanZoomMode: () -> Unit,
+    onApplySignaturePreset: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onClearPage: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val palette = LocalFolioPalette.current
     val shape = RoundedCornerShape(26.dp)
+    var showColorCreator by remember { mutableStateOf(false) }
     val isSignaturePresetActive = !isPanZoomMode &&
         activeTool == DrawingTool.PEN &&
         activeWidthNorm <= 0.005f &&
@@ -519,13 +688,13 @@ fun DrawingFloatingToolbar(
             .padding(horizontal = 14.dp, vertical = 12.dp)
             .shadow(16.dp, shape)
             .clip(shape)
-            .background(palette.surface)
-            .border(2.dp, palette.border, shape)
+            .background(palette.surface.copy(alpha = 0.94f))
+            .border(1.5.dp, palette.border, shape)
             .padding(12.dp)
             .testTag("drawing_toolbar"),
-        verticalArrangement = Arrangement.spacedBy(9.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Row 0: Quick Work / Signature Strip + Paint Shapes Indicator
+        // Row 0: Quick Work / Signature Strip + Paint Shapes + Fill Toggle
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -548,6 +717,13 @@ fun DrawingFloatingToolbar(
                 testTag = "draw_tool_line"
             )
             ToolbarModeChip(
+                icon = Icons.Rounded.NorthEast,
+                label = "Flecha",
+                selected = !isPanZoomMode && activeTool == DrawingTool.ARROW,
+                onClick = { onSelectTool(DrawingTool.ARROW) },
+                testTag = "draw_tool_arrow"
+            )
+            ToolbarModeChip(
                 icon = Icons.Rounded.CropSquare,
                 label = "Cuadrado",
                 selected = !isPanZoomMode && activeTool == DrawingTool.RECTANGLE,
@@ -561,6 +737,15 @@ fun DrawingFloatingToolbar(
                 onClick = { onSelectTool(DrawingTool.CIRCLE) },
                 testTag = "draw_tool_circle"
             )
+            if (activeTool == DrawingTool.RECTANGLE || activeTool == DrawingTool.CIRCLE || activeShapeFilled) {
+                ToolbarModeChip(
+                    icon = Icons.Rounded.FormatColorFill,
+                    label = if (activeShapeFilled) "Relleno" else "Contorno",
+                    selected = activeShapeFilled,
+                    onClick = onToggleShapeFilled,
+                    testTag = "draw_toggle_fill"
+                )
+            }
             if (showStandardViewToggle) {
                 ToolbarModeChip(
                     icon = Icons.Rounded.Description,
@@ -649,32 +834,43 @@ fun DrawingFloatingToolbar(
             }
         }
 
-        // Row 2: Color Swatches + Stroke Thickness Slider
+        // Row 2: Color Swatches + Custom Color Creator + Thickness & Opacity
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            val allSwatches = remember(customColors) {
+                (DrawingPaletteColors + customColors).distinct()
+            }
+            for (hex in allSwatches) {
+                val selected = activeColorArgb == hex && activeTool != DrawingTool.ERASER
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color(hex.toInt()))
+                        .border(
+                            width = if (selected) 3.dp else 1.5.dp,
+                            color = if (selected) palette.ink else palette.border,
+                            shape = CircleShape
+                        )
+                        .clickable {
+                            if (activeTool == DrawingTool.ERASER) onSelectTool(DrawingTool.PEN)
+                            onSelectColor(hex)
+                        }
+                )
+            }
+            PaintColorAddBadge(onClick = { showColorCreator = true })
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for (hex in DrawingPaletteColors) {
-                    val selected = activeColorArgb == hex && activeTool != DrawingTool.ERASER
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(Color(hex.toInt()))
-                            .border(
-                                width = if (selected) 3.dp else 1.5.dp,
-                                color = if (selected) palette.ink else palette.border,
-                                shape = CircleShape
-                            )
-                            .clickable {
-                                if (activeTool == DrawingTool.ERASER) onSelectTool(DrawingTool.PEN)
-                                onSelectColor(hex)
-                            }
-                    )
-                }
-            }
-            Spacer(Modifier.width(12.dp))
             Text(
                 text = "Grosor",
                 style = MaterialTheme.typography.labelSmall,
@@ -686,17 +882,35 @@ fun DrawingFloatingToolbar(
                 onValueChange = onWidthChange,
                 valueRange = 0.0035f..0.022f,
                 modifier = Modifier.weight(1f),
-                colors = SliderDefaults.colors(
-                    thumbColor = palette.accent,
-                    activeTrackColor = palette.accent
-                )
+                colors = SliderDefaults.colors(thumbColor = palette.accent, activeTrackColor = palette.accent)
+            )
+            Text(
+                text = "Opac. ${(activeAlpha * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = palette.inkMuted
+            )
+            Slider(
+                value = activeAlpha,
+                onValueChange = onAlphaChange,
+                valueRange = 0.15f..1.0f,
+                modifier = Modifier.weight(0.85f).testTag("draw_opacity_slider"),
+                colors = SliderDefaults.colors(thumbColor = palette.accent, activeTrackColor = palette.accent)
             )
         }
+    }
+
+    if (showColorCreator) {
+        PaintColorCreatorDialog(
+            initialColorArgb = activeColorArgb,
+            onConfirmColor = onAddCustomColor,
+            onDismiss = { showColorCreator = false }
+        )
     }
 }
 
 @Composable
-private fun ToolbarModeChip(
+internal fun ToolbarModeChip(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     selected: Boolean,

@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -41,6 +42,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
@@ -49,7 +51,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.FitScreen
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -265,6 +269,8 @@ fun PdfManhwaReader(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
     onPageChanged: (Int) -> Unit,
     onPageBitmapReady: (Int, Bitmap) -> Unit,
     onWordSelected: (SelectedWordContext) -> Unit,
@@ -371,6 +377,7 @@ fun PdfManhwaReader(
     }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize().background(palette.background)) {
+        val isTabletViewport = maxWidth >= 680.dp
         val appContext = LocalContext.current.applicationContext
         // Quantize viewport width to 64px buckets; use lighter ceiling on low-RAM devices for rapid rendering
         val maxRenderWidth = if (com.example.engine.MemoryPressureManager.isLowRamDevice) 960 else 1280
@@ -423,7 +430,8 @@ fun PdfManhwaReader(
                 state = listState,
                 userScrollEnabled = !canDrawOnCanvas && !isZoomed,
                 modifier = pdfViewportMod,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 items(
                     count = safePageCount,
@@ -448,6 +456,9 @@ fun PdfManhwaReader(
                         activeTool = activeTool,
                         activeColorArgb = activeColorArgb,
                         activeWidthNorm = activeWidthNorm,
+                        activeAlpha = activeAlpha,
+                        activeShapeFilled = activeShapeFilled,
+                        fitInsideViewport = false,
                         onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
                         onBitmapReady = { bmp -> onPageBitmapReady(pageIdx, bmp) },
                         onWordSelected = onWordSelected,
@@ -468,7 +479,9 @@ fun PdfManhwaReader(
                                 onTapPageCenter()
                             }
                         },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .widthIn(max = 720.dp)
+                            .fillMaxWidth()
                     )
                 }
             }
@@ -611,65 +624,94 @@ fun PdfManhwaReader(
                         modifier = Modifier
                             .fillMaxSize()
                             .then(animMod)
-                            .then(
-                                if (!isDrawingMode) {
-                                    Modifier.pointerInput(pageIdx, prefs.tapZonesEnabled) {
-                                        detectTapGestures { offset ->
-                                            val frac = (offset.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
-                                            handlePdfTap(frac)
-                                        }
-                                    }
-                                } else {
-                                    Modifier
-                                }
-                            )
                     ) {
                         val viewportHeight = maxHeight
-                        val isLandscapeViewport = maxWidth > maxHeight
-                        val pageScrollState = rememberScrollState()
+                        // Compact-height phone landscape uses vertical scroll so users can read & scroll smoothly;
+                        // tablets and portrait screens fit the full page proportionally without stretching wide!
+                        val isPhoneLandscape = maxWidth > maxHeight && maxHeight < 480.dp
                         val inRenderWindow = abs(pageIdx - activeVisiblePage) <= 1
 
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(
-                                    state = pageScrollState,
-                                    enabled = !canDrawOnCanvas && !isZoomed
-                                )
-                        ) {
-                            Box(
+                        if (isPhoneLandscape) {
+                            val pageScrollState = rememberScrollState()
+                            Column(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = viewportHeight)
-                                    .padding(bottom = if (isLandscapeViewport) 48.dp else 0.dp),
-                                contentAlignment = Alignment.Center
+                                    .fillMaxSize()
+                                    .verticalScroll(
+                                        state = pageScrollState,
+                                        enabled = !canDrawOnCanvas && !isZoomed
+                                    ),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                PdfInteractivePage(
-                                    filePath = filePath,
-                                    pageIndex = pageIdx,
-                                    targetRenderWidthPx = targetRenderWidthPx,
-                                    shouldRender = inRenderWindow,
-                                    renderer = pfdAndRenderer?.second,
-                                    renderMutex = renderMutex,
-                                    ocrResult = ocrByPage[pageIdx],
-                                    showTranslatedOverlay = showTranslatedOverlay,
-                                    applyNightFilter = applyPdfNightFilter,
-                                    strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
-                                    zoomScale = zoomScale,
-                                    panOffset = panOffset,
-                                    isDrawingMode = canDrawOnCanvas,
-                                    activeTool = activeTool,
-                                    activeColorArgb = activeColorArgb,
-                                    activeWidthNorm = activeWidthNorm,
-                                    onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
-                                    onBitmapReady = { bmp -> onPageBitmapReady(pageIdx, bmp) },
-                                    onWordSelected = onWordSelected,
-                                    onStrokeCompleted = { onStrokeCompleted("pdf-page-$pageIdx", it) },
-                                    onEraseStrokes = { onEraseStrokes("pdf-page-$pageIdx", it) },
-                                    onTapAtXFraction = handlePdfTap,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = viewportHeight)
+                                        .padding(bottom = 48.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    PdfInteractivePage(
+                                        filePath = filePath,
+                                        pageIndex = pageIdx,
+                                        targetRenderWidthPx = targetRenderWidthPx,
+                                        shouldRender = inRenderWindow,
+                                        renderer = pfdAndRenderer?.second,
+                                        renderMutex = renderMutex,
+                                        ocrResult = ocrByPage[pageIdx],
+                                        showTranslatedOverlay = showTranslatedOverlay,
+                                        applyNightFilter = applyPdfNightFilter,
+                                        strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
+                                        zoomScale = zoomScale,
+                                        panOffset = panOffset,
+                                        isDrawingMode = canDrawOnCanvas,
+                                        activeTool = activeTool,
+                                        activeColorArgb = activeColorArgb,
+                                        activeWidthNorm = activeWidthNorm,
+                                        activeAlpha = activeAlpha,
+                                        activeShapeFilled = activeShapeFilled,
+                                        fitInsideViewport = false,
+                                        onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
+                                        onBitmapReady = { bmp -> onPageBitmapReady(pageIdx, bmp) },
+                                        onWordSelected = onWordSelected,
+                                        onStrokeCompleted = { onStrokeCompleted("pdf-page-$pageIdx", it) },
+                                        onEraseStrokes = { onEraseStrokes("pdf-page-$pageIdx", it) },
+                                        onTapAtXFraction = handlePdfTap,
+                                        modifier = Modifier
+                                            .widthIn(max = 600.dp)
+                                            .fillMaxWidth()
+                                    )
+                                }
                             }
+                        } else {
+                            PdfInteractivePage(
+                                filePath = filePath,
+                                pageIndex = pageIdx,
+                                targetRenderWidthPx = targetRenderWidthPx,
+                                shouldRender = inRenderWindow,
+                                renderer = pfdAndRenderer?.second,
+                                renderMutex = renderMutex,
+                                ocrResult = ocrByPage[pageIdx],
+                                showTranslatedOverlay = showTranslatedOverlay,
+                                applyNightFilter = applyPdfNightFilter,
+                                strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
+                                zoomScale = zoomScale,
+                                panOffset = panOffset,
+                                isDrawingMode = canDrawOnCanvas,
+                                activeTool = activeTool,
+                                activeColorArgb = activeColorArgb,
+                                activeWidthNorm = activeWidthNorm,
+                                activeAlpha = activeAlpha,
+                                activeShapeFilled = activeShapeFilled,
+                                fitInsideViewport = true,
+                                onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
+                                onBitmapReady = { bmp -> onPageBitmapReady(pageIdx, bmp) },
+                                onWordSelected = onWordSelected,
+                                onStrokeCompleted = { onStrokeCompleted("pdf-page-$pageIdx", it) },
+                                onEraseStrokes = { onEraseStrokes("pdf-page-$pageIdx", it) },
+                                onTapAtXFraction = handlePdfTap,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
                         }
                     }
                 }
@@ -739,10 +781,11 @@ fun PdfManhwaReader(
                 }
             }
 
-            // Quick floating toggles for Zoom Reset, Original Paper Size badge & Translated Manhwa toggle
+            // Quick floating controls: Original Paper badge, − / % / + Zoom controls & Translated Manhwa toggle
             val showFormatBadge = prefs.useStandardPageView && detectedFormatLabel.isNotBlank() && !isDrawingMode
-            val showQuickControls = (!isDrawingMode && (zoomScale > 1.05f || ocrByPage[safeIndex]?.isTranslated == true || showFormatBadge)) ||
-                (isDrawingMode && zoomScale > 1.05f)
+            val isZoomModified = abs(zoomScale - 1f) > 0.03f
+            val showZoomBar = (!isDrawingMode || isTabletViewport || isZoomModified)
+            val showQuickControls = showZoomBar || showFormatBadge || ocrByPage[safeIndex]?.isTranslated == true
             AnimatedVisibility(
                 visible = showQuickControls,
                 enter = fadeIn(motion.tweenSpec(180)),
@@ -763,40 +806,93 @@ fun PdfManhwaReader(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Hoja original · $detectedFormatLabel",
+                                text = "Hoja · $detectedFormatLabel",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = palette.accent
                             )
                         }
                     }
-                    if (zoomScale > 1.05f) {
+                    if (showZoomBar) {
                         Row(
                             modifier = Modifier
                                 .shadow(6.dp, RoundedCornerShape(50))
                                 .clip(RoundedCornerShape(50))
-                                .background(palette.surface.copy(alpha = 0.95f))
-                                .border(1.dp, palette.border, RoundedCornerShape(50))
-                                .clickable {
-                                    zoomScale = 1f
-                                    panOffset = Offset.Zero
-                                }
-                                .padding(horizontal = 13.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .background(palette.surface.copy(alpha = 0.94f))
+                                .border(
+                                    1.dp,
+                                    if (isZoomModified) palette.accent.copy(alpha = 0.55f) else palette.border,
+                                    RoundedCornerShape(50)
+                                )
+                                .padding(horizontal = 4.dp, vertical = 3.dp)
+                                .testTag("pdf_zoom_control_pill"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Icon(
-                                Icons.Rounded.FitScreen,
-                                contentDescription = "Ajustar al ancho",
-                                tint = palette.accent,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                text = "Ajustar (${(zoomScale * 100).toInt()}%)",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.ink
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable(enabled = zoomScale > 0.46f) {
+                                        val next = (zoomScale - 0.15f).coerceIn(0.45f, 4.5f)
+                                        zoomScale = next
+                                        if (next <= 1.01f) panOffset = Offset.Zero
+                                    }
+                                    .testTag("pdf_zoom_out_btn"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Remove,
+                                    contentDescription = "Alejar página",
+                                    tint = if (zoomScale > 0.46f) palette.ink else palette.inkMuted.copy(alpha = 0.35f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(if (isZoomModified) palette.accentSoft else Color.Transparent)
+                                    .clickable {
+                                        zoomScale = 1f
+                                        panOffset = Offset.Zero
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .testTag("pdf_zoom_reset_btn"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                if (isZoomModified) {
+                                    Icon(
+                                        Icons.Rounded.FitScreen,
+                                        contentDescription = "Restablecer zoom al 100%",
+                                        tint = palette.accent,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                Text(
+                                    text = "${(zoomScale * 100).roundToInt()}%",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isZoomModified) palette.accent else palette.ink
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .clickable(enabled = zoomScale < 4.45f) {
+                                        zoomScale = (zoomScale + 0.25f).coerceIn(0.45f, 4.5f)
+                                    }
+                                    .testTag("pdf_zoom_in_btn"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Add,
+                                    contentDescription = "Acercar página",
+                                    tint = if (zoomScale < 4.45f) palette.ink else palette.inkMuted.copy(alpha = 0.35f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                     }
                     if (ocrByPage[safeIndex]?.isTranslated == true) {
@@ -851,6 +947,9 @@ private fun PdfInteractivePage(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
+    fitInsideViewport: Boolean = false,
     onZoomPanChange: (Float, Offset) -> Unit,
     onBitmapReady: (Bitmap) -> Unit,
     onWordSelected: (SelectedWordContext) -> Unit,
@@ -928,205 +1027,274 @@ private fun PdfInteractivePage(
         return
     }
 
+    val density = LocalDensity.current
     BoxWithConstraints(
-        modifier = modifier
-            .aspectRatio(aspectRatio)
-            .graphicsLayer {
-                scaleX = zoomScale
-                scaleY = zoomScale
-                translationX = panOffset.x
-                translationY = panOffset.y
-            }
-            .then(
-                if (!isDrawingMode) {
-                    Modifier
-                        // Continuous Google Drive-style multi-touch focal zoom & 1-finger pan (NEVER restarts per frame!)
-                        .pointerInput(pageIndex) {
-                            awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false)
-                                do {
-                                    val event = awaitPointerEvent()
-                                    val pressedCount = event.changes.count { it.pressed }
-                                    if (pressedCount >= 2) {
-                                        val zoomChange = event.calculateZoom()
-                                        val panChange = event.calculatePan()
-                                        val centroid = event.calculateCentroid(useCurrent = true)
-                                        if (zoomChange != 1f || panChange != Offset.Zero) {
-                                            val oldZoom = latestZoom
-                                            val newZoom = (oldZoom * zoomChange).coerceIn(1f, 4.5f)
-                                            if (newZoom <= 1.01f) {
-                                                latestOnZoomPan(1f, Offset.Zero)
-                                            } else {
-                                                val center = Offset(size.width / 2f, size.height / 2f)
-                                                val focal = centroid - center
-                                                val ratio = newZoom / oldZoom
-                                                val rawPan = (latestPan - focal) * ratio + focal + panChange
-                                                val maxX = size.width * (newZoom - 1f) * 0.5f
-                                                val maxY = size.height * (newZoom - 1f) * 0.5f
-                                                latestOnZoomPan(
-                                                    newZoom,
-                                                    Offset(
-                                                        rawPan.x.coerceIn(-maxX, maxX),
-                                                        rawPan.y.coerceIn(-maxY, maxY)
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        val availW = maxWidth
+        val availH = maxHeight
+        val useHeightBound = fitInsideViewport &&
+            availH.value.isFinite() &&
+            availH.value > 0f &&
+            (availW.value / availH.value) > aspectRatio
+        val pageBaseWpx = with(density) {
+            if (useHeightBound) (availH * aspectRatio).toPx() else availW.toPx()
+        }.coerceAtLeast(120f)
+        val pageBaseHpx = with(density) {
+            if (useHeightBound) availH.toPx() else (availW / aspectRatio).toPx()
+        }.coerceAtLeast(120f)
+        val latestPageW by rememberUpdatedState(pageBaseWpx)
+        val latestPageH by rememberUpdatedState(pageBaseHpx)
+
+        val pageSizeMod = if (useHeightBound) {
+            Modifier
+                .fillMaxHeight()
+                .aspectRatio(aspectRatio, matchHeightConstraintsFirst = true)
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(aspectRatio, matchHeightConstraintsFirst = false)
+        }
+
+        // Untransformed outer host receives pinch & pan gestures in exact viewport pixels
+        // so focal pinch-to-zoom anchors strictly beneath the user's fingers (0.45x..4.5x)!
+        Box(
+            modifier = Modifier
+                .then(if (fitInsideViewport) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                .then(
+                    if (!isDrawingMode) {
+                        Modifier
+                            .pointerInput(pageIndex) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    do {
+                                        val event = awaitPointerEvent()
+                                        val pressedCount = event.changes.count { it.pressed }
+                                        if (pressedCount >= 2) {
+                                            val zoomChange = event.calculateZoom()
+                                            val panChange = event.calculatePan()
+                                            val centroid = event.calculateCentroid(useCurrent = true)
+                                            if (zoomChange != 1f || panChange != Offset.Zero) {
+                                                val oldZoom = latestZoom
+                                                val newZoom = (oldZoom * zoomChange).coerceIn(0.45f, 4.5f)
+                                                if (newZoom <= 1.01f) {
+                                                    latestOnZoomPan(newZoom, Offset.Zero)
+                                                } else {
+                                                    val center = Offset(size.width / 2f, size.height / 2f)
+                                                    val focal = centroid - center
+                                                    val ratio = newZoom / oldZoom
+                                                    val rawPan = (latestPan - focal) * ratio + focal + panChange
+                                                    val maxX = maxOf(latestPageW * (newZoom - 1f) * 0.56f, 0f)
+                                                    val maxY = maxOf(latestPageH * (newZoom - 1f) * 0.56f, 0f)
+                                                    latestOnZoomPan(
+                                                        newZoom,
+                                                        Offset(
+                                                            rawPan.x.coerceIn(-maxX, maxX),
+                                                            rawPan.y.coerceIn(-maxY, maxY)
+                                                        )
                                                     )
-                                                )
-                                            }
-                                            event.changes.forEach { if (it.positionChanged()) it.consume() }
-                                        }
-                                    } else if (pressedCount == 1 && latestZoom > 1.02f) {
-                                        val panChange = event.calculatePan()
-                                        if (panChange != Offset.Zero) {
-                                            val maxX = size.width * (latestZoom - 1f) * 0.5f
-                                            val maxY = size.height * (latestZoom - 1f) * 0.5f
-                                            val nextX = (latestPan.x + panChange.x).coerceIn(-maxX, maxX)
-                                            val nextY = (latestPan.y + panChange.y).coerceIn(-maxY, maxY)
-                                            val atHorizontalEdge = abs(nextX - latestPan.x) < 0.5f &&
-                                                abs(panChange.x) > abs(panChange.y)
-                                            latestOnZoomPan(latestZoom, Offset(nextX, nextY))
-                                            if (!atHorizontalEdge) {
+                                                }
                                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                                             }
+                                        } else if (pressedCount == 1 && latestZoom > 1.02f) {
+                                            val panChange = event.calculatePan()
+                                            if (panChange != Offset.Zero) {
+                                                val maxX = maxOf(latestPageW * (latestZoom - 1f) * 0.56f, 0f)
+                                                val maxY = maxOf(latestPageH * (latestZoom - 1f) * 0.56f, 0f)
+                                                val nextX = (latestPan.x + panChange.x).coerceIn(-maxX, maxX)
+                                                val nextY = (latestPan.y + panChange.y).coerceIn(-maxY, maxY)
+                                                val atHorizontalEdge = abs(nextX - latestPan.x) < 0.5f &&
+                                                    abs(panChange.x) > abs(panChange.y)
+                                                latestOnZoomPan(latestZoom, Offset(nextX, nextY))
+                                                if (!atHorizontalEdge) {
+                                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                                }
+                                            }
+                                        }
+                                    } while (event.changes.any { it.pressed })
+                                }
+                            }
+                            .pointerInput(pageIndex) {
+                                detectTapGestures(
+                                    onTap = { tapPos ->
+                                        selectedOcrWordBox = null
+                                        val nx = (tapPos.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                        latestOnTapX(nx)
+                                    }
+                                )
+                            }
+                    } else {
+                        Modifier
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            BoxWithConstraints(
+                modifier = pageSizeMod
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                        translationX = panOffset.x
+                        translationY = panOffset.y
+                    }
+                    .then(
+                        if (!isDrawingMode) {
+                            Modifier.pointerInput(pageIndex) {
+                                // Handles tap & long-press OCR word selection directly in page-local coordinates
+                                detectTapGestures(
+                                    onTap = { tapPos ->
+                                        selectedOcrWordBox = null
+                                        val nx = (tapPos.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                                        latestOnTapX(nx)
+                                    },
+                                    onLongPress = { pos ->
+                                        val nx = (pos.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                        val ny = (pos.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                        val hit = findOcrWordAt(latestOcr, nx, ny)
+                                        if (hit != null) {
+                                            val (block, word) = hit
+                                            selectedOcrWordBox = word
+                                            onWordSelected(
+                                                SelectedWordContext(
+                                                    word = word.text,
+                                                    snippet = block.originalText,
+                                                    locationKey = "pdf-page-$pageIndex",
+                                                    blockIndex = block.id,
+                                                    startChar = 0,
+                                                    endChar = word.text.length,
+                                                    anchorXFraction = nx,
+                                                    anchorYFraction = ny
+                                                )
+                                            )
                                         }
                                     }
-                                } while (event.changes.any { it.pressed })
+                                )
                             }
+                        } else {
+                            Modifier
                         }
-                        .pointerInput(pageIndex) {
-                            // Omitting onDoubleTap eliminates Android's ~300 ms double-tap wait so every
-                            // single tap (menu toggle / page flip) fires in 0 ms! Pinch-to-zoom remains instant.
-                            detectTapGestures(
-                                onTap = { tapPos ->
-                                    selectedOcrWordBox = null
-                                    val nx = (tapPos.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
-                                    latestOnTapX(nx)
-                                },
-                                onLongPress = { pos ->
-                                    val nx = (pos.x / size.width.coerceAtLeast(1)).coerceIn(0f, 1f)
-                                    val ny = (pos.y / size.height.coerceAtLeast(1)).coerceIn(0f, 1f)
-                                    val hit = findOcrWordAt(latestOcr, nx, ny)
-                                    if (hit != null) {
-                                        val (block, word) = hit
-                                        selectedOcrWordBox = word
-                                        onWordSelected(
-                                            SelectedWordContext(
-                                                word = word.text,
-                                                snippet = block.originalText,
-                                                locationKey = "pdf-page-$pageIndex",
-                                                blockIndex = block.id,
-                                                startChar = 0,
-                                                endChar = word.text.length,
-                                                anchorXFraction = nx,
-                                                anchorYFraction = ny
-                                            )
-                                        )
-                                    }
-                                }
+                    )
+            ) {
+                val pageWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                val pageHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+
+                // 1. Crisp rendered PDF / Manhwa page image (with optional low-glare midnight filter)
+                val nightColorFilter = remember(applyNightFilter) {
+                    if (!applyNightFilter) null
+                    else ColorFilter.colorMatrix(
+                        ColorMatrix(
+                            floatArrayOf(
+                                0.82f, 0f, 0f, 0f, 0f,
+                                0f, 0.80f, 0f, 0f, 0f,
+                                0f, 0f, 0.76f, 0f, 0f,
+                                0f, 0f, 0f, 1f, 0f
+                            )
+                        )
+                    )
+                }
+                Image(
+                    bitmap = imageBitmap,
+                    contentDescription = "Página PDF ${pageIndex + 1}",
+                    contentScale = ContentScale.FillBounds,
+                    colorFilter = nightColorFilter,
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // 2. Subtle PC-style OCR word highlight box when user long-presses a word on a Manhwa/PDF
+                if (selectedOcrWordBox != null) {
+                    val box = selectedOcrWordBox!!
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawRoundRect(
+                            color = Color(0xFF1D5BFF).copy(alpha = 0.28f),
+                            topLeft = Offset(box.left * size.width, box.top * size.height),
+                            size = Size((box.right - box.left) * size.width, (box.bottom - box.top) * size.height),
+                            cornerRadius = CornerRadius(6f, 6f)
+                        )
+                    }
+                }
+
+                // 3. Seamless Borderless Manhwa Speech-Bubble Text Replacement
+                // Scales typography proportionally to the active sheet width & bubble area on phones and tablets
+                if (showTranslatedOverlay && ocrResult != null && ocrResult.isTranslated) {
+                    val pageWidthDp = with(density) { pageWidthPx.toDp().value }.coerceAtLeast(240f)
+                    val pageScale = (pageWidthDp / 360f).coerceIn(1.0f, 3.0f)
+                    val bubbleCorner = (10f * pageScale.coerceAtMost(1.6f)).dp
+                    val bubblePadH = (3.5f * pageScale.coerceAtMost(1.6f)).dp
+                    val bubblePadV = (2.5f * pageScale.coerceAtMost(1.6f)).dp
+                    val minSp = (9.5f * pageScale.coerceAtMost(1.85f)).coerceIn(9.5f, 18f)
+                    val maxSp = (17f * pageScale).coerceIn(17f, 44f)
+
+                    for (block in ocrResult.blocks) {
+                        val translated = block.translatedText?.takeIf { it.isNotBlank() } ?: continue
+                        val padX = 0.012f
+                        val padY = 0.008f
+                        val normLeft = (block.left - padX).coerceAtLeast(0f)
+                        val normTop = (block.top - padY).coerceAtLeast(0f)
+                        val normW = ((block.right - block.left) + padX * 2f).coerceIn(0.08f, 1f - normLeft)
+                        val normH = ((block.bottom - block.top) + padY * 2f).coerceIn(0.032f, 1f - normTop)
+
+                        val leftPx = (normLeft * pageWidthPx).roundToInt()
+                        val topPx = (normTop * pageHeightPx).roundToInt()
+                        val widthPx = (normW * pageWidthPx).roundToInt()
+                        val heightPx = (normH * pageHeightPx).roundToInt()
+
+                        val boxWidthDp = with(density) { widthPx.toDp() }
+                        val boxHeightDp = with(density) { heightPx.toDp() }
+
+                        val innerW = (boxWidthDp.value - bubblePadH.value * 2f).coerceAtLeast(24f)
+                        val innerH = (boxHeightDp.value - bubblePadV.value * 2f).coerceAtLeast(16f)
+                        val areaDp2 = (innerW * innerH).coerceAtLeast(360f)
+                        val charCount = translated.length.coerceAtLeast(3)
+                        var fittedSp = kotlin.math.sqrt((areaDp2 * 0.86f) / (charCount * 0.92f))
+                            .coerceIn(minSp, maxSp)
+                        val estCharsPerLine = (innerW / (fittedSp * 0.56f)).coerceAtLeast(1f)
+                        val estLines = kotlin.math.ceil(charCount / estCharsPerLine)
+                        val estHeight = estLines * fittedSp * 1.15f
+                        if (estHeight > innerH && estHeight > 1f) {
+                            fittedSp = (fittedSp * (innerH / estHeight)).coerceIn(minSp * 0.78f, maxSp)
+                        }
+
+                        val bgColor = Color(block.bgColorArgb.toInt())
+                        val inkColor = Color(block.inkColorArgb.toInt())
+
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset(leftPx, topPx) }
+                                .size(width = boxWidthDp, height = boxHeightDp)
+                                .clip(RoundedCornerShape(bubbleCorner))
+                                .background(bgColor)
+                                .padding(horizontal = bubblePadH, vertical = bubblePadV),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = translated,
+                                color = inkColor,
+                                fontSize = fittedSp.sp,
+                                lineHeight = (fittedSp * 1.14f).sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                } else {
-                    Modifier
+                    }
                 }
-            )
-    ) {
-        val pageWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-        val pageHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
-        val density = LocalDensity.current
 
-        // 1. Crisp rendered PDF / Manhwa page image (with optional low-glare midnight filter)
-        val nightColorFilter = remember(applyNightFilter) {
-            if (!applyNightFilter) null
-            else ColorFilter.colorMatrix(
-                ColorMatrix(
-                    floatArrayOf(
-                        0.82f, 0f, 0f, 0f, 0f,
-                        0f, 0.80f, 0f, 0f, 0f,
-                        0f, 0f, 0.76f, 0f, 0f,
-                        0f, 0f, 0f, 1f, 0f
-                    )
-                )
-            )
-        }
-        Image(
-            bitmap = imageBitmap,
-            contentDescription = "Página PDF ${pageIndex + 1}",
-            contentScale = ContentScale.FillBounds,
-            colorFilter = nightColorFilter,
-            modifier = Modifier.fillMaxSize()
-        )
-
-        // 2. Subtle PC-style OCR word highlight box when user long-presses a word on a Manhwa/PDF
-        if (selectedOcrWordBox != null) {
-            val box = selectedOcrWordBox!!
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRoundRect(
-                    color = Color(0xFF1D5BFF).copy(alpha = 0.28f),
-                    topLeft = Offset(box.left * size.width, box.top * size.height),
-                    size = Size((box.right - box.left) * size.width, (box.bottom - box.top) * size.height),
-                    cornerRadius = CornerRadius(6f, 6f)
+                // 4. Zoom-synchronized persistent Drawing Canvas Overlay
+                DrawingCanvasOverlay(
+                    strokes = strokes,
+                    isInteractive = isDrawingMode,
+                    activeTool = activeTool,
+                    activeColorArgb = activeColorArgb,
+                    activeWidthNorm = activeWidthNorm,
+                    activeAlpha = activeAlpha,
+                    activeShapeFilled = activeShapeFilled,
+                    onStrokeCompleted = onStrokeCompleted,
+                    onEraseStrokeIds = onEraseStrokes,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }
-
-        // 3. Seamless Borderless Manhwa Speech-Bubble Text Replacement
-        if (showTranslatedOverlay && ocrResult != null && ocrResult.isTranslated) {
-            for (block in ocrResult.blocks) {
-                val translated = block.translatedText?.takeIf { it.isNotBlank() } ?: continue
-                val padX = 0.012f
-                val padY = 0.008f
-                val normLeft = (block.left - padX).coerceAtLeast(0f)
-                val normTop = (block.top - padY).coerceAtLeast(0f)
-                val normW = ((block.right - block.left) + padX * 2f).coerceIn(0.08f, 1f - normLeft)
-                val normH = ((block.bottom - block.top) + padY * 2f).coerceIn(0.032f, 1f - normTop)
-
-                val leftPx = (normLeft * pageWidthPx).roundToInt()
-                val topPx = (normTop * pageHeightPx).roundToInt()
-                val widthPx = (normW * pageWidthPx).roundToInt()
-                val heightPx = (normH * pageHeightPx).roundToInt()
-
-                val boxWidthDp = with(density) { widthPx.toDp() }
-                val boxHeightDp = with(density) { heightPx.toDp() }
-
-                val areaDp2 = (boxWidthDp.value * boxHeightDp.value).coerceAtLeast(360f)
-                val charCount = translated.length.coerceAtLeast(4)
-                val fittedSp = kotlin.math.sqrt(areaDp2 / (charCount * 1.15f))
-                    .coerceIn(8.5f, 15.5f)
-
-                val bgColor = Color(block.bgColorArgb.toInt())
-                val inkColor = Color(block.inkColorArgb.toInt())
-
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(leftPx, topPx) }
-                        .size(width = boxWidthDp, height = boxHeightDp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(bgColor)
-                        .padding(horizontal = 3.dp, vertical = 2.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = translated,
-                        color = inkColor,
-                        fontSize = fittedSp.sp,
-                        lineHeight = (fittedSp * 1.14f).sp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-
-        // 4. Zoom-synchronized persistent Drawing Canvas Overlay
-        DrawingCanvasOverlay(
-            strokes = strokes,
-            isInteractive = isDrawingMode,
-            activeTool = activeTool,
-            activeColorArgb = activeColorArgb,
-            activeWidthNorm = activeWidthNorm,
-            onStrokeCompleted = onStrokeCompleted,
-            onEraseStrokeIds = onEraseStrokes,
-            modifier = Modifier.fillMaxSize()
-        )
     }
 }
 

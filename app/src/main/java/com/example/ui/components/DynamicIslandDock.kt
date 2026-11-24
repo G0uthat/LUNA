@@ -165,6 +165,14 @@ internal fun DynamicIslandReaderDock(
         val availMaxWidth = this.maxWidth
         val availMaxHeight = this.maxHeight
         val isCompactHeight = availMaxHeight < 480.dp
+        // Responsive device-proportional scaling so the Dynamic Island feels naturally sized on tablets too
+        val deviceScale = when {
+            availMaxWidth >= 960.dp -> 1.42f
+            availMaxWidth >= 760.dp -> 1.30f
+            availMaxWidth >= 600.dp -> 1.18f
+            else -> 1.0f
+        }
+        val pillScale = (dockScale * deviceScale).coerceIn(0.88f, 1.58f)
         // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
@@ -190,7 +198,7 @@ internal fun DynamicIslandReaderDock(
                 .align(Alignment.TopCenter)
                 .displayCutoutPadding()
                 .statusBarsPadding()
-                .padding(top = 6.dp, start = 12.dp, end = 12.dp),
+                .padding(top = (6.dp * deviceScale).coerceAtMost(10.dp), start = 12.dp, end = 12.dp),
             contentAlignment = Alignment.TopCenter
         ) {
             // 0. Centralized critical states & permitted external app notifications via Dynamic Island
@@ -218,7 +226,7 @@ internal fun DynamicIslandReaderDock(
                 val showCompactMedia = !isProcessingStatus && hasMediaAvailable
                 Row(
                     modifier = Modifier
-                        .widthIn(max = 264.dp)
+                        .widthIn(max = (264.dp * deviceScale).coerceAtMost(420.dp))
                         .shadow(8.dp, IslandPillShape, ambientColor = Color.Black.copy(alpha = 0.32f))
                         .clip(IslandPillShape)
                         .background(IslandBgColor.copy(alpha = 0.96f))
@@ -237,22 +245,22 @@ internal fun DynamicIslandReaderDock(
                             onClick = onToggleExpanded
                         )
                         .padding(
-                            horizontal = (11.dp * dockScale.coerceIn(0.88f, 1.18f)),
-                            vertical = (5.dp * dockScale.coerceIn(0.88f, 1.18f))
+                            horizontal = (12.dp * pillScale),
+                            vertical = (5.5.dp * pillScale)
                         )
                         .testTag("dynamic_island_dock"),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    horizontalArrangement = Arrangement.spacedBy(7.dp * deviceScale.coerceAtMost(1.3f))
                 ) {
                     if (isProcessingStatus) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(12.dp),
+                            modifier = Modifier.size(12.dp * deviceScale),
                             strokeWidth = 2.dp,
                             color = Color(0xFF639BFF)
                         )
                         Text(
                             text = processingStatusText.ifBlank { "Traduciendo…" },
-                            fontSize = 11.sp,
+                            fontSize = (11f * deviceScale).coerceIn(11f, 15.5f).sp,
                             fontWeight = FontWeight.Bold,
                             color = IslandFgColor,
                             maxLines = 1,
@@ -261,13 +269,13 @@ internal fun DynamicIslandReaderDock(
                     } else {
                         Box(
                             modifier = Modifier
-                                .size(6.dp)
+                                .size((6.dp * deviceScale).coerceAtMost(9.dp))
                                 .clip(CircleShape)
                                 .background(if (isBookmarkedHere) Color(0xFF639BFF) else Color(0xFF39C689))
                         )
                         Text(
                             text = progressLabel.substringBefore("·").trim(),
-                            fontSize = 11.sp,
+                            fontSize = (11f * deviceScale).coerceIn(11f, 15.5f).sp,
                             fontWeight = FontWeight.Bold,
                             color = IslandFgColor
                         )
@@ -275,7 +283,7 @@ internal fun DynamicIslandReaderDock(
                             Box(
                                 modifier = Modifier
                                     .width(1.dp)
-                                    .height(12.dp)
+                                    .height(12.dp * deviceScale)
                                     .background(Color.White.copy(alpha = 0.2f))
                             )
                             if (albumArtImage != null) {
@@ -284,13 +292,13 @@ internal fun DynamicIslandReaderDock(
                                     contentDescription = "Miniatura multimedia",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(16.dp)
+                                        .size((16.dp * deviceScale).coerceAtMost(24.dp))
                                         .clip(CircleShape)
                                 )
                             } else {
                                 Box(
                                     modifier = Modifier
-                                        .size(16.dp)
+                                        .size((16.dp * deviceScale).coerceAtMost(24.dp))
                                         .clip(CircleShape)
                                         .background(if (mediaInfo.isPlaying) Color(0xFF1DB954) else Color(0xFF5C8DFF)),
                                     contentAlignment = Alignment.Center
@@ -299,25 +307,25 @@ internal fun DynamicIslandReaderDock(
                                         imageVector = Icons.Rounded.MusicNote,
                                         contentDescription = null,
                                         tint = Color.White,
-                                        modifier = Modifier.size(10.dp)
+                                        modifier = Modifier.size((10.dp * deviceScale).coerceAtMost(15.dp))
                                     )
                                 }
                             }
                             Text(
                                 text = mediaInfo.title,
-                                fontSize = 10.5.sp,
+                                fontSize = (10.5f * deviceScale).coerceIn(10.5f, 14.5f).sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = IslandFgColor.copy(alpha = 0.9f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.widthIn(max = 110.dp)
+                                modifier = Modifier.widthIn(max = (110.dp * deviceScale).coerceAtMost(200.dp))
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Rounded.Bookmark,
                                 contentDescription = "Expandir isla dinámica",
                                 tint = IslandFgColor.copy(alpha = 0.72f),
-                                modifier = Modifier.size(13.dp)
+                                modifier = Modifier.size((13.dp * deviceScale).coerceAtMost(19.dp))
                             )
                         }
                     }
@@ -338,12 +346,15 @@ internal fun DynamicIslandReaderDock(
                     animationSpec = motion.exitTween(90)
                 ) + fadeOut(motion.exitTween(80))
             ) {
-                val baseExpandedW = if (isCompactHeight) {
-                    (400.dp * dockScale).coerceIn(320.dp, 460.dp)
-                } else {
-                    (312.dp * dockScale).coerceIn(280.dp, 400.dp)
+                val baseExpandedW = when {
+                    availMaxWidth >= 900.dp -> (470.dp * dockScale).coerceIn(420.dp, 580.dp)
+                    availMaxWidth >= 680.dp -> (420.dp * dockScale).coerceIn(370.dp, 520.dp)
+                    isCompactHeight -> (400.dp * dockScale).coerceIn(320.dp, 460.dp)
+                    else -> (312.dp * dockScale).coerceIn(280.dp, 400.dp)
                 }
                 val expandedW = baseExpandedW.coerceAtMost((availMaxWidth - 28.dp).coerceAtLeast(260.dp))
+                val headerBtnSize = (28.dp * deviceScale).coerceIn(28.dp, 38.dp)
+                val headerIconSize = (15.dp * deviceScale).coerceIn(15.dp, 21.dp)
                 Column(
                     modifier = Modifier
                         .width(expandedW)
@@ -362,9 +373,12 @@ internal fun DynamicIslandReaderDock(
                             onClick = {}
                         )
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp, vertical = if (isCompactHeight) 8.dp else 10.dp)
+                        .padding(
+                            horizontal = (12.dp * deviceScale).coerceIn(12.dp, 18.dp),
+                            vertical = if (isCompactHeight) 8.dp else (10.dp * deviceScale).coerceIn(10.dp, 15.dp)
+                        )
                         .testTag("dynamic_island_expanded"),
-                    verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 6.dp else 8.dp)
+                    verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 6.dp else (8.dp * deviceScale).coerceIn(8.dp, 12.dp))
                 ) {
                     // Show Lectura <-> Música switcher ONLY when music/video is playing or recently paused
                     if (hasMediaAvailable) {
@@ -405,7 +419,7 @@ internal fun DynamicIslandReaderDock(
                             }
                             Box(
                                 modifier = Modifier
-                                    .size(26.dp)
+                                    .size(headerBtnSize)
                                     .clip(CircleShape)
                                     .background(Color.White.copy(alpha = 0.08f))
                                     .clickable(onClick = onDismiss),
@@ -415,7 +429,7 @@ internal fun DynamicIslandReaderDock(
                                     imageVector = Icons.Rounded.Close,
                                     contentDescription = "Contraer",
                                     tint = IslandFgColor.copy(alpha = 0.78f),
-                                    modifier = Modifier.size(14.dp)
+                                    modifier = Modifier.size(headerIconSize)
                                 )
                             }
                         }
@@ -426,23 +440,23 @@ internal fun DynamicIslandReaderDock(
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(headerBtnSize)
                                     .clip(CircleShape)
                                     .background(Color.White.copy(alpha = 0.1f))
                                     .clickable { onDismiss(); onBackToLibrary() },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Biblioteca", tint = IslandFgColor, modifier = Modifier.size(15.dp))
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Biblioteca", tint = IslandFgColor, modifier = Modifier.size(headerIconSize))
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = bookTitle,
-                                    fontSize = 12.sp,
-                                    lineHeight = 14.sp,
+                                    fontSize = (12f * deviceScale).coerceIn(12f, 16f).sp,
+                                    lineHeight = (15f * deviceScale).coerceIn(14f, 20f).sp,
                                     fontWeight = FontWeight.Bold,
                                     color = IslandFgColor,
                                     maxLines = 1,
@@ -454,8 +468,8 @@ internal fun DynamicIslandReaderDock(
                                     } else {
                                         progressLabel
                                     },
-                                    fontSize = 10.sp,
-                                    lineHeight = 12.sp,
+                                    fontSize = (10f * deviceScale).coerceIn(10f, 13.5f).sp,
+                                    lineHeight = (12f * deviceScale).coerceIn(12f, 16f).sp,
                                     color = if (isProcessingStatus) Color(0xFF639BFF) else IslandFgColor.copy(alpha = 0.65f),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -463,24 +477,24 @@ internal fun DynamicIslandReaderDock(
                             }
                             Box(
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(headerBtnSize)
                                     .clip(CircleShape)
                                     .background(Color.White.copy(alpha = 0.08f))
                                     .clickable { onDismiss(); onOpenSettings() },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Rounded.Settings, contentDescription = "Configuración", tint = IslandFgColor.copy(alpha = 0.78f), modifier = Modifier.size(14.dp))
+                                Icon(Icons.Rounded.Settings, contentDescription = "Configuración", tint = IslandFgColor.copy(alpha = 0.78f), modifier = Modifier.size(headerIconSize))
                             }
                             if (!hasMediaAvailable) {
                                 Box(
                                     modifier = Modifier
-                                        .size(28.dp)
+                                        .size(headerBtnSize)
                                         .clip(CircleShape)
                                         .background(Color.White.copy(alpha = 0.08f))
                                         .clickable(onClick = onDismiss),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(Icons.Rounded.Close, contentDescription = "Contraer", tint = IslandFgColor.copy(alpha = 0.78f), modifier = Modifier.size(14.dp))
+                                    Icon(Icons.Rounded.Close, contentDescription = "Contraer", tint = IslandFgColor.copy(alpha = 0.78f), modifier = Modifier.size(headerIconSize))
                                 }
                             }
                         }
@@ -490,7 +504,7 @@ internal fun DynamicIslandReaderDock(
                             brightnessValue = brightnessValue,
                             onBrightnessChanged = onBrightnessChanged,
                             darkSurfaceOverride = true,
-                            compact = true
+                            compact = deviceScale < 1.2f
                         )
 
                         // Dedicated View Mode Switcher ONLY for non-EPUB files (PDF, PPTX, DOCX, TXT, FB2)
@@ -499,7 +513,7 @@ internal fun DynamicIslandReaderDock(
                                 documentFormat = documentFormat,
                                 isOriginalFormatView = isOriginalFormatView,
                                 darkSurfaceOverride = true,
-                                compact = true,
+                                compact = deviceScale < 1.2f,
                                 onSelectOriginalFormat = { original ->
                                     onSetOriginalFormatView(original)
                                     onDismiss()
@@ -510,31 +524,35 @@ internal fun DynamicIslandReaderDock(
                         // ALL quick reading tools in ONE SINGLE compact row!
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                            horizontalArrangement = Arrangement.spacedBy((3.dp * deviceScale).coerceAtMost(6.dp)),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IslandActionTile(
                                 icon = Icons.Rounded.TextFields,
                                 label = "Texto",
                                 active = false,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenAppearance() }
                             IslandActionTile(
                                 icon = Icons.Rounded.FormatListBulleted,
                                 label = "Índice",
                                 active = false,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenToc() }
                             IslandActionTile(
                                 icon = Icons.Rounded.Draw,
                                 label = "Firmar",
                                 active = false,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onToggleDrawing() }
                             IslandActionTile(
                                 icon = if (isBookmarkedHere) Icons.Rounded.BookmarkAdded else Icons.Rounded.BookmarkAdd,
                                 label = "Marcar",
                                 active = isBookmarkedHere,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onToggleBookmarkHere(); onDismiss() }
                             if (isPdfDocument) {
@@ -542,6 +560,7 @@ internal fun DynamicIslandReaderDock(
                                     icon = Icons.Rounded.Translate,
                                     label = if (isPageTranslated) "Orig." else "Trad.",
                                     active = isPageTranslated,
+                                    scale = deviceScale,
                                     modifier = Modifier.weight(1f)
                                 ) { onDismiss(); onTriggerOcrTranslate() }
                             }
@@ -549,18 +568,21 @@ internal fun DynamicIslandReaderDock(
                                 icon = Icons.Rounded.Bookmarks,
                                 label = "Notas",
                                 active = false,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenAnnotations() }
                             IslandActionTile(
                                 icon = Icons.Rounded.Search,
                                 label = "Buscar",
                                 active = false,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenSearch() }
                             IslandActionTile(
                                 icon = Icons.Rounded.IosShare,
                                 label = "Export",
                                 active = false,
+                                scale = deviceScale,
                                 modifier = Modifier.weight(1f)
                             ) { onDismiss(); onOpenExport() }
                         }

@@ -11,11 +11,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,6 +26,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -294,7 +298,7 @@ fun LibraryScreen(
     Scaffold(
         containerColor = palette.background
     ) { innerPadding ->
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -304,144 +308,364 @@ fun LibraryScreen(
                     rootTopWindowPx = pos.y
                 }
         ) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 148.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .displayCutoutPadding()
-                    .navigationBarsPadding(),
-                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 32.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // 1. Minimalist Full-Span "LUMA" Wordmark + Interactive Profile Sphere
-                item(key = "lib_header", span = { GridItemSpan(maxLineSpan) }, contentType = "header") {
-                    LibraryHeaderRow(
-                        bookCount = documents.size,
-                        seriesCount = playlists.size,
-                        socialRepo = socialRepo,
-                        isImporting = isImporting,
-                        onOpenGuide = { showAppGuide = true },
-                        onToggleProfileMenu = { showProfileMenu = !showProfileMenu },
-                        onHeaderRect = { rect -> tourTargets = tourTargets.copy(headerRect = rect.toRootRelative()) },
-                        onGuideRect = { rect -> tourTargets = tourTargets.copy(guideButtonRect = rect.toRootRelative()) },
-                        onProfileBounds = { topY, rect ->
-                            profileSphereTopInRootPx = (topY - rootTopWindowPx).coerceAtLeast(0f)
-                            tourTargets = tourTargets.copy(profileSphereRect = rect.toRootRelative())
-                        }
-                    )
-                }
-
-                // 2. Soft Continue Reading Banner
-                if (continueDoc != null) {
-                    item(key = "lib_continue_reading", span = { GridItemSpan(maxLineSpan) }, contentType = "continue") {
-                        Box(
-                            modifier = Modifier.onGloballyPositioned { coords ->
-                                tourTargets = tourTargets.copy(
-                                    continueRect = coords.boundsInWindow().toRootRelative()
-                                )
+            val isTabletLayout = maxWidth >= 720.dp
+            if (isTabletLayout) {
+                val leftPaneWidth = (maxWidth * 0.36f).coerceIn(300.dp, 400.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .displayCutoutPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(22.dp)
+                ) {
+                    // Left Panel: Compact Luma Brand Header + Proportioned Continue Reading + Quick Import
+                    Column(
+                        modifier = Modifier
+                            .width(leftPaneWidth)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        LibraryHeaderRow(
+                            bookCount = documents.size,
+                            seriesCount = playlists.size,
+                            socialRepo = socialRepo,
+                            isImporting = isImporting,
+                            onOpenGuide = { showAppGuide = true },
+                            onToggleProfileMenu = { showProfileMenu = !showProfileMenu },
+                            onHeaderRect = { rect -> tourTargets = tourTargets.copy(headerRect = rect.toRootRelative()) },
+                            onGuideRect = { rect -> tourTargets = tourTargets.copy(guideButtonRect = rect.toRootRelative()) },
+                            onProfileBounds = { topY, rect ->
+                                profileSphereTopInRootPx = (topY - rootTopWindowPx).coerceAtLeast(0f)
+                                tourTargets = tourTargets.copy(profileSphereRect = rect.toRootRelative())
                             }
-                        ) {
-                            ContinueReadingSoftBanner(
-                                doc = continueDoc,
-                                onClick = { onOpenDocument(continueDoc.id) }
-                            )
-                        }
-                    }
-                }
+                        )
 
-                // 3. Slim Two-Rectangle Switcher ("Libros" | "Series") ABOVE Search Bar + Square Filter Button
-                item(key = "lib_tabs_and_search", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
-                    LibraryTabsAndSearchControls(
-                        activeTab = activeTab,
-                        isSeriesOverview = activeTab == LibraryViewTab.SERIES && activeSeries == null,
-                        searchQuery = searchQuery,
-                        selectedFilter = selectedFilter,
-                        onSelectTab = { tab ->
-                            activeTab = tab
-                            openedSeriesId = null
-                        },
-                        onSearchQueryChange = { searchQuery = it },
-                        onCreatePlaylist = { showCreatePlaylistDialog = true },
-                        onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
-                        onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
-                        onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
-                        onFilterButtonBottom = { bottomY ->
-                            filterButtonBottomInRootPx = (bottomY - rootTopWindowPx).coerceAtLeast(0f)
-                        }
-                    )
-                }
-
-                // 4. Content Area: Either Series Overview OR Steam-Style Book Cover Grid
-                if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
-                    if (filteredSeries.isEmpty()) {
-                        item(key = "lib_series_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_series") {
-                            EmptySeriesCard(onCreate = { showCreatePlaylistDialog = true })
-                        }
-                    } else {
-                        items(
-                            items = filteredSeries,
-                            key = { "series_${it.id}" },
-                            contentType = { "series_card" }
-                        ) { series ->
-                            val memberIds = docIdsByPlaylistId[series.id].orEmpty()
-                            val leadCoverPath = remember(memberIds, docsById) {
-                                memberIds.firstNotNullOfOrNull { docsById[it]?.coverImagePath }
-                            }
+                        if (continueDoc != null) {
                             Box(
-                                modifier = Modifier.animateItem(
-                                    fadeInSpec = motion.tweenSpec(215),
-                                    fadeOutSpec = motion.exitTween(185),
-                                    placementSpec = motion.glideSpring()
-                                )
-                            ) {
-                                SeriesSteamCard(
-                                    series = series,
-                                    memberCount = memberIds.size,
-                                    leadCoverPath = leadCoverPath,
-                                    onClick = { openedSeriesId = series.id }
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    if (activeTab == LibraryViewTab.SERIES && activeSeries != null) {
-                        val currentSeries = activeSeries!!
-                        item(key = "lib_series_detail_header", span = { GridItemSpan(maxLineSpan) }, contentType = "series_header") {
-                            SeriesDetailHeaderBar(
-                                series = currentSeries,
-                                docCount = filteredDocs.size,
-                                onBack = { openedSeriesId = null },
-                                onDelete = {
-                                    viewModel.deletePlaylist(currentSeries)
-                                    openedSeriesId = null
+                                modifier = Modifier.onGloballyPositioned { coords ->
+                                    tourTargets = tourTargets.copy(
+                                        continueRect = coords.boundsInWindow().toRootRelative()
+                                    )
                                 }
-                            )
+                            ) {
+                                ContinueReadingSoftBanner(
+                                    doc = continueDoc,
+                                    onClick = { onOpenDocument(continueDoc.id) }
+                                )
+                            }
+                        }
+
+                        // Compact tablet studio quick-action card for importing books or creating series
+                        TactileCard(
+                            containerColor = palette.surface,
+                            borderColor = palette.border,
+                            shadowColor = palette.borderShadow,
+                            cornerRadius = 22.dp,
+                            lipDepth = 2.dp
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TactileButton(
+                                    onClick = launchImport,
+                                    cornerRadius = 14.dp,
+                                    lipDepth = 2.dp,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("tablet_quick_import_button")
+                                ) {
+                                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(Modifier.width(5.dp))
+                                    Text("Importar", fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(palette.surfaceAlt)
+                                        .border(1.dp, palette.border, RoundedCornerShape(14.dp))
+                                        .clickable { showCreatePlaylistDialog = true }
+                                        .padding(horizontal = 14.dp, vertical = 11.dp)
+                                        .testTag("tablet_quick_new_series_button"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.QueueMusic,
+                                            contentDescription = "Nueva serie",
+                                            tint = palette.accent,
+                                            modifier = Modifier.size(17.dp)
+                                        )
+                                        Text(
+                                            text = "Serie",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = palette.ink
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
-                    if (filteredDocs.isEmpty()) {
-                        item(key = "lib_books_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_books") {
-                            EmptyBooksCard(isInSeries = activeSeries != null)
+                    // Right Panel: Libros / Series Switcher + Search/Filter + Catalog Grid
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .statusBarsPadding(),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        LibraryTabsAndSearchControls(
+                            activeTab = activeTab,
+                            isSeriesOverview = activeTab == LibraryViewTab.SERIES && activeSeries == null,
+                            searchQuery = searchQuery,
+                            selectedFilter = selectedFilter,
+                            onSelectTab = { tab ->
+                                activeTab = tab
+                                openedSeriesId = null
+                            },
+                            onSearchQueryChange = { searchQuery = it },
+                            onCreatePlaylist = { showCreatePlaylistDialog = true },
+                            onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
+                            onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
+                            onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
+                            onFilterButtonBottom = { bottomY ->
+                                filterButtonBottomInRootPx = (bottomY - rootTopWindowPx).coerceAtLeast(0f)
+                            }
+                        )
+
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(minSize = 142.dp),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 2.dp, bottom = 28.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
+                                if (filteredSeries.isEmpty()) {
+                                    item(key = "lib_series_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_series") {
+                                        EmptySeriesCard(onCreate = { showCreatePlaylistDialog = true })
+                                    }
+                                } else {
+                                    items(
+                                        items = filteredSeries,
+                                        key = { "series_${it.id}" },
+                                        contentType = { "series_card" }
+                                    ) { series ->
+                                        val memberIds = docIdsByPlaylistId[series.id].orEmpty()
+                                        val leadCoverPath = remember(memberIds, docsById) {
+                                            memberIds.firstNotNullOfOrNull { docsById[it]?.coverImagePath }
+                                        }
+                                        Box(
+                                            modifier = Modifier.animateItem(
+                                                fadeInSpec = motion.tweenSpec(215),
+                                                fadeOutSpec = motion.exitTween(185),
+                                                placementSpec = motion.glideSpring()
+                                            )
+                                        ) {
+                                            SeriesSteamCard(
+                                                series = series,
+                                                memberCount = memberIds.size,
+                                                leadCoverPath = leadCoverPath,
+                                                onClick = { openedSeriesId = series.id }
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                if (activeTab == LibraryViewTab.SERIES && activeSeries != null) {
+                                    val currentSeries = activeSeries!!
+                                    item(key = "lib_series_detail_header", span = { GridItemSpan(maxLineSpan) }, contentType = "series_header") {
+                                        SeriesDetailHeaderBar(
+                                            series = currentSeries,
+                                            docCount = filteredDocs.size,
+                                            onBack = { openedSeriesId = null },
+                                            onDelete = {
+                                                viewModel.deletePlaylist(currentSeries)
+                                                openedSeriesId = null
+                                            }
+                                        )
+                                    }
+                                }
+
+                                if (filteredDocs.isEmpty()) {
+                                    item(key = "lib_books_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_books") {
+                                        EmptyBooksCard(isInSeries = activeSeries != null)
+                                    }
+                                } else {
+                                    items(
+                                        items = filteredDocs,
+                                        key = { "book_${it.id}" },
+                                        contentType = { "book_card" }
+                                    ) { doc ->
+                                        Box(
+                                            modifier = Modifier.animateItem(
+                                                fadeInSpec = motion.tweenSpec(215),
+                                                fadeOutSpec = motion.exitTween(185),
+                                                placementSpec = motion.glideSpring()
+                                            )
+                                        ) {
+                                            SteamCoverBookTile(
+                                                doc = doc,
+                                                onOpen = { onOpenDocument(doc.id) },
+                                                onLongPress = { optionsBook = doc }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 148.dp),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .displayCutoutPadding()
+                        .navigationBarsPadding(),
+                    contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 32.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // 1. Minimalist Full-Span "LUMA" Wordmark + Interactive Profile Sphere
+                    item(key = "lib_header", span = { GridItemSpan(maxLineSpan) }, contentType = "header") {
+                        LibraryHeaderRow(
+                            bookCount = documents.size,
+                            seriesCount = playlists.size,
+                            socialRepo = socialRepo,
+                            isImporting = isImporting,
+                            onOpenGuide = { showAppGuide = true },
+                            onToggleProfileMenu = { showProfileMenu = !showProfileMenu },
+                            onHeaderRect = { rect -> tourTargets = tourTargets.copy(headerRect = rect.toRootRelative()) },
+                            onGuideRect = { rect -> tourTargets = tourTargets.copy(guideButtonRect = rect.toRootRelative()) },
+                            onProfileBounds = { topY, rect ->
+                                profileSphereTopInRootPx = (topY - rootTopWindowPx).coerceAtLeast(0f)
+                                tourTargets = tourTargets.copy(profileSphereRect = rect.toRootRelative())
+                            }
+                        )
+                    }
+
+                    // 2. Soft Continue Reading Banner
+                    if (continueDoc != null) {
+                        item(key = "lib_continue_reading", span = { GridItemSpan(maxLineSpan) }, contentType = "continue") {
+                            Box(
+                                modifier = Modifier.onGloballyPositioned { coords ->
+                                    tourTargets = tourTargets.copy(
+                                        continueRect = coords.boundsInWindow().toRootRelative()
+                                    )
+                                }
+                            ) {
+                                ContinueReadingSoftBanner(
+                                    doc = continueDoc,
+                                    onClick = { onOpenDocument(continueDoc.id) }
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. Slim Two-Rectangle Switcher ("Libros" | "Series") ABOVE Search Bar + Square Filter Button
+                    item(key = "lib_tabs_and_search", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
+                        LibraryTabsAndSearchControls(
+                            activeTab = activeTab,
+                            isSeriesOverview = activeTab == LibraryViewTab.SERIES && activeSeries == null,
+                            searchQuery = searchQuery,
+                            selectedFilter = selectedFilter,
+                            onSelectTab = { tab ->
+                                activeTab = tab
+                                openedSeriesId = null
+                            },
+                            onSearchQueryChange = { searchQuery = it },
+                            onCreatePlaylist = { showCreatePlaylistDialog = true },
+                            onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
+                            onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
+                            onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
+                            onFilterButtonBottom = { bottomY ->
+                                filterButtonBottomInRootPx = (bottomY - rootTopWindowPx).coerceAtLeast(0f)
+                            }
+                        )
+                    }
+
+                    // 4. Content Area: Either Series Overview OR Steam-Style Book Cover Grid
+                    if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
+                        if (filteredSeries.isEmpty()) {
+                            item(key = "lib_series_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_series") {
+                                EmptySeriesCard(onCreate = { showCreatePlaylistDialog = true })
+                            }
+                        } else {
+                            items(
+                                items = filteredSeries,
+                                key = { "series_${it.id}" },
+                                contentType = { "series_card" }
+                            ) { series ->
+                                val memberIds = docIdsByPlaylistId[series.id].orEmpty()
+                                val leadCoverPath = remember(memberIds, docsById) {
+                                    memberIds.firstNotNullOfOrNull { docsById[it]?.coverImagePath }
+                                }
+                                Box(
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = motion.tweenSpec(215),
+                                        fadeOutSpec = motion.exitTween(185),
+                                        placementSpec = motion.glideSpring()
+                                    )
+                                ) {
+                                    SeriesSteamCard(
+                                        series = series,
+                                        memberCount = memberIds.size,
+                                        leadCoverPath = leadCoverPath,
+                                        onClick = { openedSeriesId = series.id }
+                                    )
+                                }
+                            }
                         }
                     } else {
-                        items(
-                            items = filteredDocs,
-                            key = { "book_${it.id}" },
-                            contentType = { "book_card" }
-                        ) { doc ->
-                            Box(
-                                modifier = Modifier.animateItem(
-                                    fadeInSpec = motion.tweenSpec(215),
-                                    fadeOutSpec = motion.exitTween(185),
-                                    placementSpec = motion.glideSpring()
+                        if (activeTab == LibraryViewTab.SERIES && activeSeries != null) {
+                            val currentSeries = activeSeries!!
+                            item(key = "lib_series_detail_header", span = { GridItemSpan(maxLineSpan) }, contentType = "series_header") {
+                                SeriesDetailHeaderBar(
+                                    series = currentSeries,
+                                    docCount = filteredDocs.size,
+                                    onBack = { openedSeriesId = null },
+                                    onDelete = {
+                                        viewModel.deletePlaylist(currentSeries)
+                                        openedSeriesId = null
+                                    }
                                 )
-                            ) {
-                                SteamCoverBookTile(
-                                    doc = doc,
-                                    onOpen = { onOpenDocument(doc.id) },
-                                    onLongPress = { optionsBook = doc }
-                                )
+                            }
+                        }
+
+                        if (filteredDocs.isEmpty()) {
+                            item(key = "lib_books_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_books") {
+                                EmptyBooksCard(isInSeries = activeSeries != null)
+                            }
+                        } else {
+                            items(
+                                items = filteredDocs,
+                                key = { "book_${it.id}" },
+                                contentType = { "book_card" }
+                            ) { doc ->
+                                Box(
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = motion.tweenSpec(215),
+                                        fadeOutSpec = motion.exitTween(185),
+                                        placementSpec = motion.glideSpring()
+                                    )
+                                ) {
+                                    SteamCoverBookTile(
+                                        doc = doc,
+                                        onOpen = { onOpenDocument(doc.id) },
+                                        onLongPress = { optionsBook = doc }
+                                    )
+                                }
                             }
                         }
                     }

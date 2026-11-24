@@ -918,9 +918,28 @@ object MergedDocumentExporter {
             val b = stroke.points.last()
             when (stroke.tool) {
                 com.example.data.model.DrawingTool.LINE -> {
+                    paint.style = Paint.Style.STROKE
                     canvas.drawLine(a.x * width, a.y * height, b.x * width, b.y * height, paint)
                 }
+                com.example.data.model.DrawingTool.ARROW -> {
+                    paint.style = Paint.Style.STROKE
+                    val x0 = a.x * width
+                    val y0 = a.y * height
+                    val x1 = b.x * width
+                    val y1 = b.y * height
+                    canvas.drawLine(x0, y0, x1, y1, paint)
+                    val angle = kotlin.math.atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())
+                    val headLen = (kotlin.math.hypot(x1 - x0, y1 - y0) * 0.24f).coerceIn(paint.strokeWidth * 2.4f, 44f)
+                    val spread = Math.toRadians(28.0)
+                    val hx1 = x1 - (headLen * kotlin.math.cos(angle - spread)).toFloat()
+                    val hy1 = y1 - (headLen * kotlin.math.sin(angle - spread)).toFloat()
+                    val hx2 = x1 - (headLen * kotlin.math.cos(angle + spread)).toFloat()
+                    val hy2 = y1 - (headLen * kotlin.math.sin(angle + spread)).toFloat()
+                    canvas.drawLine(x1, y1, hx1, hy1, paint)
+                    canvas.drawLine(x1, y1, hx2, hy2, paint)
+                }
                 com.example.data.model.DrawingTool.RECTANGLE -> {
+                    paint.style = if (stroke.isFilled) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
                     val left = kotlin.math.min(a.x, b.x) * width
                     val top = kotlin.math.min(a.y, b.y) * height
                     val right = kotlin.math.max(a.x, b.x) * width
@@ -928,6 +947,7 @@ object MergedDocumentExporter {
                     canvas.drawRect(left, top, right, bottom, paint)
                 }
                 com.example.data.model.DrawingTool.CIRCLE -> {
+                    paint.style = if (stroke.isFilled) Paint.Style.FILL_AND_STROKE else Paint.Style.STROKE
                     val left = kotlin.math.min(a.x, b.x) * width
                     val top = kotlin.math.min(a.y, b.y) * height
                     val right = kotlin.math.max(a.x, b.x) * width
@@ -935,6 +955,7 @@ object MergedDocumentExporter {
                     canvas.drawOval(left, top, right, bottom, paint)
                 }
                 else -> {
+                    paint.style = Paint.Style.STROKE
                     val path = Path()
                     path.moveTo(a.x * width, a.y * height)
                     for (i in 1 until stroke.points.size) {
@@ -959,6 +980,7 @@ object MergedDocumentExporter {
             val hex = String.format(Locale.US, "#%06X", stroke.colorArgb.toInt() and 0xFFFFFF)
             val strokeWidth = String.format(Locale.US, "%.2f", (stroke.widthNorm * 1000f).coerceIn(2f, 40f))
             val opacity = String.format(Locale.US, "%.2f", stroke.alpha.coerceIn(0.1f, 1f))
+            val fillAttr = if (stroke.isFilled) """fill="$hex" fill-opacity="$opacity"""" else """fill="none""""
             val a = stroke.points.first()
             val b = stroke.points.last()
             when (stroke.tool) {
@@ -969,19 +991,38 @@ object MergedDocumentExporter {
                     val y2 = String.format(Locale.US, "%.1f", b.y * 1500f)
                     """<line x1="$x1" y1="$y1" x2="$x2" y2="$y2" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity" stroke-linecap="round"/>"""
                 }
+                com.example.data.model.DrawingTool.ARROW -> {
+                    val x0 = a.x * 1000f
+                    val y0 = a.y * 1500f
+                    val x1 = b.x * 1000f
+                    val y1 = b.y * 1500f
+                    val angle = kotlin.math.atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())
+                    val headLen = (kotlin.math.hypot(x1 - x0, y1 - y0) * 0.24f).coerceIn(18f, 68f)
+                    val spread = Math.toRadians(28.0)
+                    val hx1 = x1 - (headLen * kotlin.math.cos(angle - spread)).toFloat()
+                    val hy1 = y1 - (headLen * kotlin.math.sin(angle - spread)).toFloat()
+                    val hx2 = x1 - (headLen * kotlin.math.cos(angle + spread)).toFloat()
+                    val hy2 = y1 - (headLen * kotlin.math.sin(angle + spread)).toFloat()
+                    val d = String.format(
+                        Locale.US,
+                        "M %.1f %.1f L %.1f %.1f M %.1f %.1f L %.1f %.1f M %.1f %.1f L %.1f %.1f",
+                        x0, y0, x1, y1, x1, y1, hx1, hy1, x1, y1, hx2, hy2
+                    )
+                    """<path d="$d" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity" stroke-linecap="round" stroke-linejoin="round"/>"""
+                }
                 com.example.data.model.DrawingTool.RECTANGLE -> {
                     val x = String.format(Locale.US, "%.1f", kotlin.math.min(a.x, b.x) * 1000f)
                     val y = String.format(Locale.US, "%.1f", kotlin.math.min(a.y, b.y) * 1500f)
                     val w = String.format(Locale.US, "%.1f", kotlin.math.abs(b.x - a.x) * 1000f)
                     val h = String.format(Locale.US, "%.1f", kotlin.math.abs(b.y - a.y) * 1500f)
-                    """<rect x="$x" y="$y" width="$w" height="$h" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity"/>"""
+                    """<rect x="$x" y="$y" width="$w" height="$h" $fillAttr stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity"/>"""
                 }
                 com.example.data.model.DrawingTool.CIRCLE -> {
                     val cx = String.format(Locale.US, "%.1f", ((a.x + b.x) * 0.5f) * 1000f)
                     val cy = String.format(Locale.US, "%.1f", ((a.y + b.y) * 0.5f) * 1500f)
                     val rx = String.format(Locale.US, "%.1f", (kotlin.math.abs(b.x - a.x) * 0.5f) * 1000f)
                     val ry = String.format(Locale.US, "%.1f", (kotlin.math.abs(b.y - a.y) * 0.5f) * 1500f)
-                    """<ellipse cx="$cx" cy="$cy" rx="$rx" ry="$ry" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity"/>"""
+                    """<ellipse cx="$cx" cy="$cy" rx="$rx" ry="$ry" $fillAttr stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity"/>"""
                 }
                 else -> {
                     val d = buildString {

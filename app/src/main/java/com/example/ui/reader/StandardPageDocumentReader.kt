@@ -41,10 +41,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Notes
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Slideshow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -72,6 +74,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -100,6 +103,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 @Immutable
 internal data class StandardDocumentSheet(
@@ -135,6 +139,8 @@ fun StandardPageDocumentReader(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
     onActiveSheetChanged: (sheetIndex: Int, totalSheets: Int, locationKey: String, chapterIndex: Int) -> Unit,
     onSelectStandardFormat: (StandardPageFormat) -> Unit,
     onToggleStandardView: () -> Unit,
@@ -151,15 +157,21 @@ fun StandardPageDocumentReader(
     val isPptx = parsed.format == DocumentFormat.PPTX
 
     val (resolvedWidthPt, resolvedHeightPt) = remember(
+        isPptx,
         prefs.standardPageFormat,
         parsed.nativePageWidthPt,
         parsed.nativePageHeightPt
     ) {
-        prefs.standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
+        if (isPptx) {
+            // PPTX always uses the exact native slide dimensions embedded in the presentation file
+            parsed.nativePageWidthPt to parsed.nativePageHeightPt
+        } else {
+            prefs.standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
+        }
     }
     val sheetAspectRatio = (resolvedWidthPt / resolvedHeightPt.coerceAtLeast(1f)).coerceIn(0.45f, 2.25f)
-    val activeFormatLabel = remember(prefs.standardPageFormat, parsed.detectedFormatLabel) {
-        if (prefs.standardPageFormat == StandardPageFormat.AUTO) {
+    val activeFormatLabel = remember(isPptx, prefs.standardPageFormat, parsed.detectedFormatLabel) {
+        if (isPptx || prefs.standardPageFormat == StandardPageFormat.AUTO) {
             parsed.detectedFormatLabel
         } else {
             prefs.standardPageFormat.shortLabel
@@ -198,7 +210,6 @@ fun StandardPageDocumentReader(
     var showSpeakerNotes by remember { mutableStateOf(false) }
 
     val isZoomed by remember { derivedStateOf { zoomScale > 1.02f } }
-    val showZoomResetPill by remember { derivedStateOf { zoomScale > 1.05f } }
 
     val canInteractWithCanvas = isDrawingMode && !isPanZoomWhileDrawing
     val canPanOrZoom = !canInteractWithCanvas
@@ -217,12 +228,14 @@ fun StandardPageDocumentReader(
     val activeSheet = sheets.getOrNull(activeSheetIndex.coerceIn(0, safeSheetCount - 1))
     val latestOnActiveSheetChanged by rememberUpdatedState(onActiveSheetChanged)
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(deskBackground)
             .testTag("standard_page_reader_root")
     ) {
+        val isTabletViewport = maxWidth >= 680.dp
+
         if (prefs.pageAnimation == PageAnimationMode.VERTICAL_SCROLL) {
             val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialSheetIdx)
             LaunchedEffect(jumpToUnitTrigger) {
@@ -244,12 +257,13 @@ fun StandardPageDocumentReader(
                     }
             }
 
+            val verticalCardMaxW = if (sheetAspectRatio < 0.95f) 600.dp else 920.dp
             LazyColumn(
                 state = listState,
                 userScrollEnabled = !canInteractWithCanvas && !isZoomed,
                 contentPadding = PaddingValues(
                     top = topBarPaddingDp + 54.dp,
-                    bottom = if (isDrawingMode) 156.dp else 72.dp,
+                    bottom = if (isDrawingMode && !isTabletViewport) 156.dp else 80.dp,
                     start = 14.dp,
                     end = 14.dp
                 ),
@@ -281,11 +295,16 @@ fun StandardPageDocumentReader(
                         activeTool = activeTool,
                         activeColorArgb = activeColorArgb,
                         activeWidthNorm = activeWidthNorm,
+                        activeAlpha = activeAlpha,
+                        activeShapeFilled = activeShapeFilled,
                         onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
                         onStrokeCompleted = { onStrokeCompleted(sheet.locationKey, it) },
                         onEraseStrokes = { onEraseStrokes(sheet.locationKey, it) },
                         onTapAtXFraction = { onTapPageCenter() },
-                        modifier = Modifier.fillMaxWidth()
+                        preferWidthBound = true,
+                        modifier = Modifier
+                            .widthIn(max = verticalCardMaxW)
+                            .fillMaxWidth()
                     )
                 }
             }
@@ -344,6 +363,7 @@ fun StandardPageDocumentReader(
                 }
             }
 
+            // Constant inset padding ensures Immersive Mode NEVER shifts the physical sheet by even 1px!
             HorizontalPager(
                 state = pagerState,
                 key = { idx -> sheets[idx].locationKey },
@@ -356,8 +376,8 @@ fun StandardPageDocumentReader(
                     .fillMaxSize()
                     .statusBarsPadding()
                     .padding(
-                        top = if (chromeAlpha > 0.02f) topBarPaddingDp + 44.dp else 8.dp,
-                        bottom = if (isDrawingMode) 146.dp else if (chromeAlpha > 0.02f) 44.dp else 8.dp
+                        top = topBarPaddingDp + 44.dp,
+                        bottom = 44.dp
                     )
             ) { idx ->
                 val sheet = sheets[idx]
@@ -367,8 +387,13 @@ fun StandardPageDocumentReader(
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    val isLandscapeWithPortraitSheet = !isPptx && maxWidth > maxHeight && sheetAspectRatio < 0.95f
-                    if (isLandscapeWithPortraitSheet) {
+                    // Only scroll vertically on compact-height phone landscape (< 480.dp);
+                    // on tablets, render the true physical paper sheet (e.g. A4) fitted cleanly and proportionally!
+                    val isPhoneLandscapeWithPortraitSheet = !isPptx &&
+                        maxWidth > maxHeight &&
+                        maxHeight < 480.dp &&
+                        sheetAspectRatio < 0.95f
+                    if (isPhoneLandscapeWithPortraitSheet) {
                         val viewportH = maxHeight
                         val pageScrollState = rememberScrollState()
                         Column(
@@ -403,12 +428,16 @@ fun StandardPageDocumentReader(
                                     activeTool = activeTool,
                                     activeColorArgb = activeColorArgb,
                                     activeWidthNorm = activeWidthNorm,
+                                    activeAlpha = activeAlpha,
+                                    activeShapeFilled = activeShapeFilled,
                                     onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
                                     onStrokeCompleted = { onStrokeCompleted(sheet.locationKey, it) },
                                     onEraseStrokes = { onEraseStrokes(sheet.locationKey, it) },
                                     onTapAtXFraction = handleTapX,
                                     preferWidthBound = true,
-                                    modifier = Modifier.fillMaxWidth().widthIn(max = 720.dp)
+                                    modifier = Modifier
+                                        .widthIn(max = 560.dp)
+                                        .fillMaxWidth()
                                 )
                             }
                         }
@@ -429,6 +458,8 @@ fun StandardPageDocumentReader(
                             activeTool = activeTool,
                             activeColorArgb = activeColorArgb,
                             activeWidthNorm = activeWidthNorm,
+                            activeAlpha = activeAlpha,
+                            activeShapeFilled = activeShapeFilled,
                             onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
                             onStrokeCompleted = { onStrokeCompleted(sheet.locationKey, it) },
                             onEraseStrokes = { onEraseStrokes(sheet.locationKey, it) },
@@ -488,16 +519,10 @@ fun StandardPageDocumentReader(
                 )
             }
 
-            val selectableFormats = remember(isPptx) {
-                if (isPptx) {
-                    listOf(
-                        StandardPageFormat.AUTO,
-                        StandardPageFormat.SLIDE_16_9,
-                        StandardPageFormat.SLIDE_4_3,
-                        StandardPageFormat.A4,
-                        StandardPageFormat.LETTER
-                    )
-                } else {
+            // PPTX automatically reads native slide dimensions without manual aspect chips;
+            // DOCX/TXT/FB2 retain physical paper format selectors (Auto, A4, Carta, Oficio, A3, A5).
+            if (!isPptx) {
+                val selectableFormats = remember {
                     listOf(
                         StandardPageFormat.AUTO,
                         StandardPageFormat.A4,
@@ -507,29 +532,29 @@ fun StandardPageDocumentReader(
                         StandardPageFormat.A5
                     )
                 }
-            }
 
-            for (fmt in selectableFormats) {
-                val isSelected = prefs.standardPageFormat == fmt
-                Box(
-                    modifier = Modifier
-                        .clip(StdPillShape)
-                        .background(if (isSelected) palette.accent else Color.Transparent)
-                        .clickable {
-                            zoomScale = 1f
-                            panOffset = Offset.Zero
-                            onSelectStandardFormat(fmt)
-                        }
-                        .padding(horizontal = 9.dp, vertical = 5.dp)
-                        .testTag("std_format_chip_${fmt.name}"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = fmt.shortLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) Color.White else palette.inkMuted
-                    )
+                for (fmt in selectableFormats) {
+                    val isSelected = prefs.standardPageFormat == fmt
+                    Box(
+                        modifier = Modifier
+                            .clip(StdPillShape)
+                            .background(if (isSelected) palette.accent else Color.Transparent)
+                            .clickable {
+                                zoomScale = 1f
+                                panOffset = Offset.Zero
+                                onSelectStandardFormat(fmt)
+                            }
+                            .padding(horizontal = 9.dp, vertical = 5.dp)
+                            .testTag("std_format_chip_${fmt.name}"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = fmt.shortLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) Color.White else palette.inkMuted
+                        )
+                    }
                 }
             }
 
@@ -567,7 +592,7 @@ fun StandardPageDocumentReader(
         }
         }
 
-        // Speaker Notes Pill (PPTX only when slide has notes) & Zoom Reset Pill
+        // Speaker Notes Pill (PPTX only when slide has notes) & Zoom Preview Controls (− / % / +)
         val currentSlideNotes = activeSheet?.slide?.notes?.takeIf { it.isNotBlank() }
         if (chromeAlpha > 0.02f) {
         Column(
@@ -575,7 +600,7 @@ fun StandardPageDocumentReader(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(
-                    bottom = if (isDrawingMode) 152.dp else 40.dp,
+                    bottom = if (isDrawingMode && !isTabletViewport) 152.dp else 40.dp,
                     start = 16.dp,
                     end = 16.dp
                 )
@@ -619,33 +644,80 @@ fun StandardPageDocumentReader(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (showZoomResetPill) {
+                val isZoomModified = abs(zoomScale - 1f) > 0.03f
+                Row(
+                    modifier = Modifier
+                        .shadow(6.dp, StdPillShape)
+                        .clip(StdPillShape)
+                        .background(palette.surface.copy(alpha = 0.94f))
+                        .border(1.dp, if (isZoomModified) palette.accent.copy(alpha = 0.55f) else palette.border, StdPillShape)
+                        .padding(horizontal = 4.dp, vertical = 3.dp)
+                        .testTag("std_zoom_control_pill"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(StdPillShape)
+                            .clickable(enabled = zoomScale > 0.46f) {
+                                val next = (zoomScale - 0.15f).coerceIn(0.45f, 4.5f)
+                                zoomScale = next
+                                if (next <= 1.01f) panOffset = Offset.Zero
+                            }
+                            .testTag("std_zoom_out_btn"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Remove,
+                            contentDescription = "Alejar página",
+                            tint = if (zoomScale > 0.46f) palette.ink else palette.inkMuted.copy(alpha = 0.35f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                     Row(
                         modifier = Modifier
-                            .shadow(6.dp, StdPillShape)
                             .clip(StdPillShape)
-                            .background(palette.surface.copy(alpha = 0.96f))
-                            .border(1.dp, palette.border, StdPillShape)
+                            .background(if (isZoomModified) palette.accentSoft else Color.Transparent)
                             .clickable {
                                 zoomScale = 1f
                                 panOffset = Offset.Zero
                             }
-                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
                             .testTag("std_zoom_reset_pill"),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.FitScreen,
-                            contentDescription = "Restablecer zoom",
-                            tint = palette.accent,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(Modifier.width(5.dp))
+                        if (isZoomModified) {
+                            Icon(
+                                imageVector = Icons.Rounded.FitScreen,
+                                contentDescription = "Restablecer zoom al 100%",
+                                tint = palette.accent,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
                         Text(
-                            text = "Ajustar (${(zoomScale * 100).toInt()}%)",
+                            text = "${(zoomScale * 100).roundToInt()}%",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = palette.ink
+                            color = if (isZoomModified) palette.accent else palette.ink
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(StdPillShape)
+                            .clickable(enabled = zoomScale < 4.45f) {
+                                zoomScale = (zoomScale + 0.25f).coerceIn(0.45f, 4.5f)
+                            }
+                            .testTag("std_zoom_in_btn"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = "Acercar página",
+                            tint = if (zoomScale < 4.45f) palette.ink else palette.inkMuted.copy(alpha = 0.35f),
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
@@ -715,6 +787,8 @@ private fun StandardInteractiveSheetFrame(
     activeTool: DrawingTool,
     activeColorArgb: Long,
     activeWidthNorm: Float,
+    activeAlpha: Float = 1f,
+    activeShapeFilled: Boolean = false,
     onZoomPanChange: (Float, Offset) -> Unit,
     onStrokeCompleted: (DrawingStroke) -> Unit,
     onEraseStrokes: (Set<String>) -> Unit,
@@ -723,6 +797,7 @@ private fun StandardInteractiveSheetFrame(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
+    val density = LocalDensity.current
     val latestZoom by rememberUpdatedState(zoomScale)
     val latestPan by rememberUpdatedState(panOffset)
     val latestOnZoomPan by rememberUpdatedState(onZoomPanChange)
@@ -742,6 +817,15 @@ private fun StandardInteractiveSheetFrame(
         val availH = maxHeight
         // Compute exact fitted physical sheet dimensions preserving true aspectRatio without clipping
         val useHeightBound = !preferWidthBound && availH.value.isFinite() && availH.value > 0f && (availW.value / availH.value) > aspectRatio
+        val sheetBaseWpx = with(density) {
+            if (useHeightBound) (availH * aspectRatio).toPx() else availW.toPx()
+        }.coerceAtLeast(120f)
+        val sheetBaseHpx = with(density) {
+            if (useHeightBound) availH.toPx() else (availW / aspectRatio).toPx()
+        }.coerceAtLeast(120f)
+        val latestSheetW by rememberUpdatedState(sheetBaseWpx)
+        val latestSheetH by rememberUpdatedState(sheetBaseHpx)
+
         val sheetSizeMod = if (useHeightBound) {
             Modifier
                 .fillMaxHeight()
@@ -752,23 +836,11 @@ private fun StandardInteractiveSheetFrame(
                 .aspectRatio(aspectRatio, matchHeightConstraintsFirst = false)
         }
 
-        BoxWithConstraints(
-            modifier = sheetSizeMod
-                .graphicsLayer {
-                    scaleX = zoomScale
-                    scaleY = zoomScale
-                    translationX = panOffset.x
-                    translationY = panOffset.y
-                }
-                .shadow(
-                    elevation = if (palette.isDark) 14.dp else 10.dp,
-                    shape = StdPaperShape,
-                    ambientColor = Color.Black.copy(alpha = 0.24f),
-                    spotColor = Color.Black.copy(alpha = 0.20f)
-                )
-                .clip(StdPaperShape)
-                .background(paperBg)
-                .border(1.dp, paperBorder, StdPaperShape)
+        // Untransformed gesture host wraps the transformed sheet so pinch centroid & pan are
+        // measured in exact screen/viewport coordinates -> true focal zoom right under the fingers!
+        Box(
+            modifier = Modifier
+                .then(if (useHeightBound) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
                 .then(
                     if (canPanZoom) {
                         Modifier
@@ -784,16 +856,16 @@ private fun StandardInteractiveSheetFrame(
                                             val centroid = event.calculateCentroid(useCurrent = true)
                                             if (zoomChange != 1f || panChange != Offset.Zero) {
                                                 val oldZoom = latestZoom
-                                                val newZoom = (oldZoom * zoomChange).coerceIn(1f, 4.5f)
+                                                val newZoom = (oldZoom * zoomChange).coerceIn(0.45f, 4.5f)
                                                 if (newZoom <= 1.01f) {
-                                                    latestOnZoomPan(1f, Offset.Zero)
+                                                    latestOnZoomPan(newZoom, Offset.Zero)
                                                 } else {
                                                     val center = Offset(size.width / 2f, size.height / 2f)
                                                     val focal = centroid - center
                                                     val ratio = newZoom / oldZoom
                                                     val rawPan = (latestPan - focal) * ratio + focal + panChange
-                                                    val maxX = size.width * (newZoom - 1f) * 0.55f
-                                                    val maxY = size.height * (newZoom - 1f) * 0.55f
+                                                    val maxX = maxOf(latestSheetW * (newZoom - 1f) * 0.56f, 0f)
+                                                    val maxY = maxOf(latestSheetH * (newZoom - 1f) * 0.56f, 0f)
                                                     latestOnZoomPan(
                                                         newZoom,
                                                         Offset(
@@ -807,8 +879,8 @@ private fun StandardInteractiveSheetFrame(
                                         } else if (pressedCount == 1 && latestZoom > 1.02f) {
                                             val panChange = event.calculatePan()
                                             if (panChange != Offset.Zero) {
-                                                val maxX = size.width * (latestZoom - 1f) * 0.55f
-                                                val maxY = size.height * (latestZoom - 1f) * 0.55f
+                                                val maxX = maxOf(latestSheetW * (latestZoom - 1f) * 0.56f, 0f)
+                                                val maxY = maxOf(latestSheetH * (latestZoom - 1f) * 0.56f, 0f)
                                                 val nextX = (latestPan.x + panChange.x).coerceIn(-maxX, maxX)
                                                 val nextY = (latestPan.y + panChange.y).coerceIn(-maxY, maxY)
                                                 val atHorizontalEdge = abs(nextX - latestPan.x) < 0.5f &&
@@ -834,55 +906,77 @@ private fun StandardInteractiveSheetFrame(
                     } else {
                         Modifier
                     }
-                )
+                ),
+            contentAlignment = Alignment.Center
         ) {
-            val sheetW = maxWidth.value.coerceAtLeast(120f)
-            val sheetH = maxHeight.value.coerceAtLeast(120f)
-            // Scale factor translating physical PDF points (e.g. 595pt A4 or 842pt A3) to rendered dp
-            val ptScale = (sheetW / pageWidthPt.coerceAtLeast(240f)).coerceIn(0.28f, 1.35f)
-            val fontFamily = prefs.font.toFontFamily()
-
-            if (isPptx && sheet.slide != null) {
-                PptxSlideSurface(
-                    slide = sheet.slide,
-                    headerLabel = sheet.headerLabel,
-                    formatBadge = formatBadge,
-                    ptScale = ptScale,
-                    isLandscape = sheetW >= sheetH,
-                    paperInk = paperInk,
-                    paperMuted = paperMuted,
-                    accent = palette.accent,
-                    fontFamily = fontFamily
-                )
-            } else {
-                PhysicalDocumentSheetSurface(
-                    sheet = sheet,
-                    formatBadge = formatBadge,
-                    ptScale = ptScale,
-                    paperInk = paperInk,
-                    paperMuted = paperMuted,
-                    paperBorder = paperBorder,
-                    accent = palette.accent,
-                    fontFamily = fontFamily,
-                    textAlign = if (prefs.textAlign == TextAlignOption.JUSTIFY) {
-                        TextAlign.Justify
-                    } else {
-                        TextAlign.Start
+            BoxWithConstraints(
+                modifier = sheetSizeMod
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                        translationX = panOffset.x
+                        translationY = panOffset.y
                     }
+                    .shadow(
+                        elevation = if (palette.isDark) 14.dp else 10.dp,
+                        shape = StdPaperShape,
+                        ambientColor = Color.Black.copy(alpha = 0.24f),
+                        spotColor = Color.Black.copy(alpha = 0.20f)
+                    )
+                    .clip(StdPaperShape)
+                    .background(paperBg)
+                    .border(1.dp, paperBorder, StdPaperShape)
+            ) {
+                val sheetW = maxWidth.value.coerceAtLeast(120f)
+                val sheetH = maxHeight.value.coerceAtLeast(120f)
+                // Scale factor translating physical PDF points (e.g. 595pt A4 or 842pt A3) to rendered dp
+                val ptScale = (sheetW / pageWidthPt.coerceAtLeast(240f)).coerceIn(0.28f, 1.35f)
+                val fontFamily = prefs.font.toFontFamily()
+
+                if (isPptx && sheet.slide != null) {
+                    PptxSlideSurface(
+                        slide = sheet.slide,
+                        headerLabel = sheet.headerLabel,
+                        formatBadge = formatBadge,
+                        ptScale = ptScale,
+                        isLandscape = sheetW >= sheetH,
+                        paperInk = paperInk,
+                        paperMuted = paperMuted,
+                        accent = palette.accent,
+                        fontFamily = fontFamily
+                    )
+                } else {
+                    PhysicalDocumentSheetSurface(
+                        sheet = sheet,
+                        formatBadge = formatBadge,
+                        ptScale = ptScale,
+                        paperInk = paperInk,
+                        paperMuted = paperMuted,
+                        paperBorder = paperBorder,
+                        accent = palette.accent,
+                        fontFamily = fontFamily,
+                        textAlign = if (prefs.textAlign == TextAlignOption.JUSTIFY) {
+                            TextAlign.Justify
+                        } else {
+                            TextAlign.Start
+                        }
+                    )
+                }
+
+                // Pixel-locked persistent Drawing / Signature Canvas Layer directly over the physical sheet!
+                DrawingCanvasOverlay(
+                    strokes = strokes,
+                    isInteractive = canDraw,
+                    activeTool = activeTool,
+                    activeColorArgb = activeColorArgb,
+                    activeWidthNorm = activeWidthNorm,
+                    activeAlpha = activeAlpha,
+                    activeShapeFilled = activeShapeFilled,
+                    onStrokeCompleted = onStrokeCompleted,
+                    onEraseStrokeIds = onEraseStrokes,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
-
-            // Pixel-locked persistent Drawing / Signature Canvas Layer directly over the physical sheet!
-            DrawingCanvasOverlay(
-                strokes = strokes,
-                isInteractive = canDraw,
-                activeTool = activeTool,
-                activeColorArgb = activeColorArgb,
-                activeWidthNorm = activeWidthNorm,
-                onStrokeCompleted = onStrokeCompleted,
-                onEraseStrokeIds = onEraseStrokes,
-                modifier = Modifier.fillMaxSize()
-            )
         }
     }
 }

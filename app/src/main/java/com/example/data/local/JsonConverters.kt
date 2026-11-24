@@ -20,6 +20,9 @@ object JsonConverters {
             obj.put("color", stroke.colorArgb)
             obj.put("width", stroke.widthNorm.toDouble())
             obj.put("alpha", stroke.alpha.toDouble())
+            if (stroke.isFilled) {
+                obj.put("filled", true)
+            }
             val pts = JSONArray()
             for (pt in stroke.points) {
                 pts.put(pt.x.toDouble())
@@ -59,7 +62,8 @@ object JsonConverters {
                         colorArgb = obj.optLong("color", 0xFF2B64F5),
                         widthNorm = obj.optDouble("width", 0.008).toFloat(),
                         alpha = obj.optDouble("alpha", 1.0).toFloat(),
-                        points = points
+                        points = points,
+                        isFilled = obj.optBoolean("filled", false)
                     )
                 )
             }

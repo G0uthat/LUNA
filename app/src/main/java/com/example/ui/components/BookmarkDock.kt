@@ -359,24 +359,26 @@ internal fun IslandActionTile(
     icon: ImageVector,
     label: String,
     active: Boolean,
+    scale: Float = 1f,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val palette = LocalFolioPalette.current
+    val safeScale = scale.coerceIn(1f, 1.45f)
     Column(
         modifier = modifier
             .clip(IslandActionTileShape)
             .background(if (active) palette.accent else Color.White.copy(alpha = 0.08f))
             .clickable(onClick = onClick)
-            .padding(vertical = 7.dp, horizontal = 1.dp),
+            .padding(vertical = (7.dp * safeScale), horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        verticalArrangement = Arrangement.spacedBy((2.dp * safeScale).coerceAtMost(4.dp))
     ) {
-        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(15.dp))
+        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size((15.dp * safeScale).coerceAtMost(22.dp)))
         Text(
             text = label,
-            fontSize = 8.5.sp,
-            lineHeight = 10.sp,
+            fontSize = (8.5f * safeScale).coerceIn(8.5f, 12f).sp,
+            lineHeight = (10f * safeScale).coerceIn(10f, 14f).sp,
             fontWeight = FontWeight.Medium,
             color = Color.White.copy(alpha = 0.9f),
             maxLines = 1,

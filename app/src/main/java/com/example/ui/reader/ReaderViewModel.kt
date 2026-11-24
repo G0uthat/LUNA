@@ -61,6 +61,9 @@ data class ReaderUiState(
     val activeTool: DrawingTool = DrawingTool.PEN,
     val activeColorArgb: Long = 0xFF1D5BFFL,
     val activeWidthNorm: Float = 0.008f,
+    val activeAlpha: Float = 1f,
+    val activeShapeFilled: Boolean = false,
+    val customDrawingColors: List<Long> = emptyList(),
     val selectedWord: SelectedWordContext? = null,
     val instantTranslation: String? = null,
     val isTranslatingWord: Boolean = false,
@@ -289,7 +292,9 @@ class ReaderViewModel(
                 isPanZoomWhileDrawing = false,
                 activeTool = DrawingTool.PEN,
                 activeColorArgb = 0xFF141B29L,
-                activeWidthNorm = 0.0042f
+                activeWidthNorm = 0.0042f,
+                activeAlpha = 1f,
+                activeShapeFilled = false
             )
         }
     }
@@ -315,15 +320,45 @@ class ReaderViewModel(
     }
 
     fun setDrawingTool(tool: DrawingTool) {
-        _uiState.update { it.copy(activeTool = tool, isPanZoomWhileDrawing = false) }
+        _uiState.update { current ->
+            val nextAlpha = when {
+                tool == DrawingTool.HIGHLIGHTER && current.activeTool != DrawingTool.HIGHLIGHTER -> 0.36f
+                tool != DrawingTool.HIGHLIGHTER && current.activeTool == DrawingTool.HIGHLIGHTER && current.activeAlpha <= 0.42f -> 1f
+                else -> current.activeAlpha
+            }
+            current.copy(
+                activeTool = tool,
+                activeAlpha = nextAlpha,
+                isPanZoomWhileDrawing = false
+            )
+        }
     }
 
     fun setDrawingColor(argb: Long) {
         _uiState.update { it.copy(activeColorArgb = argb, isPanZoomWhileDrawing = false) }
     }
 
+    fun addCustomDrawingColor(argb: Long) {
+        _uiState.update { current ->
+            val updated = (listOf(argb) + current.customDrawingColors.filterNot { it == argb }).take(8)
+            current.copy(
+                activeColorArgb = argb,
+                customDrawingColors = updated,
+                isPanZoomWhileDrawing = false
+            )
+        }
+    }
+
     fun setDrawingWidth(widthNorm: Float) {
         _uiState.update { it.copy(activeWidthNorm = widthNorm) }
+    }
+
+    fun setDrawingAlpha(alpha: Float) {
+        _uiState.update { it.copy(activeAlpha = alpha.coerceIn(0.15f, 1f)) }
+    }
+
+    fun toggleDrawingShapeFilled() {
+        _uiState.update { it.copy(activeShapeFilled = !it.activeShapeFilled) }
     }
 
     fun addStroke(locationKey: String, stroke: DrawingStroke) {
