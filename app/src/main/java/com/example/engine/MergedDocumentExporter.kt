@@ -914,20 +914,42 @@ object MergedDocumentExporter {
             paint.color = stroke.colorArgb.toInt()
             paint.alpha = (stroke.alpha * 255).toInt().coerceIn(20, 255)
             paint.strokeWidth = (stroke.widthNorm * width).coerceIn(1.5f, 34f)
-            val path = Path()
-            val first = stroke.points.first()
-            path.moveTo(first.x * width, first.y * height)
-            for (i in 1 until stroke.points.size) {
-                val prev = stroke.points[i - 1]
-                val curr = stroke.points[i]
-                path.quadTo(
-                    prev.x * width,
-                    prev.y * height,
-                    ((prev.x + curr.x) * 0.5f) * width,
-                    ((prev.y + curr.y) * 0.5f) * height
-                )
+            val a = stroke.points.first()
+            val b = stroke.points.last()
+            when (stroke.tool) {
+                com.example.data.model.DrawingTool.LINE -> {
+                    canvas.drawLine(a.x * width, a.y * height, b.x * width, b.y * height, paint)
+                }
+                com.example.data.model.DrawingTool.RECTANGLE -> {
+                    val left = kotlin.math.min(a.x, b.x) * width
+                    val top = kotlin.math.min(a.y, b.y) * height
+                    val right = kotlin.math.max(a.x, b.x) * width
+                    val bottom = kotlin.math.max(a.y, b.y) * height
+                    canvas.drawRect(left, top, right, bottom, paint)
+                }
+                com.example.data.model.DrawingTool.CIRCLE -> {
+                    val left = kotlin.math.min(a.x, b.x) * width
+                    val top = kotlin.math.min(a.y, b.y) * height
+                    val right = kotlin.math.max(a.x, b.x) * width
+                    val bottom = kotlin.math.max(a.y, b.y) * height
+                    canvas.drawOval(left, top, right, bottom, paint)
+                }
+                else -> {
+                    val path = Path()
+                    path.moveTo(a.x * width, a.y * height)
+                    for (i in 1 until stroke.points.size) {
+                        val prev = stroke.points[i - 1]
+                        val curr = stroke.points[i]
+                        path.quadTo(
+                            prev.x * width,
+                            prev.y * height,
+                            ((prev.x + curr.x) * 0.5f) * width,
+                            ((prev.y + curr.y) * 0.5f) * height
+                        )
+                    }
+                    canvas.drawPath(path, paint)
+                }
             }
-            canvas.drawPath(path, paint)
         }
     }
 
@@ -937,15 +959,41 @@ object MergedDocumentExporter {
             val hex = String.format(Locale.US, "#%06X", stroke.colorArgb.toInt() and 0xFFFFFF)
             val strokeWidth = String.format(Locale.US, "%.2f", (stroke.widthNorm * 1000f).coerceIn(2f, 40f))
             val opacity = String.format(Locale.US, "%.2f", stroke.alpha.coerceIn(0.1f, 1f))
-            val d = buildString {
-                val first = stroke.points.first()
-                append(String.format(Locale.US, "M %.1f %.1f", first.x * 1000f, first.y * 1500f))
-                for (i in 1 until stroke.points.size) {
-                    val pt = stroke.points[i]
-                    append(String.format(Locale.US, " L %.1f %.1f", pt.x * 1000f, pt.y * 1500f))
+            val a = stroke.points.first()
+            val b = stroke.points.last()
+            when (stroke.tool) {
+                com.example.data.model.DrawingTool.LINE -> {
+                    val x1 = String.format(Locale.US, "%.1f", a.x * 1000f)
+                    val y1 = String.format(Locale.US, "%.1f", a.y * 1500f)
+                    val x2 = String.format(Locale.US, "%.1f", b.x * 1000f)
+                    val y2 = String.format(Locale.US, "%.1f", b.y * 1500f)
+                    """<line x1="$x1" y1="$y1" x2="$x2" y2="$y2" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity" stroke-linecap="round"/>"""
+                }
+                com.example.data.model.DrawingTool.RECTANGLE -> {
+                    val x = String.format(Locale.US, "%.1f", kotlin.math.min(a.x, b.x) * 1000f)
+                    val y = String.format(Locale.US, "%.1f", kotlin.math.min(a.y, b.y) * 1500f)
+                    val w = String.format(Locale.US, "%.1f", kotlin.math.abs(b.x - a.x) * 1000f)
+                    val h = String.format(Locale.US, "%.1f", kotlin.math.abs(b.y - a.y) * 1500f)
+                    """<rect x="$x" y="$y" width="$w" height="$h" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity"/>"""
+                }
+                com.example.data.model.DrawingTool.CIRCLE -> {
+                    val cx = String.format(Locale.US, "%.1f", ((a.x + b.x) * 0.5f) * 1000f)
+                    val cy = String.format(Locale.US, "%.1f", ((a.y + b.y) * 0.5f) * 1500f)
+                    val rx = String.format(Locale.US, "%.1f", (kotlin.math.abs(b.x - a.x) * 0.5f) * 1000f)
+                    val ry = String.format(Locale.US, "%.1f", (kotlin.math.abs(b.y - a.y) * 0.5f) * 1500f)
+                    """<ellipse cx="$cx" cy="$cy" rx="$rx" ry="$ry" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity"/>"""
+                }
+                else -> {
+                    val d = buildString {
+                        append(String.format(Locale.US, "M %.1f %.1f", a.x * 1000f, a.y * 1500f))
+                        for (i in 1 until stroke.points.size) {
+                            val pt = stroke.points[i]
+                            append(String.format(Locale.US, " L %.1f %.1f", pt.x * 1000f, pt.y * 1500f))
+                        }
+                    }
+                    """<path d="$d" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity" stroke-linecap="round" stroke-linejoin="round"/>"""
                 }
             }
-            """<path d="$d" fill="none" stroke="$hex" stroke-width="$strokeWidth" stroke-opacity="$opacity" stroke-linecap="round" stroke-linejoin="round"/>"""
         }.joinToString("\n  ")
 
         return """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1500" preserveAspectRatio="none" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;">

@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.ComponentCallbacks2
 import android.os.Bundle
 import android.os.StrictMode
 import android.os.SystemClock
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,15 +50,23 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.local.FolioDatabase
 import com.example.data.local.FolioRepository
 import com.example.data.local.PreferencesRepository
+import com.example.data.model.DocumentFormat
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.TargetFpsOption
 import com.example.engine.DisplayRefreshRateController
+import com.example.engine.DocumentParser
 import com.example.engine.DynamicIslandEventManager
 import com.example.engine.GitHubUpdateManager
+import com.example.engine.MemoryPressureManager
+import com.example.engine.ParsedDocumentDiskCache
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
 import com.example.ui.components.DynamicIslandEventBanner
 import com.example.ui.components.GitHubUpdateDialog
+import com.example.ui.components.LocalLumaOverlayController
+import com.example.ui.components.LumaOverlayController
+import com.example.ui.components.LumaOverlayHost
+import com.example.ui.library.CoverBitmapCache
 import com.example.ui.library.LibraryScreen
 import com.example.ui.library.LibraryViewModel
 import com.example.ui.reader.ReaderScreen
@@ -68,8 +78,10 @@ import com.example.ui.theme.resolveEffectiveTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.Calendar
 import kotlin.math.roundToInt
 
@@ -141,11 +153,14 @@ class MainActivity : ComponentActivity() {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        // Detect low-RAM devices immediately so bitmap caches and motion budgets adapt from frame 0
+        MemoryPressureManager.init(applicationContext)
+
         // Kick off non-blocking DataStore preload on Dispatchers.IO immediately
         val prefsRepo = preferencesRepository
-        // Hold splash only while initial preferences load (hard-capped at 350 ms for instant TTID)
+        // Hold splash only while initial preferences load (hard-capped at 220 ms for instant TTID)
         splashScreen.setKeepOnScreenCondition {
-            !prefsRepo.isLoaded.value && (SystemClock.elapsedRealtime() - launchStartMs) < 350L
+            !prefsRepo.isLoaded.value && (SystemClock.elapsedRealtime() - launchStartMs) < 220L
         }
 
         enableEdgeToEdge()
@@ -273,63 +288,70 @@ class MainActivity : ComponentActivity() {
                     }
                 )
 
-                Box(modifier = Modifier.fillMaxSize()) {
-                    val docId = activeDocumentId
-                    if (docId == null) {
-                        LibraryScreen(
-                            viewModel = libraryViewModel,
-                            onOpenDocument = { id -> activeDocumentId = id }
-                        )
-                        // Isolated state scope: Island events only recompose this overlay, not LibraryScreen
-                        GlobalLibraryIslandHost(
-                            onTapEvent = { event ->
-                                DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
-                            },
-                            onDismiss = { DynamicIslandEventManager.dismissActiveEvent() }
-                        )
-                    } else {
-                        val readerViewModel: ReaderViewModel = viewModel(
-                            key = "reader_$docId",
-                            factory = remember(docId) {
-                                ReaderViewModel.Factory(application, docId, folioRepository, prefsRepo)
-                            }
-                        )
-                        ReaderScreen(
-                            viewModel = readerViewModel,
-                            onBackToLibrary = { activeDocumentId = null }
-                        )
-                    }
+                val overlayController = remember { LumaOverlayController() }
 
-                    // Choreographer FPS monitor: ONLY runs when explicitly enabled by user in settings AND resumed
-                    if (rootSlice.showFpsCounter) {
-                        LiveFpsBadge(
-                            targetFps = rootSlice.targetFps,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .statusBarsPadding()
-                                .padding(top = 6.dp, end = 10.dp)
-                        )
-                    }
-
-                    // Draw-phase-only optical eye-comfort overlay (zero extra composables/recompositions on alpha change)
-                    OpticalEyeComfortOverlay(
-                        warmFilterStrengthProvider = { rootSlice.warmFilterStrength },
-                        nightDimmingProvider = { activeNightDimming }
-                    )
-
-                    // Isolated state scope: GitHub update dialog only recomposes itself
-                    GlobalGitHubUpdateHost(
-                        onDownloadApk = { updateInfo ->
-                            GitHubUpdateManager.openApkDownload(this@MainActivity, updateInfo)
-                        },
-                        onRemindLater = { GitHubUpdateManager.dismissOptionalForSession() },
-                        onSkipVersion = { GitHubUpdateManager.skipOptionalVersion(this@MainActivity) },
-                        onRetryCheck = {
-                            lifecycleScope.launch(Dispatchers.IO) {
-                                GitHubUpdateManager.checkForUpdates(applicationContext, manualCheck = true)
-                            }
+                CompositionLocalProvider(LocalLumaOverlayController provides overlayController) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        val docId = activeDocumentId
+                        if (docId == null) {
+                            LibraryScreen(
+                                viewModel = libraryViewModel,
+                                onOpenDocument = { id -> activeDocumentId = id }
+                            )
+                            // Isolated state scope: Island events only recompose this overlay, not LibraryScreen
+                            GlobalLibraryIslandHost(
+                                onTapEvent = { event ->
+                                    DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
+                                },
+                                onDismiss = { DynamicIslandEventManager.dismissActiveEvent() }
+                            )
+                        } else {
+                            val readerViewModel: ReaderViewModel = viewModel(
+                                key = "reader_$docId",
+                                factory = remember(docId) {
+                                    ReaderViewModel.Factory(application, docId, folioRepository, prefsRepo)
+                                }
+                            )
+                            ReaderScreen(
+                                viewModel = readerViewModel,
+                                onBackToLibrary = { activeDocumentId = null }
+                            )
                         }
-                    )
+
+                        // Choreographer FPS monitor: ONLY runs when explicitly enabled by user in settings AND resumed
+                        if (rootSlice.showFpsCounter) {
+                            LiveFpsBadge(
+                                targetFps = rootSlice.targetFps,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .statusBarsPadding()
+                                    .padding(top = 6.dp, end = 10.dp)
+                            )
+                        }
+
+                        // Isolated state scope: GitHub update dialog attaches to LumaOverlayHost
+                        GlobalGitHubUpdateHost(
+                            onDownloadApk = { updateInfo ->
+                                GitHubUpdateManager.openApkDownload(this@MainActivity, updateInfo)
+                            },
+                            onRemindLater = { GitHubUpdateManager.dismissOptionalForSession() },
+                            onSkipVersion = { GitHubUpdateManager.skipOptionalVersion(this@MainActivity) },
+                            onRetryCheck = {
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    GitHubUpdateManager.checkForUpdates(applicationContext, manualCheck = true)
+                                }
+                            }
+                        )
+
+                        // Zero-IPC in-tree overlay host for all Luma dropdown menus & sheets (frame-0 open!)
+                        LumaOverlayHost(controller = overlayController)
+
+                        // Draw-phase-only optical eye-comfort overlay (zero extra composables/recompositions on alpha change)
+                        OpticalEyeComfortOverlay(
+                            warmFilterStrengthProvider = { rootSlice.warmFilterStrength },
+                            nightDimmingProvider = { activeNightDimming }
+                        )
+                    }
                 }
             }
         }
@@ -344,8 +366,31 @@ class MainActivity : ComponentActivity() {
             SystemMediaController.start(appCtx)
             DynamicIslandEventManager.start(appCtx)
             SocialRepository.getInstance(appCtx).setAppForeground(true)
+
+            // Proactive speed prewarmer: warms top covers into RAM + hot-caches the most recent book
+            // so scrolling the library and tapping "Continue Reading" feel instantaneous!
+            runCatching {
+                val recentDocs = folioRepository.documents.first()
+                val coverWarmCount = if (MemoryPressureManager.isLowRamDevice) 6 else 14
+                for (doc in recentDocs.take(coverWarmCount)) {
+                    CoverBitmapCache.preload(doc.coverImagePath)
+                }
+                val topDoc = recentDocs.firstOrNull()
+                if (topDoc != null) {
+                    val file = File(topDoc.filePath)
+                    val format = DocumentFormat.fromExtension(topDoc.format)
+                    if (file.exists() && format != null) {
+                        val hit = ParsedDocumentDiskCache.read(appCtx, file, format)
+                        if (hit == null && file.length() <= 16L * 1024L * 1024L) {
+                            delay(500L)
+                            runCatching { DocumentParser.parse(appCtx, file, format) }
+                        }
+                    }
+                }
+            }
+
             // Defer silent update check after startup settles; respects 6-hour ETag throttle (zero cold-start downloads)
-            delay(3_000L)
+            delay(2_500L)
             GitHubUpdateManager.checkForUpdates(
                 context = appCtx,
                 manualCheck = false,
@@ -396,6 +441,17 @@ class MainActivity : ComponentActivity() {
         if (deferredServicesStarted) {
             SocialRepository.getInstance(applicationContext).setAppForeground(false)
         }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        MemoryPressureManager.trimAll(level)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onLowMemory() {
+        super.onLowMemory()
+        MemoryPressureManager.trimAll(ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
     }
 }
 

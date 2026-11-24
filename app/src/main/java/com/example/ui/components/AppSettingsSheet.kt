@@ -432,6 +432,128 @@ fun AppSettingsContent(
                 )
             }
 
+            // 5.5 Immersive Auto-Hide Chrome (fade out all bars & floating options while reading)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(SettingsCardShape18)
+                    .background(palette.surfaceAlt.copy(alpha = 0.65f))
+                    .border(1.dp, palette.border, SettingsCardShape18)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Ocultado inmersivo al leer",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.ink
+                        )
+                        Text(
+                            text = "Desvanece botones, isla y barras tras unos segundos leyendo; toca en cualquier lugar para volver a verlos",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkMuted
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = prefs.autoHideReaderChromeEnabled,
+                        onCheckedChange = { enabled ->
+                            onUpdatePrefs { it.copy(autoHideReaderChromeEnabled = enabled) }
+                        },
+                        colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+                        modifier = Modifier.testTag("auto_hide_chrome_switch")
+                    )
+                }
+
+                if (prefs.autoHideReaderChromeEnabled) {
+                    Text(
+                        text = "Tiempo antes de ocultar",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    val delayOptions = listOf(4 to "4s", 8 to "8s", 15 to "15s", 30 to "30s")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for ((sec, label) in delayOptions) {
+                            val selected = prefs.autoHideReaderChromeDelaySec == sec
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(SettingsChipShape14)
+                                    .background(if (selected) palette.accent else palette.surface)
+                                    .border(
+                                        width = if (selected) 0.dp else 1.dp,
+                                        color = if (selected) palette.accent else palette.border,
+                                        shape = SettingsChipShape14
+                                    )
+                                    .clickable {
+                                        onUpdatePrefs { it.copy(autoHideReaderChromeDelaySec = sec) }
+                                    }
+                                    .padding(vertical = 8.dp)
+                                    .testTag("auto_hide_delay_${sec}s"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) palette.onAccent else palette.ink
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Rapidez del degradado",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    val fadeOptions = listOf(120 to "Muy rápido", 220 to "Rápido", 380 to "Suave")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for ((ms, label) in fadeOptions) {
+                            val selected = prefs.autoHideFadeSpeedMs == ms
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(SettingsChipShape14)
+                                    .background(if (selected) palette.accent else palette.surface)
+                                    .border(
+                                        width = if (selected) 0.dp else 1.dp,
+                                        color = if (selected) palette.accent else palette.border,
+                                        shape = SettingsChipShape14
+                                    )
+                                    .clickable {
+                                        onUpdatePrefs { it.copy(autoHideFadeSpeedMs = ms) }
+                                    }
+                                    .padding(vertical = 8.dp)
+                                    .testTag("auto_hide_fade_${ms}ms"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) palette.onAccent else palette.ink,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // 6. Effortless Tap-to-Turn-Page + Night PDF Filter + Dynamic Island Policy Row
             Column(
                 modifier = Modifier

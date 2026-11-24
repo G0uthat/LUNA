@@ -1,16 +1,12 @@
 package com.example.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,13 +40,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,13 +77,79 @@ import com.example.ui.theme.LocalLumaMotion
 import com.example.ui.theme.LumaBrandFontFamily
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Zero-IPC in-tree overlay entry hosted inside MainActivity's root Box.
+ * Eliminates the ~40–80 ms Android WindowManager Dialog window-creation penalty on every menu tap.
+ */
+class LumaOverlayEntry(
+    val id: Long,
+    dismissOnBackPress: Boolean,
+    onBackPress: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    var dismissOnBackPress by mutableStateOf(dismissOnBackPress)
+    var onBackPress by mutableStateOf(onBackPress)
+    var content by mutableStateOf(content)
+}
+
+/**
+ * Stack-aware controller for in-tree Compose overlays (supports nested modals like Settings -> Island Policy).
+ */
+class LumaOverlayController {
+    private val nextIdCounter = AtomicLong(1L)
+    val entries = mutableStateListOf<LumaOverlayEntry>()
+
+    fun allocateId(): Long = nextIdCounter.getAndIncrement()
+
+    fun attach(entry: LumaOverlayEntry) {
+        if (entries.none { it.id == entry.id }) {
+            entries.add(entry)
+        }
+    }
+
+    fun detach(id: Long) {
+        entries.removeAll { it.id == id }
+    }
+}
+
+val LocalLumaOverlayController = staticCompositionLocalOf<LumaOverlayController?> { null }
+
+/**
+ * Mounted once at the root of MainActivity. Zero overhead when no overlay is open.
+ */
+@Composable
+fun LumaOverlayHost(
+    controller: LumaOverlayController,
+    modifier: Modifier = Modifier
+) {
+    if (controller.entries.isEmpty()) return
+
+    val topEntry = controller.entries.lastOrNull()
+    BackHandler(enabled = topEntry != null) {
+        val currentTop = controller.entries.lastOrNull()
+        if (currentTop != null && currentTop.dismissOnBackPress) {
+            currentTop.onBackPress()
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        controller.entries.forEach { entry ->
+            key(entry.id) {
+                entry.content()
+            }
+        }
+    }
+}
 
 /**
  * Unified floating Luma dropdown menu container matching ProfileDropdownCapsuleOverlay:
- * - Generous breathing margins all around (never glued edge-to-edge like standard bottom sheets)
- * - Soft 32.dp rounded capsule geometry with subtle 1.dp border and layered ambient shadow
- * - Gentle 15% dim + subtle frosted veil scrim (disables Android's harsh 60% dialog dim)
- * - Smooth spring dropdown scaleIn + fadeIn on open and crisp scaleOut + fadeOut before closing
+ * - Zero-IPC in-tree Compose overlay when mounted inside [LumaOverlayHost] (instant frame-0 open!)
+ * - Graceful fallback to Android [Dialog] when rendered outside a host (e.g., previews/isolated tests)
+ * - Soft 32.dp rounded capsule geometry with subtle 1.dp border and adaptive elevation
+ * - Gentle 15% dim + subtle frosted veil scrim
+ * - Snappy spring dropdown scaleIn + fadeIn on open and ultra-fast dismiss
  */
 @Composable
 fun LumaFloatingDropdownDialog(
@@ -99,27 +164,26 @@ fun LumaFloatingDropdownDialog(
     testTag: String = "luma_dropdown_panel",
     content: @Composable ColumnScope.(dismissWithAnimation: () -> Unit) -> Unit
 ) {
-    val palette = LocalFolioPalette.current
     val motion = LocalLumaMotion.current
     val scope = rememberCoroutineScope()
-    val scrimInteraction = remember { MutableInteractionSource() }
-    val cardInteraction = remember { MutableInteractionSource() }
+    val latestOnDismiss by rememberUpdatedState(onDismiss)
+    val latestContent by rememberUpdatedState(content)
 
-    var isVisible by remember { mutableStateOf(false) }
+    val visibleState = remember { MutableTransitionState(false).apply { targetState = true } }
     var isDismissing by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        isVisible = true
-    }
-
-    val exitDurationMs = motion.duration(175)
+    val exitDurationMs = if (motion.isLowRam) 0 else motion.duration(45, minFrames = 2)
     val triggerDismiss: () -> Unit = {
         if (!isDismissing) {
             isDismissing = true
-            isVisible = false
-            scope.launch {
-                delay(exitDurationMs.toLong() + 12L)
-                onDismiss()
+            if (exitDurationMs <= 0) {
+                latestOnDismiss()
+            } else {
+                visibleState.targetState = false
+                scope.launch {
+                    delay(exitDurationMs.toLong())
+                    latestOnDismiss()
+                }
             }
         }
     }
@@ -131,126 +195,197 @@ fun LumaFloatingDropdownDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = { if (dismissOnScrimClick && dismissOnBackPress) triggerDismiss() },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-            dismissOnBackPress = dismissOnBackPress,
-            dismissOnClickOutside = dismissOnScrimClick
+    val overlayBody: @Composable () -> Unit = {
+        LumaFloatingDropdownSurface(
+            visibleState = visibleState,
+            modalHostId = modalHostId,
+            alignment = alignment,
+            transformOrigin = transformOrigin,
+            maxWidth = maxWidth,
+            maxHeightFraction = maxHeightFraction,
+            dismissOnScrimClick = dismissOnScrimClick,
+            scrimAlpha = scrimAlpha,
+            testTag = testTag,
+            triggerDismiss = triggerDismiss,
+            content = latestContent
         )
-    ) {
-        // Remove Android's heavy default 60% black dialog dim so our gentle 15% scrim shines cleanly
-        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect {
-            dialogWindow?.setDimAmount(0f)
+    }
+
+    val overlayController = LocalLumaOverlayController.current
+    if (overlayController != null) {
+        val entry = remember(overlayController) {
+            LumaOverlayEntry(
+                id = overlayController.allocateId(),
+                dismissOnBackPress = dismissOnBackPress,
+                onBackPress = triggerDismiss,
+                content = overlayBody
+            )
         }
-
-        val capsuleShape = RoundedCornerShape(32.dp)
-        val dialogContext = LocalContext.current
-        val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
-        val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
-        val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
-
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val isCompactHeight = this.maxHeight < 500.dp
-            val effectiveHeightFraction = if (isCompactHeight) maxOf(maxHeightFraction, 0.92f) else maxHeightFraction
-            val maxCardHeight = (this.maxHeight * effectiveHeightFraction).coerceAtLeast(220.dp)
-            val effectiveMaxWidth = if (isCompactHeight) maxOf(maxWidth, 560.dp) else maxWidth
-            val outerVerticalPad = if (isCompactHeight) 8.dp else 18.dp
-            val outerHorizontalPad = if (isCompactHeight) 14.dp else 16.dp
-
-            // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay (stronger for mandatory blockers)
-            AnimatedVisibility(
-                visible = isVisible,
-                enter = fadeIn(animationSpec = motion.tweenSpec(195)),
-                exit = fadeOut(animationSpec = motion.exitTween(155))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = scrimAlpha))
-                        .background(palette.background.copy(alpha = 0.08f))
-                        .clickable(
-                            interactionSource = scrimInteraction,
-                            indication = null,
-                            onClick = { if (dismissOnScrimClick) triggerDismiss() }
-                        )
-                )
+        SideEffect {
+            entry.dismissOnBackPress = dismissOnBackPress
+            entry.onBackPress = triggerDismiss
+            entry.content = overlayBody
+        }
+        DisposableEffect(overlayController, entry.id) {
+            overlayController.attach(entry)
+            onDispose {
+                overlayController.detach(entry.id)
             }
+        }
+    } else {
+        Dialog(
+            onDismissRequest = { if (dismissOnScrimClick && dismissOnBackPress) triggerDismiss() },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+                dismissOnBackPress = dismissOnBackPress,
+                dismissOnClickOutside = dismissOnScrimClick
+            )
+        ) {
+            val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+            SideEffect {
+                dialogWindow?.setDimAmount(0f)
+            }
+            overlayBody()
+        }
+    }
+}
 
-            // Floating dropdown card with comfortable breathing space all around (adapts to landscape cleanly)
+@Composable
+private fun LumaFloatingDropdownSurface(
+    visibleState: MutableTransitionState<Boolean>,
+    modalHostId: Long,
+    alignment: Alignment,
+    transformOrigin: TransformOrigin,
+    maxWidth: Dp,
+    maxHeightFraction: Float,
+    dismissOnScrimClick: Boolean,
+    scrimAlpha: Float,
+    testTag: String,
+    triggerDismiss: () -> Unit,
+    content: @Composable ColumnScope.(dismissWithAnimation: () -> Unit) -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val motion = LocalLumaMotion.current
+    val scrimInteraction = remember { MutableInteractionSource() }
+    val cardInteraction = remember { MutableInteractionSource() }
+
+    val capsuleShape = remember { RoundedCornerShape(32.dp) }
+    val cardElevation = remember(palette.isDark, motion.isLowRam) {
+        when {
+            motion.isLowRam -> 0.dp
+            palette.isDark -> 12.dp
+            else -> 10.dp
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val isCompactHeight = this.maxHeight < 500.dp
+        val effectiveHeightFraction = if (isCompactHeight) maxOf(maxHeightFraction, 0.92f) else maxHeightFraction
+        val maxCardHeight = (this.maxHeight * effectiveHeightFraction).coerceAtLeast(220.dp)
+        val effectiveMaxWidth = if (isCompactHeight) maxOf(maxWidth, 560.dp) else maxWidth
+        val outerVerticalPad = if (isCompactHeight) 8.dp else 18.dp
+        val outerHorizontalPad = if (isCompactHeight) 14.dp else 16.dp
+
+        // Gentle 15% dim + 8% theme veil matching ProfileDropdownCapsuleOverlay
+        AnimatedVisibility(
+            visibleState = visibleState,
+            enter = fadeIn(animationSpec = motion.tweenSpec(85)),
+            exit = fadeOut(animationSpec = motion.exitTween(65))
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .displayCutoutPadding()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .padding(horizontal = outerHorizontalPad, vertical = outerVerticalPad),
-                contentAlignment = alignment
+                    .background(Color.Black.copy(alpha = scrimAlpha))
+                    .background(palette.background.copy(alpha = 0.08f))
+                    .clickable(
+                        interactionSource = scrimInteraction,
+                        indication = null,
+                        onClick = { if (dismissOnScrimClick) triggerDismiss() }
+                    )
+            )
+        }
+
+        // Floating dropdown card — frame-0 entry with snappy modalSpring
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .displayCutoutPadding()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = outerHorizontalPad, vertical = outerVerticalPad),
+            contentAlignment = alignment
+        ) {
+            AnimatedVisibility(
+                visibleState = visibleState,
+                enter = scaleIn(
+                    initialScale = 0.94f,
+                    transformOrigin = transformOrigin,
+                    animationSpec = motion.modalSpring()
+                ) + fadeIn(animationSpec = motion.emphasizedTween(90)),
+                exit = scaleOut(
+                    targetScale = 0.96f,
+                    transformOrigin = transformOrigin,
+                    animationSpec = motion.exitTween(65)
+                ) + fadeOut(animationSpec = motion.exitTween(60))
             ) {
-                AnimatedVisibility(
-                    visible = isVisible,
-                    enter = scaleIn(
-                        initialScale = 0.89f,
-                        transformOrigin = transformOrigin,
-                        animationSpec = motion.modalSpring()
-                    ) + slideInVertically(
-                        initialOffsetY = { -16 },
-                        animationSpec = motion.modalSpring()
-                    ) + fadeIn(animationSpec = motion.emphasizedTween(210)),
-                    exit = scaleOut(
-                        targetScale = 0.92f,
-                        transformOrigin = transformOrigin,
-                        animationSpec = motion.exitTween(175)
-                    ) + slideOutVertically(
-                        targetOffsetY = { -10 },
-                        animationSpec = motion.exitTween(175)
-                    ) + fadeOut(animationSpec = motion.exitTween(160))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = effectiveMaxWidth)
+                        .heightIn(max = maxCardHeight)
+                        .shadow(
+                            elevation = cardElevation,
+                            shape = capsuleShape,
+                            ambientColor = Color.Black.copy(alpha = 0.24f),
+                            spotColor = Color.Black.copy(alpha = 0.20f)
+                        )
+                        .clip(capsuleShape)
+                        .background(palette.surface.copy(alpha = 0.98f))
+                        .border(1.dp, palette.border, capsuleShape)
+                        .clickable(
+                            interactionSource = cardInteraction,
+                            indication = null,
+                            onClick = {}
+                        )
+                        .testTag(testTag)
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .widthIn(max = effectiveMaxWidth)
-                            .heightIn(max = maxCardHeight)
-                            .shadow(
-                                elevation = if (palette.isDark) 20.dp else 16.dp,
-                                shape = capsuleShape,
-                                ambientColor = Color.Black.copy(alpha = 0.28f),
-                                spotColor = Color.Black.copy(alpha = 0.24f)
-                            )
-                            .clip(capsuleShape)
-                            .background(palette.surface.copy(alpha = 0.98f))
-                            .border(1.dp, palette.border, capsuleShape)
-                            .clickable(
-                                interactionSource = cardInteraction,
-                                indication = null,
-                                onClick = {}
-                            )
-                            .testTag(testTag)
-                    ) {
-                        content(triggerDismiss)
-                    }
+                    content(triggerDismiss)
                 }
             }
-
-            // Only the topmost modal host renders DynamicIslandEventBanner (zero duplicate animations)
-            if (topModalHostId == modalHostId) {
-                DynamicIslandEventBanner(
-                    event = activeIslandEvent,
-                    queuedCount = queuedIslandCount,
-                    onTapEvent = { event -> DynamicIslandEventManager.openActiveEvent(dialogContext, event) },
-                    onDismiss = { DynamicIslandEventManager.dismissActiveEvent() },
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .displayCutoutPadding()
-                        .statusBarsPadding()
-                        .padding(top = 6.dp, start = 12.dp, end = 12.dp)
-                )
-            }
         }
+
+        // Isolated Dynamic Island host so island events never recompose the open overlay body
+        DialogIslandBannerOverlay(
+            modalHostId = modalHostId,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .displayCutoutPadding()
+                .statusBarsPadding()
+                .padding(top = 6.dp, start = 12.dp, end = 12.dp)
+        )
     }
+}
+
+@Composable
+private fun DialogIslandBannerOverlay(
+    modalHostId: Long,
+    modifier: Modifier = Modifier
+) {
+    val topModalHostId by DynamicIslandEventManager.topModalHostId.collectAsStateWithLifecycle()
+    if (topModalHostId != modalHostId) return
+    val dialogContext = LocalContext.current
+    val activeIslandEvent by DynamicIslandEventManager.activeEvent.collectAsStateWithLifecycle()
+    val queuedIslandCount by DynamicIslandEventManager.queuedCount.collectAsStateWithLifecycle()
+
+    DynamicIslandEventBanner(
+        event = activeIslandEvent,
+        queuedCount = queuedIslandCount,
+        onTapEvent = { event -> DynamicIslandEventManager.openActiveEvent(dialogContext, event) },
+        onDismiss = { DynamicIslandEventManager.dismissActiveEvent() },
+        modifier = modifier
+    )
 }
 
 /**

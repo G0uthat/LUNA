@@ -6,7 +6,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -39,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -77,6 +80,7 @@ import com.example.ui.components.TactileButton
 import com.example.ui.components.TocBottomSheet
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
+import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -110,6 +114,13 @@ fun ReaderScreen(
     var editingHighlight by remember { mutableStateOf<HighlightNoteEntity?>(null) }
     var pendingExportOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
     var showTempProgressOverlay by remember { mutableStateOf(false) }
+    var lastChromeActivityTick by remember { mutableIntStateOf(0) }
+    var isChromeAutoHidden by remember { mutableStateOf(false) }
+
+    val wakeReaderChrome: () -> Unit = {
+        isChromeAutoHidden = false
+        lastChromeActivityTick++
+    }
 
     val activity = context as? Activity
 
@@ -145,12 +156,53 @@ fun ReaderScreen(
             state.selectedWord != null -> viewModel.dismissWordPopover()
             state.isDockExpanded -> viewModel.toggleDock(false)
             state.isDrawingMode -> viewModel.toggleDrawingMode(false)
+            isChromeAutoHidden -> wakeReaderChrome()
             else -> onBackToLibrary()
         }
     }
 
-    val handleTapCenter = remember(prefs.menuStyle, viewModel) {
-        {
+    val anyOverlayOpenForAutoHide = state.isDrawingMode ||
+        state.isDockExpanded ||
+        state.selectedWord != null ||
+        showAppearanceSheet ||
+        showTocSheet ||
+        showAnnotationsSheet ||
+        showSearchSheet ||
+        showSettingsSheet ||
+        showExportDialog ||
+        showNewNoteDialog ||
+        editingHighlight != null
+
+    // Auto-hide all floating reader chrome into distraction-free text-only mode after user-configured inactivity
+    LaunchedEffect(
+        lastChromeActivityTick,
+        prefs.autoHideReaderChromeEnabled,
+        prefs.autoHideReaderChromeDelaySec,
+        anyOverlayOpenForAutoHide
+    ) {
+        if (!prefs.autoHideReaderChromeEnabled || anyOverlayOpenForAutoHide) {
+            isChromeAutoHidden = false
+            return@LaunchedEffect
+        }
+        delay(prefs.autoHideReaderChromeDelaySec.coerceIn(3, 60) * 1000L)
+        isChromeAutoHidden = true
+    }
+
+    val readerChromeAlpha by animateFloatAsState(
+        targetValue = if (isChromeAutoHidden) 0f else 1f,
+        animationSpec = tween(
+            durationMillis = prefs.autoHideFadeSpeedMs.coerceIn(80, 600),
+            easing = FastOutSlowInEasing
+        ),
+        label = "reader_immersive_chrome_alpha"
+    )
+
+    val handleTapCenter: () -> Unit = {
+        if (isChromeAutoHidden) {
+            // Clicking anywhere while immersed immediately restores all controls with the fast fade-in
+            wakeReaderChrome()
+        } else {
+            lastChromeActivityTick++
             if (prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR) {
                 viewModel.toggleDock()
             } else {
@@ -305,8 +357,12 @@ fun ReaderScreen(
                             onWordSelected = viewModel::onWordSelected,
                             onStrokeCompleted = viewModel::addStroke,
                             onEraseStrokes = viewModel::eraseStrokes,
-                            onToggleTranslateOverlay = viewModel::toggleOrRunManhwaPageTranslation,
+                            onToggleTranslateOverlay = {
+                                wakeReaderChrome()
+                                viewModel.toggleOrRunManhwaPageTranslation()
+                            },
                             onTapPageCenter = handleTapCenter,
+                            chromeAlpha = readerChromeAlpha,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -324,14 +380,19 @@ fun ReaderScreen(
                             activeWidthNorm = state.activeWidthNorm,
                             onActiveSheetChanged = viewModel::onFluidSheetChanged,
                             onSelectStandardFormat = { fmt ->
+                                wakeReaderChrome()
                                 viewModel.updatePreferences { it.copy(standardPageFormat = fmt) }
                             },
-                            onToggleStandardView = viewModel::toggleStandardPageViewForCurrentDoc,
+                            onToggleStandardView = {
+                                wakeReaderChrome()
+                                viewModel.toggleStandardPageViewForCurrentDoc()
+                            },
                             onStrokeCompleted = viewModel::addStroke,
                             onEraseStrokes = viewModel::eraseStrokes,
                             onTapPageCenter = handleTapCenter,
                             showBatteryBubble = !state.isDrawingMode &&
                                 !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded),
+                            chromeAlpha = readerChromeAlpha,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -349,7 +410,10 @@ fun ReaderScreen(
                             activeWidthNorm = state.activeWidthNorm,
                             activeSelection = state.selectedWord,
                             onActiveSheetChanged = viewModel::onFluidSheetChanged,
-                            onWordSelected = viewModel::onWordSelected,
+                            onWordSelected = { wordCtx ->
+                                wakeReaderChrome()
+                                viewModel.onWordSelected(wordCtx)
+                            },
                             onStrokeCompleted = viewModel::addStroke,
                             onEraseStrokes = viewModel::eraseStrokes,
                             onTapPageCenter = handleTapCenter,
@@ -361,87 +425,136 @@ fun ReaderScreen(
                 // Draw-phase frosted gradient veil replacing expensive animated Modifier.blur()
                 ReaderFrostedMenuScrim(visible = anyReaderMenuOpen)
 
-                // 2. Ultra-minimalist discrete reading progress footer (only if enabled or tapped)
-                AnimatedVisibility(
-                    visible = (prefs.showMinimalFooter || showTempProgressOverlay) && !state.isDrawingMode &&
-                        !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded),
-                    enter = fadeIn(motion.tweenSpec(185)),
-                    exit = fadeOut(motion.exitTween(150)),
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .navigationBarsPadding()
-                ) {
-                    Row(
+                // 2. Ultra-minimalist discrete reading progress footer (fades cleanly in immersive mode)
+                if (readerChromeAlpha > 0.02f) {
+                    AnimatedVisibility(
+                        visible = (prefs.showMinimalFooter || showTempProgressOverlay) && !state.isDrawingMode &&
+                            !(prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded),
+                        enter = fadeIn(motion.tweenSpec(185)),
+                        exit = fadeOut(motion.exitTween(150)),
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .graphicsLayer { alpha = readerChromeAlpha }
                     ) {
-                        Text(
-                            text = when {
-                                isShowingPdfNative -> "Pág. ${currentDisplayIndex + 1} / $totalUnits · PDF"
-                                isPptx && showOriginalView -> "Diapositiva ${currentDisplayIndex + 1} / $totalUnits"
-                                isShowingStandardSheet -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · $resolvedFormatLabel"
-                                !isEpub -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · Modo EPUB"
-                                else -> "Hoja ${currentDisplayIndex + 1} / $totalUnits"
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = when {
+                                    isShowingPdfNative -> "Pág. ${currentDisplayIndex + 1} / $totalUnits · PDF"
+                                    isPptx && showOriginalView -> "Diapositiva ${currentDisplayIndex + 1} / $totalUnits"
+                                    isShowingStandardSheet -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · $resolvedFormatLabel"
+                                    !isEpub -> "Hoja ${currentDisplayIndex + 1} / $totalUnits · Modo EPUB"
+                                    else -> "Hoja ${currentDisplayIndex + 1} / $totalUnits"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.inkMuted.copy(alpha = 0.72f)
+                            )
+                            Text(
+                                text = progressSummary,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.inkMuted.copy(alpha = 0.72f)
+                            )
+                        }
+                    }
+
+                    // 2.5 Isolated Battery indicator host (fades out cleanly in immersive mode)
+                    if (!isShowingStandardSheet) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = readerChromeAlpha }
+                        ) {
+                            ReaderBatteryStatusHost(
+                                isDrawingMode = state.isDrawingMode,
+                                isClassicExpanded = prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded
+                            )
+                        }
+                    }
+
+                    // 3. Isolated Dock Host (fades cleanly to text-only during immersive reading)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { alpha = readerChromeAlpha }
+                    ) {
+                        ReaderDockOverlayHost(
+                            prefs = prefs,
+                            isExpanded = state.isDockExpanded,
+                            isBookmarkedHere = isBookmarkedHere,
+                            isDrawingMode = state.isDrawingMode,
+                            isPdfDocument = isShowingPdfNative,
+                            documentFormat = parsed.format,
+                            showFormatModeToggle = !isEpub,
+                            isOriginalFormatView = showOriginalView,
+                            isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
+                            isProcessingStatus = state.isProcessingOcrOrTranslation,
+                            processingStatusText = state.ocrTranslationStatus,
+                            bookTitle = parsed.title,
+                            progressLabel = progressSummary,
+                            onToggleExpanded = {
+                                wakeReaderChrome()
+                                viewModel.toggleDock()
                             },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = palette.inkMuted.copy(alpha = 0.72f)
-                        )
-                        Text(
-                            text = progressSummary,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.inkMuted.copy(alpha = 0.72f)
+                            onDismiss = {
+                                wakeReaderChrome()
+                                viewModel.toggleDock(false)
+                            },
+                            onDockRepositioned = { newSide, newY ->
+                                wakeReaderChrome()
+                                viewModel.updatePreferences { it.copy(dockSide = newSide, dockYFraction = newY) }
+                            },
+                            onToggleBookmarkHere = {
+                                wakeReaderChrome()
+                                viewModel.toggleBookmarkCurrentPage()
+                            },
+                            onOpenAppearance = {
+                                wakeReaderChrome()
+                                showAppearanceSheet = true
+                            },
+                            onOpenToc = {
+                                wakeReaderChrome()
+                                showTocSheet = true
+                            },
+                            onToggleDrawing = {
+                                wakeReaderChrome()
+                                viewModel.toggleDrawingMode()
+                            },
+                            onSetOriginalFormatView = { orig ->
+                                wakeReaderChrome()
+                                viewModel.setViewAsOriginalFormat(orig)
+                            },
+                            onTriggerOcrTranslate = {
+                                wakeReaderChrome()
+                                viewModel.toggleOrRunManhwaPageTranslation()
+                            },
+                            onOpenAnnotations = {
+                                wakeReaderChrome()
+                                showAnnotationsSheet = true
+                            },
+                            onOpenSearch = {
+                                wakeReaderChrome()
+                                showSearchSheet = true
+                            },
+                            onOpenSettings = {
+                                wakeReaderChrome()
+                                settingsInitialTab = 0
+                                showSettingsSheet = true
+                            },
+                            onOpenExport = {
+                                wakeReaderChrome()
+                                showExportDialog = true
+                            },
+                            onBackToLibrary = onBackToLibrary
                         )
                     }
                 }
-
-                // 2.5 Isolated Battery indicator host (hidden when integrated beside StandardPage format bar)
-                if (!isShowingStandardSheet) {
-                    ReaderBatteryStatusHost(
-                        isDrawingMode = state.isDrawingMode,
-                        isClassicExpanded = prefs.menuStyle == ReaderMenuStyle.CLASSIC_BAR && state.isDockExpanded
-                    )
-                }
-
-                // 3. Isolated Dock Host (1Hz MediaSession ticks, Dynamic Island events, and live brightness
-                //    ONLY recompose this host — NEVER the PDF/EPUB/PPTX reader surface!)
-                ReaderDockOverlayHost(
-                    prefs = prefs,
-                    isExpanded = state.isDockExpanded,
-                    isBookmarkedHere = isBookmarkedHere,
-                    isDrawingMode = state.isDrawingMode,
-                    isPdfDocument = isShowingPdfNative,
-                    documentFormat = parsed.format,
-                    showFormatModeToggle = !isEpub,
-                    isOriginalFormatView = showOriginalView,
-                    isPageTranslated = ocrByPage[state.currentUnitIndex]?.isTranslated == true && state.showTranslatedManhwaOverlay,
-                    isProcessingStatus = state.isProcessingOcrOrTranslation,
-                    processingStatusText = state.ocrTranslationStatus,
-                    bookTitle = parsed.title,
-                    progressLabel = progressSummary,
-                    onToggleExpanded = { viewModel.toggleDock() },
-                    onDismiss = { viewModel.toggleDock(false) },
-                    onDockRepositioned = { newSide, newY ->
-                        viewModel.updatePreferences { it.copy(dockSide = newSide, dockYFraction = newY) }
-                    },
-                    onToggleBookmarkHere = viewModel::toggleBookmarkCurrentPage,
-                    onOpenAppearance = { showAppearanceSheet = true },
-                    onOpenToc = { showTocSheet = true },
-                    onToggleDrawing = { viewModel.toggleDrawingMode() },
-                    onSetOriginalFormatView = viewModel::setViewAsOriginalFormat,
-                    onTriggerOcrTranslate = viewModel::toggleOrRunManhwaPageTranslation,
-                    onOpenAnnotations = { showAnnotationsSheet = true },
-                    onOpenSearch = { showSearchSheet = true },
-                    onOpenSettings = {
-                        settingsInitialTab = 0
-                        showSettingsSheet = true
-                    },
-                    onOpenExport = { showExportDialog = true },
-                    onBackToLibrary = onBackToLibrary
-                )
 
                 // 4. Floating Drawing & Signature Toolbar (only when drawing mode is active)
                 if (state.isDrawingMode) {

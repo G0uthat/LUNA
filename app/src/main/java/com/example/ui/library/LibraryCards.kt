@@ -69,8 +69,14 @@ private val SeriesScrimBrush = Brush.verticalGradient(
 )
 
 internal object CoverBitmapCache {
-    private val cache = object : LruCache<String, Bitmap>(24 * 1024) {
-        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    private val cache = object : LruCache<String, Bitmap>(com.example.engine.MemoryPressureManager.coverCacheMaxKb()) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.allocationByteCount / 1024).coerceAtLeast(1)
+    }
+
+    init {
+        com.example.engine.MemoryPressureManager.registerTrimmer("cover_bitmap_cache") { level ->
+            com.example.engine.MemoryPressureManager.trimLruCache(cache, level)
+        }
     }
 
     fun get(path: String?): Bitmap? {
@@ -81,6 +87,20 @@ internal object CoverBitmapCache {
 
     fun put(path: String, bitmap: Bitmap) {
         cache.put(path, bitmap)
+    }
+
+    fun preload(path: String?) {
+        if (path.isNullOrBlank() || get(path) != null) return
+        val file = File(path)
+        if (!file.exists()) return
+        runCatching {
+            BitmapDecodeUtils.decodeSampledFile(
+                path = file.absolutePath,
+                reqWidth = com.example.engine.MemoryPressureManager.coverDecodeWidth(),
+                reqHeight = com.example.engine.MemoryPressureManager.coverDecodeHeight(),
+                preferRgb565 = true
+            )?.also { put(path, it) }
+        }
     }
 }
 
@@ -101,8 +121,8 @@ internal fun rememberDecodedCoverBitmap(coverPath: String?): Bitmap? {
                     if (file.exists()) {
                         BitmapDecodeUtils.decodeSampledFile(
                             path = file.absolutePath,
-                            reqWidth = 420,
-                            reqHeight = 620,
+                            reqWidth = com.example.engine.MemoryPressureManager.coverDecodeWidth(),
+                            reqHeight = com.example.engine.MemoryPressureManager.coverDecodeHeight(),
                             preferRgb565 = true
                         )?.also { decoded ->
                             CoverBitmapCache.put(coverPath, decoded)
@@ -148,7 +168,11 @@ internal fun SteamCoverBookTile(
                 .fillMaxWidth()
                 .aspectRatio(0.68f)
                 .shadow(
-                    elevation = if (palette.isDark) 4.dp else 8.dp,
+                    elevation = when {
+                        com.example.engine.MemoryPressureManager.isLowRamDevice -> 2.dp
+                        palette.isDark -> 4.dp
+                        else -> 8.dp
+                    },
                     shape = PosterShape,
                     ambientColor = Color.Black.copy(alpha = 0.24f)
                 )

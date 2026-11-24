@@ -199,6 +199,10 @@ data class ReaderPreferences(
     val preferredDayTheme: ReadingTheme = ReadingTheme.WARM_CREAM,
     val preferredNightTheme: ReadingTheme = ReadingTheme.WARM_NIGHT,
     val nightTextDimming: Float = 0f,
+    // Auto-hide immersive reading chrome (fast fade-out after reading inactivity)
+    val autoHideReaderChromeEnabled: Boolean = true,
+    val autoHideReaderChromeDelaySec: Int = 8,
+    val autoHideFadeSpeedMs: Int = 220,
     val hasSeenGuide: Boolean = false,
     val hasCompletedOnboarding: Boolean = false,
     val seededSampleVersion: Int = 0
@@ -342,6 +346,9 @@ data class ParsedDocument(
 enum class DrawingTool(val displayName: String) {
     PEN("Lápiz"),
     HIGHLIGHTER("Resaltador"),
+    LINE("Línea"),
+    RECTANGLE("Cuadrado"),
+    CIRCLE("Círculo"),
     ERASER("Borrador")
 }
 

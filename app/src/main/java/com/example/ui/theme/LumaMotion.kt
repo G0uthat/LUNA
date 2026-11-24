@@ -11,16 +11,13 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import kotlin.math.roundToInt
 
 /**
- * Refresh-rate-adaptive motion system for Luma.
+ * High-responsiveness, refresh-rate- and RAM-adaptive motion system for Luma.
  *
- * Calibrates spring physics, tween durations, VSync frame alignment, deceleration curves,
- * and Lottie playback cadence to the display's active/configured refresh rate (60..240 Hz).
- *
- * - At 60 Hz (16.67 ms/frame): gently elongates short transitions, softens stiffness, and raises
- *   damping so low-frame-count motion never feels choppy or stepped.
- * - At 90 Hz (11.11 ms/frame): balanced reference feel.
- * - At 120–240 Hz (8.33–4.17 ms/frame): eliminates harsh snaps and spring wobble via smooth
- *   long-tail deceleration curves, elevated critical damping, and exact VSync frame quantization.
+ * Calibrated for immediate frame-0 touch feedback (zero 100–150 ms perceived click lag)
+ * across 60..240 Hz panels and low-RAM devices:
+ * - Fast-out deceleration curves move immediately on the first frame after a tap.
+ * - High-stiffness, critically-damped springs settle quickly without rubbery bounce.
+ * - Low-RAM mode trims duration further and lets containers lower shadow/layer overhead.
  */
 @Immutable
 data class LumaMotionProfile(
@@ -31,32 +28,33 @@ data class LumaMotionProfile(
     val dampingFloor: Float,
     val dampingBoost: Float,
     val lottieSpeed: Float,
+    val isLowRam: Boolean,
     val standardEasing: CubicBezierEasing,
     val emphasizedEasing: CubicBezierEasing,
     val exitEasing: CubicBezierEasing
 ) {
     /**
-     * Scales a base duration (calibrated for 90 Hz reference) and snaps it to an integer
-     * multiple of the panel's VSync frame period so animations settle cleanly on a real frame.
+     * Scales a base duration and snaps it to an integer multiple of the panel's VSync frame period.
      */
-    fun duration(baseMs: Int, minFrames: Int = 3): Int {
+    fun duration(baseMs: Int, minFrames: Int = 2): Int {
         if (baseMs <= 0) return 0
+        val effectiveMinFrames = if (isLowRam) minFrames.coerceAtMost(2) else minFrames
         val scaled = baseMs * durationScale
-        val frames = (scaled / frameMs).roundToInt().coerceAtLeast(minFrames)
-        return (frames * frameMs).roundToInt().coerceAtLeast(32)
+        val frames = (scaled / frameMs).roundToInt().coerceAtLeast(effectiveMinFrames)
+        return (frames * frameMs).roundToInt().coerceAtLeast(24)
     }
 
     /**
-     * Scales a long breathing/ambient cycle (e.g. spotlight pulse, halo shimmer) smoothly.
+     * Scales a long breathing/ambient cycle smoothly.
      */
     fun ambientDuration(baseMs: Int): Int {
         val factor = when {
-            effectiveHz <= 65f -> 1.08f
-            effectiveHz <= 95f -> 1.00f
-            effectiveHz <= 125f -> 0.96f
-            else -> 0.92f
+            effectiveHz <= 65f -> 1.00f
+            effectiveHz <= 95f -> 0.96f
+            effectiveHz <= 125f -> 0.92f
+            else -> 0.88f
         }
-        val frames = ((baseMs * factor) / frameMs).roundToInt().coerceAtLeast(12)
+        val frames = ((baseMs * factor) / frameMs).roundToInt().coerceAtLeast(10)
         return (frames * frameMs).roundToInt()
     }
 
@@ -89,18 +87,19 @@ data class LumaMotionProfile(
     )
 
     /**
-     * Calibrated spring that prevents stiff/choppy snaps on both 60 Hz and 120–240 Hz panels.
+     * Snappy, critically-damped spring with zero rubbery lag on 60..240 Hz panels.
      */
     fun <T> springSpec(
-        baseDamping: Float = 0.86f,
-        baseStiffness: Float = 360f,
+        baseDamping: Float = 0.88f,
+        baseStiffness: Float = 680f,
         visibilityThreshold: T? = null
     ): SpringSpec<T> {
         val tunedDamping = (baseDamping + dampingBoost)
             .coerceAtLeast(dampingFloor)
             .coerceAtMost(0.98f)
-        val tunedStiffness = (baseStiffness * stiffnessScale)
-            .coerceIn(140f, 680f)
+        val lowRamBoost = if (isLowRam) 1.18f else 1.0f
+        val tunedStiffness = (baseStiffness * stiffnessScale * lowRamBoost)
+            .coerceIn(320f, 1400f)
         return spring(
             dampingRatio = tunedDamping,
             stiffness = tunedStiffness,
@@ -108,94 +107,92 @@ data class LumaMotionProfile(
         )
     }
 
-    /** Crisp tactile spring for button/card press scales and pill toggles. */
+    /** Instant tactile spring for button/chip/card presses (< 50 ms feel). */
     fun <T> tactileSpring(visibilityThreshold: T? = null): SpringSpec<T> =
         springSpec(
-            baseDamping = 0.84f,
-            baseStiffness = 460f,
+            baseDamping = 0.88f,
+            baseStiffness = 980f,
             visibilityThreshold = visibilityThreshold
         )
 
-    /** Smooth responsive spring for dock drawers, menus, and popovers. */
+    /** Snappy, zero-lag spring for menus, dropdowns, Dynamic Island, and popovers. */
     fun <T> modalSpring(visibilityThreshold: T? = null): SpringSpec<T> =
         springSpec(
-            baseDamping = 0.88f,
-            baseStiffness = 340f,
+            baseDamping = 0.90f,
+            baseStiffness = 720f,
             visibilityThreshold = visibilityThreshold
         )
 
-    /** Silky critically-damped glide spring for spotlights, floating banners, and bounds morphing. */
+    /** Crisp critically-damped glide spring for spotlights, floating banners, and bounds morphing. */
     fun <T> glideSpring(visibilityThreshold: T? = null): SpringSpec<T> =
         springSpec(
-            baseDamping = 0.90f,
-            baseStiffness = 290f,
+            baseDamping = 0.92f,
+            baseStiffness = 560f,
             visibilityThreshold = visibilityThreshold
         )
 
-    /** Expressive but controlled spring for bookmark ribbon drops & celebratory micro-feedback. */
+    /** Expressive yet rapid spring for bookmark ribbon drops & celebratory micro-feedback. */
     fun <T> expressiveSpring(visibilityThreshold: T? = null): SpringSpec<T> =
         springSpec(
-            baseDamping = 0.78f,
-            baseStiffness = 360f,
+            baseDamping = 0.82f,
+            baseStiffness = 620f,
             visibilityThreshold = visibilityThreshold
         )
 }
 
-fun motionProfileFor(refreshRateHz: Float): LumaMotionProfile {
+fun motionProfileFor(refreshRateHz: Float, isLowRam: Boolean = false): LumaMotionProfile {
     val hz = refreshRateHz.coerceIn(60f, 240f)
     val frameMs = 1000f / hz
 
-    val durationScale = interpolateAnchors(
+    val baseDurationScale = interpolateAnchors(
         hz,
-        60f to 1.12f,
-        90f to 1.00f,
-        120f to 0.94f,
-        144f to 0.90f,
-        240f to 0.86f
+        60f to 0.76f,
+        90f to 0.74f,
+        120f to 0.70f,
+        144f to 0.68f,
+        240f to 0.65f
     )
+    val durationScale = if (isLowRam) baseDurationScale * 0.78f else baseDurationScale
+
     val stiffnessScale = interpolateAnchors(
         hz,
-        60f to 0.84f,
-        90f to 1.00f,
-        120f to 1.08f,
-        144f to 1.12f,
-        240f to 1.16f
+        60f to 1.00f,
+        90f to 1.05f,
+        120f to 1.10f,
+        144f to 1.14f,
+        240f to 1.18f
     )
-    // Both low Hz (prevents choppy bounce) and very high Hz (prevents harsh jittery snap)
-    // benefit from clean damping; 90 Hz stays as the crisp baseline.
     val dampingBoost = interpolateAnchors(
         hz,
-        60f to 0.06f,
-        90f to 0.02f,
-        120f to 0.03f,
-        144f to 0.04f,
-        240f to 0.05f
+        60f to 0.02f,
+        90f to 0.01f,
+        120f to 0.02f,
+        144f to 0.03f,
+        240f to 0.04f
     )
     val dampingFloor = interpolateAnchors(
         hz,
         60f to 0.84f,
-        90f to 0.78f,
-        120f to 0.82f,
-        144f to 0.84f,
+        90f to 0.82f,
+        120f to 0.84f,
+        144f to 0.85f,
         240f to 0.86f
     )
     val lottieSpeed = interpolateAnchors(
         hz,
-        60f to 0.94f,
-        90f to 1.00f,
-        120f to 1.02f,
-        144f to 1.04f,
-        240f to 1.06f
+        60f to 1.04f,
+        90f to 1.06f,
+        120f to 1.08f,
+        144f to 1.10f,
+        240f to 1.12f
     )
 
-    // Smooth deceleration curves tailored to frame density
-    val stdX1 = interpolateAnchors(hz, 60f to 0.22f, 90f to 0.18f, 120f to 0.16f, 144f to 0.14f, 240f to 0.12f)
-    val stdX2 = interpolateAnchors(hz, 60f to 0.36f, 90f to 0.32f, 120f to 0.30f, 144f to 0.28f, 240f to 0.25f)
+    // Fast-out deceleration curves: immediate visual motion on frame 1 after every tap
+    val stdX1 = interpolateAnchors(hz, 60f to 0.08f, 90f to 0.07f, 120f to 0.06f, 240f to 0.05f)
+    val stdX2 = interpolateAnchors(hz, 60f to 0.22f, 90f to 0.20f, 120f to 0.18f, 240f to 0.16f)
 
-    val empX1 = interpolateAnchors(hz, 60f to 0.18f, 90f to 0.14f, 120f to 0.12f, 144f to 0.10f, 240f to 0.09f)
-    val empX2 = interpolateAnchors(hz, 60f to 0.28f, 90f to 0.24f, 120f to 0.22f, 144f to 0.20f, 240f to 0.18f)
-
-    val exitX1 = interpolateAnchors(hz, 60f to 0.36f, 90f to 0.34f, 120f to 0.32f, 144f to 0.30f, 240f to 0.28f)
+    val empX1 = interpolateAnchors(hz, 60f to 0.05f, 90f to 0.05f, 120f to 0.04f, 240f to 0.04f)
+    val empX2 = interpolateAnchors(hz, 60f to 0.18f, 90f to 0.16f, 120f to 0.15f, 240f to 0.14f)
 
     return LumaMotionProfile(
         effectiveHz = hz,
@@ -205,9 +202,10 @@ fun motionProfileFor(refreshRateHz: Float): LumaMotionProfile {
         dampingFloor = dampingFloor,
         dampingBoost = dampingBoost,
         lottieSpeed = lottieSpeed,
-        standardEasing = CubicBezierEasing(stdX1, 1f, stdX2, 1f),
-        emphasizedEasing = CubicBezierEasing(empX1, 1f, empX2, 1f),
-        exitEasing = CubicBezierEasing(exitX1, 0f, 0.82f, 0.32f)
+        isLowRam = isLowRam,
+        standardEasing = CubicBezierEasing(stdX1, 0.92f, stdX2, 1f),
+        emphasizedEasing = CubicBezierEasing(empX1, 0.96f, empX2, 1f),
+        exitEasing = CubicBezierEasing(0.30f, 0f, 0.80f, 0.20f)
     )
 }
 

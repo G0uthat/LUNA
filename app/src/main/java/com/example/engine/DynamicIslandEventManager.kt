@@ -127,7 +127,15 @@ object DynamicIslandEventManager {
     private val pendingQueue = ArrayDeque<DynamicIslandEvent>()
     private var clearRunnable: Runnable? = null
 
-    private val appIconCache = object : LruCache<String, Bitmap>(24) {}
+    private val appIconCache = object : LruCache<String, Bitmap>(
+        if (MemoryPressureManager.isLowRamDevice) 12 else 24
+    ) {}
+
+    init {
+        MemoryPressureManager.registerTrimmer("island_app_icon_cache") { level ->
+            MemoryPressureManager.trimLruCache(appIconCache, level)
+        }
+    }
     private val modalHostIdGen = AtomicLong(1L)
     private val activeModalHosts = mutableListOf<Long>()
 

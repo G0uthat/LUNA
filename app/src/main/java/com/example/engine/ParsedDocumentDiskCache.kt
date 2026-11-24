@@ -1,6 +1,7 @@
 package com.example.engine
 
 import android.content.Context
+import android.util.LruCache
 import com.example.data.model.BlockType
 import com.example.data.model.DocumentFormat
 import com.example.data.model.ParsedBlock
@@ -36,14 +37,32 @@ object ParsedDocumentDiskCache {
 
     private const val MAGIC = 0x4C554D41 // "LUMA"
     private const val CACHE_VERSION = 1
-    private const val MAX_CACHE_FILES = 30
-    private const val MAX_CACHE_BYTES = 25L * 1024L * 1024L
+    private const val MAX_CACHE_FILES = 250
+    private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
 
     private const val ELEM_SHAPE = 1
     private const val ELEM_PICTURE = 2
     private const val ELEM_TABLE = 3
 
+    // Ultra-fast RAM hot-cache for the most recently opened books (<1 ms instant reopen)
+    private val hotMemoryCache = LruCache<String, ParsedDocument>(4)
+
+    init {
+        MemoryPressureManager.registerTrimmer("parsed_doc_hot_cache") { level ->
+            synchronized(hotMemoryCache) {
+                MemoryPressureManager.trimLruCache(hotMemoryCache, level)
+            }
+        }
+    }
+
+    private fun memoryKey(sourceFile: File, format: DocumentFormat): String =
+        "${sourceFile.absolutePath}|${sourceFile.length()}|${sourceFile.lastModified()}|${format.name}"
+
     fun read(context: Context, sourceFile: File, format: DocumentFormat): ParsedDocument? {
+        val memKey = memoryKey(sourceFile, format)
+        synchronized(hotMemoryCache) {
+            hotMemoryCache.get(memKey)?.let { return it }
+        }
         val cacheFile = cacheFileFor(context, sourceFile, format)
         if (!cacheFile.exists() || cacheFile.length() < 16L) return null
         return runCatching {
@@ -245,7 +264,7 @@ object ParsedDocumentDiskCache {
                 // Touch lastModified for LRU retention
                 cacheFile.setLastModified(System.currentTimeMillis())
 
-                ParsedDocument(
+                val parsedDoc = ParsedDocument(
                     title = title,
                     author = author,
                     format = parsedFormat,
@@ -259,6 +278,10 @@ object ParsedDocumentDiskCache {
                     nativePageHeightPt = nativeHeightPt,
                     detectedFormatLabel = detectedFormatLabel
                 )
+                synchronized(hotMemoryCache) {
+                    hotMemoryCache.put(memKey, parsedDoc)
+                }
+                parsedDoc
             }
         }.onFailure {
             runCatching { cacheFile.delete() }
@@ -266,6 +289,9 @@ object ParsedDocumentDiskCache {
     }
 
     fun write(context: Context, sourceFile: File, format: DocumentFormat, doc: ParsedDocument) {
+        synchronized(hotMemoryCache) {
+            hotMemoryCache.put(memoryKey(sourceFile, format), doc)
+        }
         val dir = cacheDir(context)
         val target = cacheFileFor(context, sourceFile, format)
         val temp = File(dir, "${target.name}.tmp")

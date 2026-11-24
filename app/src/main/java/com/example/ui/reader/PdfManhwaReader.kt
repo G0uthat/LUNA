@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -44,7 +45,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.FitScreen
 import androidx.compose.material.icons.rounded.Visibility
@@ -85,6 +88,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -108,6 +112,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -122,14 +127,19 @@ import kotlin.math.roundToInt
  * capped at min(maxHeap / 6, 40 MB) to guarantee smooth scrolling with zero OOM spikes.
  */
 private object PdfPageBitmapCache {
-    private val maxKb: Int = run {
-        val heapKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
-        (heapKb / 6).coerceIn(12 * 1024, 40 * 1024)
-    }
+    private val maxKb: Int = com.example.engine.MemoryPressureManager.pdfCacheMaxKb()
 
     private val cache = object : LruCache<String, Bitmap>(maxKb) {
         override fun sizeOf(key: String, value: Bitmap): Int =
             (value.allocationByteCount / 1024).coerceAtLeast(1)
+    }
+
+    init {
+        com.example.engine.MemoryPressureManager.registerTrimmer("pdf_page_bitmap_cache") { level ->
+            synchronized(cache) {
+                com.example.engine.MemoryPressureManager.trimLruCache(cache, level)
+            }
+        }
     }
 
     fun key(filePath: String, pageIndex: Int, widthPx: Int): String = "$filePath#$pageIndex@$widthPx"
@@ -155,6 +165,77 @@ private object PdfPageBitmapCache {
             }
         }
     }
+}
+
+/**
+ * Renders a single PDF page with Android's PdfRenderer (strictly ARGB_8888), optionally compacting
+ * post-render to RGB_565 on low-RAM devices, populates RAM cache, and writes asynchronously to
+ * [com.example.engine.PdfPageDiskCache] so future opens decode in ~6–10 ms.
+ */
+private suspend fun renderAndCachePdfPage(
+    appContext: android.content.Context,
+    filePath: String,
+    pageIndex: Int,
+    targetRenderWidthPx: Int,
+    renderer: PdfRenderer,
+    renderMutex: Mutex
+): Bitmap? {
+    val cacheKey = PdfPageBitmapCache.key(filePath, pageIndex, targetRenderWidthPx)
+    // Tier 1: Instant RAM hit (<1 ms)
+    PdfPageBitmapCache.get(cacheKey)?.let { return it }
+
+    // Tier 2: Fast native JPEG disk cache hit (~6–10 ms, zero renderMutex contention!)
+    val diskHit = com.example.engine.PdfPageDiskCache.read(appContext, filePath, pageIndex, targetRenderWidthPx)
+    if (diskHit != null) {
+        PdfPageBitmapCache.put(cacheKey, diskHit)
+        return diskHit
+    }
+
+    // Tier 3: Render via PdfRenderer (strictly ARGB_8888) under mutex
+    val rendered = renderMutex.withLock {
+        currentCoroutineContext().ensureActive()
+        PdfPageBitmapCache.get(cacheKey)?.let { return@withLock it }
+        runCatching {
+            if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@runCatching null
+            renderer.openPage(pageIndex).use { page ->
+                val maxCap = if (com.example.engine.MemoryPressureManager.isLowRamDevice) 960 else 1280
+                val targetWidth = targetRenderWidthPx.coerceIn(640, maxCap)
+                val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
+                val rawHeight = (page.height * scale).roundToInt().coerceAtLeast(1)
+                val maxHeightCap = (targetWidth * 2.4f).roundToInt().coerceAtMost(2400)
+                val (finalW, finalH) = if (rawHeight > maxHeightCap) {
+                    val ratio = maxHeightCap.toFloat() / rawHeight
+                    (targetWidth * ratio).roundToInt().coerceAtLeast(1) to maxHeightCap
+                } else {
+                    targetWidth to rawHeight
+                }
+                // Android PdfRenderer.Page.render() STRICTLY requires ARGB_8888
+                val argbBmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
+                argbBmp.eraseColor(AndroidColor.WHITE)
+                page.render(argbBmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                val cachedBmp = if (com.example.engine.MemoryPressureManager.isLowRamDevice) {
+                    val compact = runCatching { argbBmp.copy(Bitmap.Config.RGB_565, false) }.getOrNull()
+                    if (compact != null) {
+                        argbBmp.recycle()
+                        compact
+                    } else {
+                        argbBmp
+                    }
+                } else {
+                    argbBmp
+                }
+                PdfPageBitmapCache.put(cacheKey, cachedBmp)
+                cachedBmp
+            }
+        }.getOrNull()
+    }
+
+    // Persist to disk cache so future visits never pay PdfRenderer cost again
+    if (rendered != null && !rendered.isRecycled) {
+        com.example.engine.PdfPageDiskCache.write(appContext, filePath, pageIndex, targetRenderWidthPx, rendered)
+    }
+    return rendered
 }
 
 /**
@@ -191,6 +272,7 @@ fun PdfManhwaReader(
     onEraseStrokes: (String, Set<String>) -> Unit,
     onToggleTranslateOverlay: () -> Unit,
     onTapPageCenter: () -> Unit,
+    chromeAlpha: Float = 1f,
     modifier: Modifier = Modifier
 ) {
     val safePageCount = pageCount.coerceAtLeast(1)
@@ -200,25 +282,58 @@ fun PdfManhwaReader(
     val coroutineScope = rememberCoroutineScope()
 
     val renderMutex = remember(filePath) { Mutex() }
-    val pfdAndRenderer = remember(filePath) {
-        runCatching {
-            val pfd = ParcelFileDescriptor.open(File(filePath), ParcelFileDescriptor.MODE_READ_ONLY)
-            val renderer = PdfRenderer(pfd)
-            pfd to renderer
-        }.getOrNull()
+    var pfdAndRenderer by remember(filePath) { mutableStateOf<Pair<ParcelFileDescriptor, PdfRenderer>?>(null) }
+    var pdfOpenError by remember(filePath) { mutableStateOf<String?>(null) }
+    var isOpeningPdf by remember(filePath) { mutableStateOf(true) }
+
+    LaunchedEffect(filePath) {
+        isOpeningPdf = true
+        pdfOpenError = null
+        val opened = withContext(Dispatchers.IO) {
+            runCatching {
+                val file = File(filePath)
+                require(file.exists() && file.length() > 0L) { "El archivo PDF no existe o está vacío." }
+                val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                try {
+                    val renderer = PdfRenderer(pfd)
+                    pfd to renderer
+                } catch (t: Throwable) {
+                    runCatching { pfd.close() }
+                    throw t
+                }
+            }
+        }
+        if (!isActive) {
+            opened.getOrNull()?.let { (pfd, renderer) ->
+                runCatching { renderer.close() }
+                runCatching { pfd.close() }
+            }
+            return@LaunchedEffect
+        }
+        opened.onSuccess { pair ->
+            pfdAndRenderer = pair
+            isOpeningPdf = false
+        }.onFailure { err ->
+            pfdAndRenderer = null
+            pdfOpenError = err.localizedMessage ?: "No se pudo abrir este PDF (puede estar dañado o protegido con contraseña)."
+            isOpeningPdf = false
+        }
     }
 
     DisposableEffect(filePath) {
         onDispose {
             PdfPageBitmapCache.clearForFile(filePath)
-            runCatching { pfdAndRenderer?.second?.close() }
-            runCatching { pfdAndRenderer?.first?.close() }
+            val pair = pfdAndRenderer
+            pfdAndRenderer = null
+            runCatching { pair?.second?.close() }
+            runCatching { pair?.first?.close() }
         }
     }
 
+    val effectivePageCount = (pfdAndRenderer?.second?.pageCount ?: safePageCount).coerceAtLeast(1)
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
-    var activeVisiblePage by remember(filePath) { mutableIntStateOf(safeIndex) }
+    var activeVisiblePage by remember(filePath) { mutableIntStateOf(safeIndex.coerceIn(0, effectivePageCount - 1)) }
 
     val hasDynamicIsland = prefs.menuStyle == ReaderMenuStyle.DYNAMIC_ISLAND
     val islandClearanceDp = if (hasDynamicIsland) (46.dp * prefs.dockScale.coerceIn(0.88f, 1.25f)) else 0.dp
@@ -230,9 +345,63 @@ fun PdfManhwaReader(
     val applyPdfNightFilter = prefs.pdfNightFilter && palette.isDark
     val canDrawOnCanvas = isDrawingMode && !isPanZoomWhileDrawing
 
+    if (pdfOpenError != null) {
+        Box(
+            modifier = modifier.fillMaxSize().background(palette.background).padding(28.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "No se pudo renderizar el PDF",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.ink
+                )
+                Text(
+                    text = pdfOpenError.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkMuted
+                )
+            }
+        }
+        return
+    }
+
     BoxWithConstraints(modifier = modifier.fillMaxSize().background(palette.background)) {
-        // Quantize viewport width to 64px buckets so rotation/slight inset changes reuse cached bitmaps cleanly
-        val targetRenderWidthPx = ((constraints.maxWidth / 64) * 64).coerceIn(720, 1440)
+        val appContext = LocalContext.current.applicationContext
+        // Quantize viewport width to 64px buckets; use lighter ceiling on low-RAM devices for rapid rendering
+        val maxRenderWidth = if (com.example.engine.MemoryPressureManager.isLowRamDevice) 960 else 1280
+        val targetRenderWidthPx = ((constraints.maxWidth / 64) * 64).coerceIn(640, maxRenderWidth)
+
+        // Predictive background prefetcher: warms N+1, N+2, N-1, N+3 into RAM & 1.5 GB disk cache
+        // while the user reads the current page so page flips are 0 ms instant!
+        LaunchedEffect(filePath, activeVisiblePage, pfdAndRenderer, targetRenderWidthPx) {
+            val renderer = pfdAndRenderer?.second ?: return@LaunchedEffect
+            delay(55L) // Let the active visible page grab renderMutex first
+            val prefetchOrder = if (com.example.engine.MemoryPressureManager.isLowRamDevice) {
+                listOf(activeVisiblePage + 1, activeVisiblePage - 1, activeVisiblePage + 2)
+            } else {
+                listOf(activeVisiblePage + 1, activeVisiblePage + 2, activeVisiblePage - 1, activeVisiblePage + 3)
+            }
+            withContext(Dispatchers.IO) {
+                for (idx in prefetchOrder) {
+                    if (!isActive) break
+                    if (idx in 0 until effectivePageCount) {
+                        renderAndCachePdfPage(
+                            appContext = appContext,
+                            filePath = filePath,
+                            pageIndex = idx,
+                            targetRenderWidthPx = targetRenderWidthPx,
+                            renderer = renderer,
+                            renderMutex = renderMutex
+                        )
+                    }
+                }
+            }
+        }
 
         if (prefs.pageAnimation == PageAnimationMode.VERTICAL_SCROLL) {
             val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeIndex)
@@ -314,7 +483,7 @@ fun PdfManhwaReader(
                     if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                         pagerState.scrollToPage(safeIndex)
                     } else {
-                        pagerState.animateScrollToPage(safeIndex, animationSpec = motion.emphasizedTween(290))
+                        pagerState.animateScrollToPage(safeIndex, animationSpec = motion.emphasizedTween(165))
                     }
                 }
             }
@@ -326,7 +495,7 @@ fun PdfManhwaReader(
                         panOffset = Offset.Zero
                         if (prefs.pageAnimation == PageAnimationMode.E_INK && page != lastPdfPage) {
                             eInkFlash = true
-                            delay(85)
+                            delay(65)
                             eInkFlash = false
                         }
                         lastPdfPage = page
@@ -346,7 +515,7 @@ fun PdfManhwaReader(
                                 if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                     pagerState.scrollToPage(prev)
                                 } else {
-                                    pagerState.animateScrollToPage(prev, animationSpec = motion.emphasizedTween(280))
+                                    pagerState.animateScrollToPage(prev, animationSpec = motion.emphasizedTween(155))
                                 }
                             }
                         }
@@ -356,7 +525,7 @@ fun PdfManhwaReader(
                                 if (prefs.pageAnimation == PageAnimationMode.E_INK) {
                                     pagerState.scrollToPage(next)
                                 } else {
-                                    pagerState.animateScrollToPage(next, animationSpec = motion.emphasizedTween(280))
+                                    pagerState.animateScrollToPage(next, animationSpec = motion.emphasizedTween(155))
                                 }
                             }
                         }
@@ -369,6 +538,7 @@ fun PdfManhwaReader(
                 HorizontalPager(
                     state = pagerState,
                     key = { pageIdx -> "pdf_page_$pageIdx" },
+                    beyondViewportPageCount = 1,
                     flingBehavior = PagerDefaults.flingBehavior(
                         state = pagerState,
                         snapAnimationSpec = motion.glideSpring()
@@ -437,7 +607,7 @@ fun PdfManhwaReader(
                         }
                     }
 
-                    Box(
+                    BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxSize()
                             .then(animMod)
@@ -452,35 +622,55 @@ fun PdfManhwaReader(
                                 } else {
                                     Modifier
                                 }
-                            ),
-                        contentAlignment = Alignment.Center
+                            )
                     ) {
+                        val viewportHeight = maxHeight
+                        val isLandscapeViewport = maxWidth > maxHeight
+                        val pageScrollState = rememberScrollState()
                         val inRenderWindow = abs(pageIdx - activeVisiblePage) <= 1
-                        PdfInteractivePage(
-                            filePath = filePath,
-                            pageIndex = pageIdx,
-                            targetRenderWidthPx = targetRenderWidthPx,
-                            shouldRender = inRenderWindow,
-                            renderer = pfdAndRenderer?.second,
-                            renderMutex = renderMutex,
-                            ocrResult = ocrByPage[pageIdx],
-                            showTranslatedOverlay = showTranslatedOverlay,
-                            applyNightFilter = applyPdfNightFilter,
-                            strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
-                            zoomScale = zoomScale,
-                            panOffset = panOffset,
-                            isDrawingMode = canDrawOnCanvas,
-                            activeTool = activeTool,
-                            activeColorArgb = activeColorArgb,
-                            activeWidthNorm = activeWidthNorm,
-                            onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
-                            onBitmapReady = { bmp -> onPageBitmapReady(pageIdx, bmp) },
-                            onWordSelected = onWordSelected,
-                            onStrokeCompleted = { onStrokeCompleted("pdf-page-$pageIdx", it) },
-                            onEraseStrokes = { onEraseStrokes("pdf-page-$pageIdx", it) },
-                            onTapAtXFraction = handlePdfTap,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(
+                                    state = pageScrollState,
+                                    enabled = !canDrawOnCanvas && !isZoomed
+                                )
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = viewportHeight)
+                                    .padding(bottom = if (isLandscapeViewport) 48.dp else 0.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                PdfInteractivePage(
+                                    filePath = filePath,
+                                    pageIndex = pageIdx,
+                                    targetRenderWidthPx = targetRenderWidthPx,
+                                    shouldRender = inRenderWindow,
+                                    renderer = pfdAndRenderer?.second,
+                                    renderMutex = renderMutex,
+                                    ocrResult = ocrByPage[pageIdx],
+                                    showTranslatedOverlay = showTranslatedOverlay,
+                                    applyNightFilter = applyPdfNightFilter,
+                                    strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
+                                    zoomScale = zoomScale,
+                                    panOffset = panOffset,
+                                    isDrawingMode = canDrawOnCanvas,
+                                    activeTool = activeTool,
+                                    activeColorArgb = activeColorArgb,
+                                    activeWidthNorm = activeWidthNorm,
+                                    onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
+                                    onBitmapReady = { bmp -> onPageBitmapReady(pageIdx, bmp) },
+                                    onWordSelected = onWordSelected,
+                                    onStrokeCompleted = { onStrokeCompleted("pdf-page-$pageIdx", it) },
+                                    onEraseStrokes = { onEraseStrokes("pdf-page-$pageIdx", it) },
+                                    onTapAtXFraction = handlePdfTap,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -506,14 +696,16 @@ fun PdfManhwaReader(
             label = "pdf_pill_bottom_clearance"
         )
 
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = bottomClearance, start = 16.dp, end = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        if (chromeAlpha > 0.02f) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = bottomClearance, start = 16.dp, end = 16.dp)
+                    .graphicsLayer { alpha = chromeAlpha },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
             // Show floating OCR/translation pill ONLY when not already displayed inside Dynamic Island
             AnimatedVisibility(
                 visible = isProcessingOcrOrTranslation && prefs.menuStyle != ReaderMenuStyle.DYNAMIC_ISLAND,
@@ -637,6 +829,7 @@ fun PdfManhwaReader(
                 }
             }
         }
+        }
     }
 }
 
@@ -689,6 +882,7 @@ private fun PdfInteractivePage(
     val latestOnZoomPan by rememberUpdatedState(onZoomPanChange)
     val latestOnTapX by rememberUpdatedState(onTapAtXFraction)
 
+    val appContext = LocalContext.current.applicationContext
     LaunchedEffect(cacheKey, shouldRender, renderer) {
         if (!shouldRender) {
             // Release off-screen page reference immediately (LRU cache retains recent pages within byte cap)
@@ -706,30 +900,14 @@ private fun PdfInteractivePage(
 
         val rendered = withContext(Dispatchers.IO) {
             currentCoroutineContext().ensureActive()
-            renderMutex.withLock {
-                currentCoroutineContext().ensureActive()
-                PdfPageBitmapCache.get(cacheKey)?.let { return@withLock it }
-                runCatching {
-                    renderer.openPage(pageIndex).use { page ->
-                        val targetWidth = targetRenderWidthPx.coerceIn(720, 1440)
-                        val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
-                        val rawHeight = (page.height * scale).roundToInt().coerceAtLeast(1)
-                        val maxHeightCap = (targetWidth * 2.4f).roundToInt().coerceAtMost(2880)
-                        val (finalW, finalH) = if (rawHeight > maxHeightCap) {
-                            val ratio = maxHeightCap.toFloat() / rawHeight
-                            (targetWidth * ratio).roundToInt().coerceAtLeast(1) to maxHeightCap
-                        } else {
-                            targetWidth to rawHeight
-                        }
-                        // RGB_565 uses 2 bytes/px (50% less RAM than ARGB_8888) — ideal for opaque white PDF pages!
-                        val bmp = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.RGB_565)
-                        bmp.eraseColor(AndroidColor.WHITE)
-                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                        PdfPageBitmapCache.put(cacheKey, bmp)
-                        bmp
-                    }
-                }.getOrNull()
-            }
+            renderAndCachePdfPage(
+                appContext = appContext,
+                filePath = filePath,
+                pageIndex = pageIndex,
+                targetRenderWidthPx = targetRenderWidthPx,
+                renderer = renderer,
+                renderMutex = renderMutex
+            )
         }
         if (rendered != null) {
             aspectRatio = rendered.width.toFloat() / rendered.height.toFloat().coerceAtLeast(1f)
@@ -814,23 +992,9 @@ private fun PdfInteractivePage(
                             }
                         }
                         .pointerInput(pageIndex) {
+                            // Omitting onDoubleTap eliminates Android's ~300 ms double-tap wait so every
+                            // single tap (menu toggle / page flip) fires in 0 ms! Pinch-to-zoom remains instant.
                             detectTapGestures(
-                                onDoubleTap = { tapPos ->
-                                    if (latestZoom > 1.15f) {
-                                        latestOnZoomPan(1f, Offset.Zero)
-                                    } else {
-                                        val targetZoom = 2.35f
-                                        val center = Offset(size.width / 2f, size.height / 2f)
-                                        val focal = tapPos - center
-                                        val maxX = size.width * (targetZoom - 1f) * 0.5f
-                                        val maxY = size.height * (targetZoom - 1f) * 0.5f
-                                        val targetPan = Offset(
-                                            (-focal.x * (targetZoom - 1f)).coerceIn(-maxX, maxX),
-                                            (-focal.y * (targetZoom - 1f)).coerceIn(-maxY, maxY)
-                                        )
-                                        latestOnZoomPan(targetZoom, targetPan)
-                                    }
-                                },
                                 onTap = { tapPos ->
                                     selectedOcrWordBox = null
                                     val nx = (tapPos.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)

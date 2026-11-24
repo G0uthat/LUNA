@@ -168,8 +168,8 @@ internal fun DynamicIslandReaderDock(
         // Gentle 15% dim + subtle frosted veil matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(motion.tweenSpec(175)),
-            exit = fadeOut(motion.exitTween(145))
+            enter = fadeIn(motion.tweenSpec(105)),
+            exit = fadeOut(motion.exitTween(80))
         ) {
             Box(
                 modifier = Modifier
@@ -201,19 +201,19 @@ internal fun DynamicIslandReaderDock(
                 onDismiss = onDismissIslandEvent
             )
 
-            // 1. Compact Apple/Infinix Dynamic Island Pill (silky GPU Zoom-In / Zoom-Out)
+            // 1. Compact Apple/Infinix Dynamic Island Pill (snappy GPU Zoom-In / Zoom-Out)
             AnimatedVisibility(
                 visible = !isExpanded && activeIslandEvent == null,
                 enter = scaleIn(
-                    initialScale = 0.87f,
+                    initialScale = 0.90f,
                     transformOrigin = IslandTopOrigin,
                     animationSpec = motion.tactileSpring()
-                ) + fadeIn(motion.emphasizedTween(180)),
+                ) + fadeIn(motion.emphasizedTween(105)),
                 exit = scaleOut(
-                    targetScale = 0.87f,
+                    targetScale = 0.90f,
                     transformOrigin = IslandTopOrigin,
-                    animationSpec = motion.exitTween(155)
-                ) + fadeOut(motion.exitTween(130))
+                    animationSpec = motion.exitTween(85)
+                ) + fadeOut(motion.exitTween(75))
             ) {
                 val showCompactMedia = !isProcessingStatus && hasMediaAvailable
                 Row(
@@ -324,19 +324,19 @@ internal fun DynamicIslandReaderDock(
                 }
             }
 
-            // 2. Compact Expanded Dynamic Island — smooth spring Zoom-In / cubic-bezier Zoom-Out
+            // 2. Compact Expanded Dynamic Island — snappy spring Zoom-In / rapid Zoom-Out
             AnimatedVisibility(
                 visible = isExpanded,
                 enter = scaleIn(
-                    initialScale = 0.66f,
+                    initialScale = 0.84f,
                     transformOrigin = IslandTopOrigin,
                     animationSpec = motion.modalSpring()
-                ) + fadeIn(motion.emphasizedTween(185)),
+                ) + fadeIn(motion.emphasizedTween(110)),
                 exit = scaleOut(
-                    targetScale = 0.66f,
+                    targetScale = 0.86f,
                     transformOrigin = IslandTopOrigin,
-                    animationSpec = motion.exitTween(175)
-                ) + fadeOut(motion.exitTween(145))
+                    animationSpec = motion.exitTween(90)
+                ) + fadeOut(motion.exitTween(80))
             ) {
                 val baseExpandedW = if (isCompactHeight) {
                     (400.dp * dockScale).coerceIn(320.dp, 460.dp)
@@ -348,7 +348,11 @@ internal fun DynamicIslandReaderDock(
                     modifier = Modifier
                         .width(expandedW)
                         .heightIn(max = (availMaxHeight - 36.dp).coerceAtLeast(180.dp))
-                        .shadow(16.dp, IslandExpandedShape, ambientColor = Color.Black.copy(alpha = 0.42f))
+                        .shadow(
+                            elevation = if (motion.isLowRam) 5.dp else 12.dp,
+                            shape = IslandExpandedShape,
+                            ambientColor = Color.Black.copy(alpha = 0.36f)
+                        )
                         .clip(IslandExpandedShape)
                         .background(IslandBgColor.copy(alpha = 0.97f))
                         .border(1.dp, Color.White.copy(alpha = 0.14f), IslandExpandedShape)

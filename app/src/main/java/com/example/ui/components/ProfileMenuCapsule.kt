@@ -537,11 +537,11 @@ fun ProfileDropdownCapsuleOverlay(
     val capsuleTopOffsetPx = (anchorTopPx - innerPadPx).coerceAtLeast(0f).roundToInt()
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Gentle 15% dim + subtle frosted veil (pairs with the 18% background blur in LibraryScreen)
+        // Gentle 15% dim + subtle frosted veil
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(animationSpec = motion.tweenSpec(215)),
-            exit = fadeOut(animationSpec = motion.exitTween(170))
+            enter = fadeIn(animationSpec = motion.tweenSpec(110)),
+            exit = fadeOut(animationSpec = motion.exitTween(85))
         ) {
             Box(
                 modifier = Modifier
@@ -565,23 +565,24 @@ fun ProfileDropdownCapsuleOverlay(
                 .offset { IntOffset(0, capsuleTopOffsetPx) }
                 .padding(end = 8.dp),
             enter = scaleIn(
-                initialScale = 0.89f,
+                initialScale = 0.93f,
                 transformOrigin = TransformOrigin(0.88f, 0.06f),
                 animationSpec = motion.modalSpring()
-            ) + slideInVertically(
-                initialOffsetY = { -10 },
-                animationSpec = motion.modalSpring()
-            ) + fadeIn(animationSpec = motion.emphasizedTween(200)),
+            ) + fadeIn(animationSpec = motion.emphasizedTween(110)),
             exit = scaleOut(
-                targetScale = 0.92f,
+                targetScale = 0.95f,
                 transformOrigin = TransformOrigin(0.88f, 0.06f),
-                animationSpec = motion.exitTween(170)
-            ) + slideOutVertically(
-                targetOffsetY = { -8 },
-                animationSpec = motion.exitTween(165)
-            ) + fadeOut(animationSpec = motion.exitTween(155))
+                animationSpec = motion.exitTween(85)
+            ) + fadeOut(animationSpec = motion.exitTween(80))
         ) {
-            val capsuleShape = RoundedCornerShape(32.dp)
+            val capsuleShape = remember { RoundedCornerShape(32.dp) }
+            val capsuleElevation = remember(palette.isDark, motion.isLowRam) {
+                when {
+                    motion.isLowRam -> 4.dp
+                    palette.isDark -> 14.dp
+                    else -> 12.dp
+                }
+            }
             val accountSubtitle = remember(userProfile.username) {
                 val clean = userProfile.username.trim()
                 if (clean.isNotBlank() && !clean.equals("Lector", ignoreCase = true)) {
@@ -595,10 +596,10 @@ fun ProfileDropdownCapsuleOverlay(
                 modifier = Modifier
                     .widthIn(min = 206.dp, max = 238.dp)
                     .shadow(
-                        elevation = if (palette.isDark) 20.dp else 16.dp,
+                        elevation = capsuleElevation,
                         shape = capsuleShape,
-                        ambientColor = Color.Black.copy(alpha = 0.28f),
-                        spotColor = Color.Black.copy(alpha = 0.24f)
+                        ambientColor = Color.Black.copy(alpha = 0.24f),
+                        spotColor = Color.Black.copy(alpha = 0.20f)
                     )
                     .clip(capsuleShape)
                     .background(palette.surface.copy(alpha = 0.98f))

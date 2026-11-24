@@ -98,8 +98,8 @@ internal fun ClassicKindleOverlayBars(
         // Gentle 15% dim scrim matching ProfileDropdownCapsuleOverlay
         AnimatedVisibility(
             visible = isExpanded,
-            enter = fadeIn(motion.tweenSpec(175)),
-            exit = fadeOut(motion.exitTween(145))
+            enter = fadeIn(motion.tweenSpec(105)),
+            exit = fadeOut(motion.exitTween(80))
         ) {
             Box(
                 modifier = Modifier
@@ -114,19 +114,19 @@ internal fun ClassicKindleOverlayBars(
             )
         }
 
-        // Floating Top Capsule with breathing space around edges + spring Zoom-In/Zoom-Out dropdown
+        // Floating Top Capsule with breathing space around edges + snappy spring Zoom-In/Zoom-Out
         AnimatedVisibility(
             visible = isExpanded,
             enter = scaleIn(
-                initialScale = 0.90f,
+                initialScale = 0.94f,
                 transformOrigin = ClassicTopOrigin,
                 animationSpec = motion.modalSpring()
-            ) + fadeIn(motion.emphasizedTween(175)),
+            ) + fadeIn(motion.emphasizedTween(105)),
             exit = scaleOut(
-                targetScale = 0.90f,
+                targetScale = 0.95f,
                 transformOrigin = ClassicTopOrigin,
-                animationSpec = motion.exitTween(155)
-            ) + fadeOut(motion.exitTween(135)),
+                animationSpec = motion.exitTween(85)
+            ) + fadeOut(motion.exitTween(80)),
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .displayCutoutPadding()
@@ -137,7 +137,11 @@ internal fun ClassicKindleOverlayBars(
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 640.dp)
-                    .shadow(16.dp, ClassicCapsuleShape, ambientColor = Color.Black.copy(alpha = 0.25f))
+                    .shadow(
+                        elevation = if (motion.isLowRam) 4.dp else 12.dp,
+                        shape = ClassicCapsuleShape,
+                        ambientColor = Color.Black.copy(alpha = 0.22f)
+                    )
                     .clip(ClassicCapsuleShape)
                     .background(palette.surface.copy(alpha = 0.98f))
                     .border(1.dp, palette.border, ClassicCapsuleShape)
@@ -210,15 +214,15 @@ internal fun ClassicKindleOverlayBars(
         AnimatedVisibility(
             visible = isExpanded,
             enter = scaleIn(
-                initialScale = 0.90f,
+                initialScale = 0.94f,
                 transformOrigin = ClassicBottomOrigin,
                 animationSpec = motion.modalSpring()
-            ) + fadeIn(motion.emphasizedTween(175)),
+            ) + fadeIn(motion.emphasizedTween(105)),
             exit = scaleOut(
-                targetScale = 0.90f,
+                targetScale = 0.95f,
                 transformOrigin = ClassicBottomOrigin,
-                animationSpec = motion.exitTween(155)
-            ) + fadeOut(motion.exitTween(135)),
+                animationSpec = motion.exitTween(85)
+            ) + fadeOut(motion.exitTween(80)),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .displayCutoutPadding()

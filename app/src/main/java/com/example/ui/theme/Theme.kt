@@ -333,49 +333,52 @@ fun FolioTheme(
     useSystemFont: Boolean = false,
     softNightDimming: Float = 0f,
     effectiveRefreshRateHz: Float = 60f,
+    isLowRamDevice: Boolean = com.example.engine.MemoryPressureManager.isLowRamDevice,
     content: @Composable () -> Unit
 ) {
     val palette = remember(readingTheme, softNightDimming) {
         paletteFor(readingTheme).withSoftNightDimming(softNightDimming)
     }
-    val motion = remember(effectiveRefreshRateHz) {
-        motionProfileFor(effectiveRefreshRateHz)
+    val motion = remember(effectiveRefreshRateHz, isLowRamDevice) {
+        motionProfileFor(effectiveRefreshRateHz, isLowRam = isLowRamDevice)
     }
     val typography = remember(useSystemFont) { buildFolioTypography(useSystemFont) }
-    val colorScheme = if (palette.isDark) {
-        darkColorScheme(
-            primary = palette.accent,
-            onPrimary = palette.onAccent,
-            primaryContainer = palette.accentSoft,
-            onPrimaryContainer = palette.ink,
-            secondary = EmeraldAccent,
-            onSecondary = Color.White,
-            background = palette.background,
-            onBackground = palette.ink,
-            surface = palette.surface,
-            onSurface = palette.ink,
-            surfaceVariant = palette.surfaceAlt,
-            onSurfaceVariant = palette.inkMuted,
-            outline = palette.border,
-            error = CoralAccent
-        )
-    } else {
-        lightColorScheme(
-            primary = palette.accent,
-            onPrimary = palette.onAccent,
-            primaryContainer = palette.accentSoft,
-            onPrimaryContainer = palette.ink,
-            secondary = EmeraldAccent,
-            onSecondary = Color.White,
-            background = palette.background,
-            onBackground = palette.ink,
-            surface = palette.surface,
-            onSurface = palette.ink,
-            surfaceVariant = palette.surfaceAlt,
-            onSurfaceVariant = palette.inkMuted,
-            outline = palette.border,
-            error = CoralAccent
-        )
+    val colorScheme = remember(palette) {
+        if (palette.isDark) {
+            darkColorScheme(
+                primary = palette.accent,
+                onPrimary = palette.onAccent,
+                primaryContainer = palette.accentSoft,
+                onPrimaryContainer = palette.ink,
+                secondary = EmeraldAccent,
+                onSecondary = Color.White,
+                background = palette.background,
+                onBackground = palette.ink,
+                surface = palette.surface,
+                onSurface = palette.ink,
+                surfaceVariant = palette.surfaceAlt,
+                onSurfaceVariant = palette.inkMuted,
+                outline = palette.border,
+                error = CoralAccent
+            )
+        } else {
+            lightColorScheme(
+                primary = palette.accent,
+                onPrimary = palette.onAccent,
+                primaryContainer = palette.accentSoft,
+                onPrimaryContainer = palette.ink,
+                secondary = EmeraldAccent,
+                onSecondary = Color.White,
+                background = palette.background,
+                onBackground = palette.ink,
+                surface = palette.surface,
+                onSurface = palette.ink,
+                surfaceVariant = palette.surfaceAlt,
+                onSurfaceVariant = palette.inkMuted,
+                outline = palette.border,
+                error = CoralAccent
+            )
+        }
     }
 
     CompositionLocalProvider(

@@ -67,19 +67,28 @@ import kotlinx.coroutines.withContext
 private val SlideImageClipShape = RoundedCornerShape(6.dp)
 
 internal object SlideBitmapCache {
-    // Byte-bounded (max 20 MB in KB) to keep slide media memory strictly predictable
-    private val cache = object : LruCache<String, Bitmap>(20 * 1024) {
+    // RAM-adaptive byte budget (8 MB on low-RAM devices, 18 MB on standard devices)
+    private val cache = object : LruCache<String, Bitmap>(com.example.engine.MemoryPressureManager.slideCacheMaxKb()) {
         override fun sizeOf(key: String, value: Bitmap): Int =
             (value.allocationByteCount / 1024).coerceAtLeast(1)
     }
 
+    init {
+        com.example.engine.MemoryPressureManager.registerTrimmer("slide_bitmap_cache") { level ->
+            com.example.engine.MemoryPressureManager.trimLruCache(cache, level)
+        }
+    }
+
     suspend fun load(path: String): Bitmap? {
         cache.get(path)?.takeIf { !it.isRecycled }?.let { return it }
+        val maxDim = com.example.engine.MemoryPressureManager.slideDecodeMaxDim()
+        val useRgb565 = com.example.engine.MemoryPressureManager.isLowRamDevice
         return withContext(Dispatchers.IO) {
             BitmapDecodeUtils.decodeSampledFile(
                 path = path,
-                reqWidth = 1280,
-                reqHeight = 1280
+                reqWidth = maxDim,
+                reqHeight = maxDim,
+                preferRgb565 = useRgb565
             )?.also { bmp ->
                 cache.put(path, bmp)
             }

@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,7 +11,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -27,11 +25,14 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.AutoFixNormal
 import androidx.compose.material.icons.rounded.BorderColor
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CropSquare
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.HorizontalRule
 import androidx.compose.material.icons.rounded.OpenWith
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -46,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -60,7 +62,10 @@ import com.example.data.model.DrawingTool
 import com.example.data.model.StrokePoint
 import com.example.ui.theme.LocalFolioPalette
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
 
 val DrawingPaletteColors = listOf(
     0xFF1D5BFFL, // Cobalt
@@ -70,6 +75,54 @@ val DrawingPaletteColors = listOf(
     0xFF1EB974L, // Emerald
     0xFF7C3AEDL  // Study Violet
 )
+
+private fun DrawingTool.isGeometricShape(): Boolean =
+    this == DrawingTool.LINE || this == DrawingTool.RECTANGLE || this == DrawingTool.CIRCLE
+
+private fun buildShapePath(
+    target: Path,
+    tool: DrawingTool,
+    start: StrokePoint,
+    end: StrokePoint,
+    width: Float,
+    height: Float
+) {
+    target.reset()
+    val x0 = start.x * width
+    val y0 = start.y * height
+    val x1 = end.x * width
+    val y1 = end.y * height
+    when (tool) {
+        DrawingTool.LINE -> {
+            target.moveTo(x0, y0)
+            target.lineTo(x1, y1)
+        }
+        DrawingTool.RECTANGLE -> {
+            target.addRect(
+                Rect(
+                    left = min(x0, x1),
+                    top = min(y0, y1),
+                    right = max(x0, x1),
+                    bottom = max(y0, y1)
+                )
+            )
+        }
+        DrawingTool.CIRCLE -> {
+            target.addOval(
+                Rect(
+                    left = min(x0, x1),
+                    top = min(y0, y1),
+                    right = max(x0, x1),
+                    bottom = max(y0, y1)
+                )
+            )
+        }
+        else -> {
+            target.moveTo(x0, y0)
+            target.lineTo(x1, y1)
+        }
+    }
+}
 
 private class CachedStrokeRender(
     val path: Path,
@@ -93,24 +146,28 @@ private class DrawingStrokePathCache {
         cached = strokes.mapNotNull { stroke ->
             if (stroke.points.size < 2) return@mapNotNull null
             val path = Path()
-            val first = stroke.points[0]
-            path.moveTo(first.x * width, first.y * height)
-            for (i in 1 until stroke.points.size) {
-                val prev = stroke.points[i - 1]
-                val curr = stroke.points[i]
-                val midX = ((prev.x + curr.x) * 0.5f) * width
-                val midY = ((prev.y + curr.y) * 0.5f) * height
-                path.quadraticTo(prev.x * width, prev.y * height, midX, midY)
+            if (stroke.tool.isGeometricShape()) {
+                buildShapePath(path, stroke.tool, stroke.points.first(), stroke.points.last(), width, height)
+            } else {
+                val first = stroke.points[0]
+                path.moveTo(first.x * width, first.y * height)
+                for (i in 1 until stroke.points.size) {
+                    val prev = stroke.points[i - 1]
+                    val curr = stroke.points[i]
+                    val midX = ((prev.x + curr.x) * 0.5f) * width
+                    val midY = ((prev.y + curr.y) * 0.5f) * height
+                    path.quadraticTo(prev.x * width, prev.y * height, midX, midY)
+                }
+                val last = stroke.points[stroke.points.lastIndex]
+                path.lineTo(last.x * width, last.y * height)
             }
-            val last = stroke.points[stroke.points.lastIndex]
-            path.lineTo(last.x * width, last.y * height)
             CachedStrokeRender(
                 path = path,
                 color = Color(stroke.colorArgb.toInt()).copy(alpha = stroke.alpha),
                 stroke = Stroke(
                     width = (stroke.widthNorm * width).coerceIn(2f, 44f),
                     cap = StrokeCap.Round,
-                    join = StrokeJoin.Round
+                    join = if (stroke.tool == DrawingTool.RECTANGLE) StrokeJoin.Miter else StrokeJoin.Round
                 )
             )
         }
@@ -122,6 +179,7 @@ private class LiveStrokeBuffer {
     val points = ArrayList<StrokePoint>(128)
     val path = Path()
     var isActive: Boolean = false
+    var tool: DrawingTool = DrawingTool.PEN
     var colorArgb: Long = 0xFF1D5BFFL
     var alpha: Float = 1f
     var widthNorm: Float = 0.008f
@@ -144,6 +202,7 @@ private class LiveStrokeBuffer {
         path.moveTo(x, y)
         lastPxX = x
         lastPxY = y
+        this.tool = tool
         this.colorArgb = colorArgb
         this.alpha = if (tool == DrawingTool.HIGHLIGHTER) 0.36f else 1f
         this.widthNorm = if (tool == DrawingTool.HIGHLIGHTER) widthNorm * 2.7f else widthNorm
@@ -151,6 +210,18 @@ private class LiveStrokeBuffer {
     }
 
     fun append(nextPt: StrokePoint, canvasW: Float, canvasH: Float): Boolean {
+        if (tool.isGeometricShape()) {
+            val startPt = points.firstOrNull() ?: return false
+            if (points.size == 1) {
+                points.add(nextPt)
+            } else {
+                val prevEnd = points[1]
+                if (hypot(nextPt.x - prevEnd.x, nextPt.y - prevEnd.y) <= 0.001f) return false
+                points[1] = nextPt
+            }
+            buildShapePath(path, tool, startPt, nextPt, canvasW, canvasH)
+            return true
+        }
         val last = points.lastOrNull()
         if (last != null && hypot(nextPt.x - last.x, nextPt.y - last.y) <= 0.0025f) {
             return false
@@ -168,7 +239,17 @@ private class LiveStrokeBuffer {
 
     fun finish(): List<StrokePoint> {
         isActive = false
-        val snapshot = if (points.size >= 2) points.toList() else emptyList()
+        val snapshot = if (points.size >= 2) {
+            if (tool.isGeometricShape()) {
+                val a = points.first()
+                val b = points.last()
+                if (hypot(b.x - a.x, b.y - a.y) >= 0.006f) listOf(a, b) else emptyList()
+            } else {
+                points.toList()
+            }
+        } else {
+            emptyList()
+        }
         points.clear()
         path.reset()
         return snapshot
@@ -176,9 +257,9 @@ private class LiveStrokeBuffer {
 }
 
 /**
- * Renders persisted normalized strokes over any page (EPUB/DOCX/PDF/Manhwa).
+ * Renders persisted normalized strokes & Paint-style shapes over any page (EPUB/DOCX/PDF/Manhwa).
  * Zero-recomposition live drawing:
- * - Active stroke accumulates incrementally into a reusable [Path] in O(1) per pointer sample.
+ * - Freehand strokes and geometric shapes (LINE, RECTANGLE, CIRCLE) update a reusable [Path] in O(1).
  * - Draw phase invalidates via a single [mutableIntStateOf] read strictly inside [drawBehind].
  * - Persisted strokes are cached as pre-built [Path] objects per canvas dimensions.
  * - Persists to storage ONLY when the stroke finishes (pointer release).
@@ -311,13 +392,31 @@ fun DrawingCanvasOverlay(
                         style = Stroke(
                             width = (liveBuffer.widthNorm * size.width).coerceIn(2f, 44f),
                             cap = StrokeCap.Round,
-                            join = StrokeJoin.Round
+                            join = if (liveBuffer.tool == DrawingTool.RECTANGLE) StrokeJoin.Miter else StrokeJoin.Round
                         )
                     )
                 }
             }
             .testTag("drawing_canvas_overlay")
     )
+}
+
+private fun distancePointToSegment(
+    px: Float,
+    py: Float,
+    ax: Float,
+    ay: Float,
+    bx: Float,
+    by: Float
+): Float {
+    val abx = bx - ax
+    val aby = by - ay
+    val lenSq = abx * abx + aby * aby
+    if (lenSq <= 1e-8f) return hypot(px - ax, py - ay)
+    val t = (((px - ax) * abx + (py - ay) * aby) / lenSq).coerceIn(0f, 1f)
+    val projX = ax + t * abx
+    val projY = ay + t * aby
+    return hypot(px - projX, py - projY)
 }
 
 private fun findHitStrokes(
@@ -328,12 +427,55 @@ private fun findHitStrokes(
 ) {
     val thresholdSq = threshold * threshold
     for (stroke in strokes) {
-        for (pt in stroke.points) {
-            val dx = pt.x - point.x
-            val dy = pt.y - point.y
-            if (dx * dx + dy * dy <= thresholdSq) {
-                outIds.add(stroke.id)
-                break
+        if (stroke.points.size < 2) continue
+        when (stroke.tool) {
+            DrawingTool.LINE -> {
+                val a = stroke.points.first()
+                val b = stroke.points.last()
+                if (distancePointToSegment(point.x, point.y, a.x, a.y, b.x, b.y) <= threshold) {
+                    outIds.add(stroke.id)
+                }
+            }
+            DrawingTool.RECTANGLE -> {
+                val a = stroke.points.first()
+                val b = stroke.points.last()
+                val left = min(a.x, b.x)
+                val right = max(a.x, b.x)
+                val top = min(a.y, b.y)
+                val bottom = max(a.y, b.y)
+                val hitTop = distancePointToSegment(point.x, point.y, left, top, right, top) <= threshold
+                val hitBottom = distancePointToSegment(point.x, point.y, left, bottom, right, bottom) <= threshold
+                val hitLeft = distancePointToSegment(point.x, point.y, left, top, left, bottom) <= threshold
+                val hitRight = distancePointToSegment(point.x, point.y, right, top, right, bottom) <= threshold
+                if (hitTop || hitBottom || hitLeft || hitRight) {
+                    outIds.add(stroke.id)
+                }
+            }
+            DrawingTool.CIRCLE -> {
+                val a = stroke.points.first()
+                val b = stroke.points.last()
+                val cx = (a.x + b.x) * 0.5f
+                val cy = (a.y + b.y) * 0.5f
+                val rx = (abs(b.x - a.x) * 0.5f).coerceAtLeast(0.005f)
+                val ry = (abs(b.y - a.y) * 0.5f).coerceAtLeast(0.005f)
+                val dx = point.x - cx
+                val dy = point.y - cy
+                val normDist = hypot(dx / rx, dy / ry)
+                // Convert radial error into approximate normalized distance
+                val approxDist = abs(normDist - 1f) * min(rx, ry)
+                if (approxDist <= threshold) {
+                    outIds.add(stroke.id)
+                }
+            }
+            else -> {
+                for (pt in stroke.points) {
+                    val dx = pt.x - point.x
+                    val dy = pt.y - point.y
+                    if (dx * dx + dy * dy <= thresholdSq) {
+                        outIds.add(stroke.id)
+                        break
+                    }
+                }
             }
         }
     }
@@ -383,7 +525,7 @@ fun DrawingFloatingToolbar(
             .testTag("drawing_toolbar"),
         verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
-        // Row 0: Quick Work / Signature Strip (Firma fina + Hoja Estándar toggle + Mover/Zoom toggle)
+        // Row 0: Quick Work / Signature Strip + Paint Shapes Indicator
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -397,6 +539,27 @@ fun DrawingFloatingToolbar(
                 selected = isSignaturePresetActive,
                 onClick = onApplySignaturePreset,
                 testTag = "draw_signature_preset"
+            )
+            ToolbarModeChip(
+                icon = Icons.Rounded.HorizontalRule,
+                label = "Línea",
+                selected = !isPanZoomMode && activeTool == DrawingTool.LINE,
+                onClick = { onSelectTool(DrawingTool.LINE) },
+                testTag = "draw_tool_line"
+            )
+            ToolbarModeChip(
+                icon = Icons.Rounded.CropSquare,
+                label = "Cuadrado",
+                selected = !isPanZoomMode && activeTool == DrawingTool.RECTANGLE,
+                onClick = { onSelectTool(DrawingTool.RECTANGLE) },
+                testTag = "draw_tool_rectangle"
+            )
+            ToolbarModeChip(
+                icon = Icons.Rounded.RadioButtonUnchecked,
+                label = "Círculo",
+                selected = !isPanZoomMode && activeTool == DrawingTool.CIRCLE,
+                onClick = { onSelectTool(DrawingTool.CIRCLE) },
+                testTag = "draw_tool_circle"
             )
             if (showStandardViewToggle) {
                 ToolbarModeChip(
@@ -418,7 +581,7 @@ fun DrawingFloatingToolbar(
             }
         }
 
-        // Row 1: Tools + Undo / Redo / Clear / Done
+        // Row 1: Freehand Tools + Undo / Redo / Clear / Done
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -428,7 +591,7 @@ fun DrawingFloatingToolbar(
                 TactileIconButton(
                     icon = Icons.Rounded.Edit,
                     contentDescription = "Lápiz",
-                    selected = activeTool == DrawingTool.PEN,
+                    selected = !isPanZoomMode && activeTool == DrawingTool.PEN,
                     onClick = { onSelectTool(DrawingTool.PEN) },
                     size = 44.dp,
                     modifier = Modifier.testTag("draw_tool_pen")
@@ -436,7 +599,7 @@ fun DrawingFloatingToolbar(
                 TactileIconButton(
                     icon = Icons.Rounded.BorderColor,
                     contentDescription = "Resaltador translúcido",
-                    selected = activeTool == DrawingTool.HIGHLIGHTER,
+                    selected = !isPanZoomMode && activeTool == DrawingTool.HIGHLIGHTER,
                     onClick = { onSelectTool(DrawingTool.HIGHLIGHTER) },
                     size = 44.dp,
                     modifier = Modifier.testTag("draw_tool_highlighter")
@@ -444,7 +607,7 @@ fun DrawingFloatingToolbar(
                 TactileIconButton(
                     icon = Icons.Rounded.AutoFixNormal,
                     contentDescription = "Borrador",
-                    selected = activeTool == DrawingTool.ERASER,
+                    selected = !isPanZoomMode && activeTool == DrawingTool.ERASER,
                     onClick = { onSelectTool(DrawingTool.ERASER) },
                     size = 44.dp,
                     modifier = Modifier.testTag("draw_tool_eraser")

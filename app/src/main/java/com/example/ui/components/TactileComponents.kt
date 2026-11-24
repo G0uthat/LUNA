@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -70,7 +71,7 @@ fun TactileButton(
     val isPressed by interactionSource.collectIsPressedAsState()
     val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed && enabled) lipDepth else 0.dp,
-        animationSpec = motion.tactileSpring(),
+        animationSpec = tween(durationMillis = if (motion.isLowRam) 24 else 42),
         label = "tactile_press_offset"
     )
 
@@ -130,7 +131,7 @@ fun TactileChip(
     val lip = 2.dp
     val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed) lip else 0.dp,
-        animationSpec = motion.tactileSpring(),
+        animationSpec = tween(durationMillis = if (motion.isLowRam) 24 else 42),
         label = "chip_offset"
     )
     val bg = if (selected) palette.accent else palette.surface
@@ -201,7 +202,7 @@ fun TactileIconButton(
     val lip = 2.dp
     val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed) lip else 0.dp,
-        animationSpec = motion.tactileSpring(),
+        animationSpec = tween(durationMillis = if (motion.isLowRam) 24 else 42),
         label = "icon_btn_offset"
     )
     val bg = containerColor ?: if (selected) palette.accent else palette.surface
@@ -256,7 +257,7 @@ fun TactileCard(
     val isPressed by interactionSource.collectIsPressedAsState()
     val pressOffsetState = animateDpAsState(
         targetValue = if (isPressed && onClick != null) lipDepth * 0.7f else 0.dp,
-        animationSpec = motion.tactileSpring(),
+        animationSpec = tween(durationMillis = if (motion.isLowRam) 24 else 42),
         label = "card_offset"
     )
     val shape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }

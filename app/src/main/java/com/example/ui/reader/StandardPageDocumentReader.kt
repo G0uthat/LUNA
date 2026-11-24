@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -38,6 +39,7 @@ import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Description
@@ -140,6 +142,7 @@ fun StandardPageDocumentReader(
     onEraseStrokes: (String, Set<String>) -> Unit,
     onTapPageCenter: () -> Unit,
     showBatteryBubble: Boolean = true,
+    chromeAlpha: Float = 1f,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
@@ -353,50 +356,99 @@ fun StandardPageDocumentReader(
                     .fillMaxSize()
                     .statusBarsPadding()
                     .padding(
-                        top = topBarPaddingDp + 44.dp,
-                        bottom = if (isDrawingMode) 146.dp else 44.dp
+                        top = if (chromeAlpha > 0.02f) topBarPaddingDp + 44.dp else 8.dp,
+                        bottom = if (isDrawingMode) 146.dp else if (chromeAlpha > 0.02f) 44.dp else 8.dp
                     )
             ) { idx ->
                 val sheet = sheets[idx]
-                Box(
+                BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    StandardInteractiveSheetFrame(
-                        sheet = sheet,
-                        isPptx = isPptx,
-                        aspectRatio = sheetAspectRatio,
-                        pageWidthPt = resolvedWidthPt,
-                        pageHeightPt = resolvedHeightPt,
-                        formatBadge = activeFormatLabel,
-                        prefs = prefs,
-                        strokes = drawingsByLocation[sheet.locationKey].orEmpty(),
-                        zoomScale = zoomScale,
-                        panOffset = panOffset,
-                        canDraw = canInteractWithCanvas,
-                        canPanZoom = canPanOrZoom,
-                        activeTool = activeTool,
-                        activeColorArgb = activeColorArgb,
-                        activeWidthNorm = activeWidthNorm,
-                        onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
-                        onStrokeCompleted = { onStrokeCompleted(sheet.locationKey, it) },
-                        onEraseStrokes = { onEraseStrokes(sheet.locationKey, it) },
-                        onTapAtXFraction = handleTapX,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    val isLandscapeWithPortraitSheet = !isPptx && maxWidth > maxHeight && sheetAspectRatio < 0.95f
+                    if (isLandscapeWithPortraitSheet) {
+                        val viewportH = maxHeight
+                        val pageScrollState = rememberScrollState()
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(
+                                    state = pageScrollState,
+                                    enabled = !canInteractWithCanvas && !isZoomed
+                                ),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = viewportH)
+                                    .padding(bottom = 32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                StandardInteractiveSheetFrame(
+                                    sheet = sheet,
+                                    isPptx = isPptx,
+                                    aspectRatio = sheetAspectRatio,
+                                    pageWidthPt = resolvedWidthPt,
+                                    pageHeightPt = resolvedHeightPt,
+                                    formatBadge = activeFormatLabel,
+                                    prefs = prefs,
+                                    strokes = drawingsByLocation[sheet.locationKey].orEmpty(),
+                                    zoomScale = zoomScale,
+                                    panOffset = panOffset,
+                                    canDraw = canInteractWithCanvas,
+                                    canPanZoom = canPanOrZoom,
+                                    activeTool = activeTool,
+                                    activeColorArgb = activeColorArgb,
+                                    activeWidthNorm = activeWidthNorm,
+                                    onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
+                                    onStrokeCompleted = { onStrokeCompleted(sheet.locationKey, it) },
+                                    onEraseStrokes = { onEraseStrokes(sheet.locationKey, it) },
+                                    onTapAtXFraction = handleTapX,
+                                    preferWidthBound = true,
+                                    modifier = Modifier.fillMaxWidth().widthIn(max = 720.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        StandardInteractiveSheetFrame(
+                            sheet = sheet,
+                            isPptx = isPptx,
+                            aspectRatio = sheetAspectRatio,
+                            pageWidthPt = resolvedWidthPt,
+                            pageHeightPt = resolvedHeightPt,
+                            formatBadge = activeFormatLabel,
+                            prefs = prefs,
+                            strokes = drawingsByLocation[sheet.locationKey].orEmpty(),
+                            zoomScale = zoomScale,
+                            panOffset = panOffset,
+                            canDraw = canInteractWithCanvas,
+                            canPanZoom = canPanOrZoom,
+                            activeTool = activeTool,
+                            activeColorArgb = activeColorArgb,
+                            activeWidthNorm = activeWidthNorm,
+                            onZoomPanChange = { z, p -> zoomScale = z; panOffset = p },
+                            onStrokeCompleted = { onStrokeCompleted(sheet.locationKey, it) },
+                            onEraseStrokes = { onEraseStrokes(sheet.locationKey, it) },
+                            onTapAtXFraction = handleTapX,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
         }
 
         // Top Floating Bar: Two distinct side-by-side pill bubbles (Format Selector + Battery) with ZERO overlap
+        if (chromeAlpha > 0.02f) {
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .displayCutoutPadding()
                 .statusBarsPadding()
-                .padding(top = topBarPaddingDp, start = 12.dp, end = 12.dp),
+                .padding(top = topBarPaddingDp, start = 12.dp, end = 12.dp)
+                .graphicsLayer { alpha = chromeAlpha },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
         ) {
@@ -513,9 +565,11 @@ fun StandardPageDocumentReader(
                 StandardTopBarBatteryBubbleHost()
             }
         }
+        }
 
         // Speaker Notes Pill (PPTX only when slide has notes) & Zoom Reset Pill
         val currentSlideNotes = activeSheet?.slide?.notes?.takeIf { it.isNotBlank() }
+        if (chromeAlpha > 0.02f) {
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -524,7 +578,8 @@ fun StandardPageDocumentReader(
                     bottom = if (isDrawingMode) 152.dp else 40.dp,
                     start = 16.dp,
                     end = 16.dp
-                ),
+                )
+                .graphicsLayer { alpha = chromeAlpha },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -624,6 +679,7 @@ fun StandardPageDocumentReader(
                 }
             }
         }
+        }
     }
 }
 
@@ -663,6 +719,7 @@ private fun StandardInteractiveSheetFrame(
     onStrokeCompleted: (DrawingStroke) -> Unit,
     onEraseStrokes: (Set<String>) -> Unit,
     onTapAtXFraction: (Float) -> Unit,
+    preferWidthBound: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
@@ -684,7 +741,7 @@ private fun StandardInteractiveSheetFrame(
         val availW = maxWidth
         val availH = maxHeight
         // Compute exact fitted physical sheet dimensions preserving true aspectRatio without clipping
-        val useHeightBound = availH.value.isFinite() && availH.value > 0f && (availW.value / availH.value) > aspectRatio
+        val useHeightBound = !preferWidthBound && availH.value.isFinite() && availH.value > 0f && (availW.value / availH.value) > aspectRatio
         val sheetSizeMod = if (useHeightBound) {
             Modifier
                 .fillMaxHeight()
@@ -766,25 +823,8 @@ private fun StandardInteractiveSheetFrame(
                                 }
                             }
                             .pointerInput(sheet.locationKey, canPanZoom) {
+                                // Omitting onDoubleTap removes Android's ~300 ms wait so single taps fire in 0 ms!
                                 detectTapGestures(
-                                    onDoubleTap = { tapPos ->
-                                        if (latestZoom > 1.15f) {
-                                            latestOnZoomPan(1f, Offset.Zero)
-                                        } else {
-                                            val targetZoom = 2.4f
-                                            val center = Offset(size.width / 2f, size.height / 2f)
-                                            val focal = tapPos - center
-                                            val maxX = size.width * (targetZoom - 1f) * 0.55f
-                                            val maxY = size.height * (targetZoom - 1f) * 0.55f
-                                            latestOnZoomPan(
-                                                targetZoom,
-                                                Offset(
-                                                    (-focal.x * (targetZoom - 1f)).coerceIn(-maxX, maxX),
-                                                    (-focal.y * (targetZoom - 1f)).coerceIn(-maxY, maxY)
-                                                )
-                                            )
-                                        }
-                                    },
                                     onTap = { tapPos ->
                                         val nx = (tapPos.x / size.width.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
                                         latestOnTapX(nx)

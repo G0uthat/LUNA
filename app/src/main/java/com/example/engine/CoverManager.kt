@@ -128,7 +128,8 @@ object CoverManager {
                 renderer.openPage(0).use { page ->
                     val scale = COVER_W.toFloat() / page.width.coerceAtLeast(1)
                     val targetH = (page.height * scale).toInt().coerceIn(280, 900)
-                    val bmp = Bitmap.createBitmap(COVER_W, targetH, Bitmap.Config.RGB_565)
+                    // PdfRenderer.Page.render() requires ARGB_8888
+                    val bmp = Bitmap.createBitmap(COVER_W, targetH, Bitmap.Config.ARGB_8888)
                     bmp.eraseColor(Color.WHITE)
                     page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     bmp

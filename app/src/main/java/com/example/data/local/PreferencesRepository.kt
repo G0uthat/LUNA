@@ -91,6 +91,9 @@ class PreferencesRepository private constructor(private val appContext: Context)
         val PREFERRED_DAY_THEME = stringPreferencesKey("preferred_day_theme")
         val PREFERRED_NIGHT_THEME = stringPreferencesKey("preferred_night_theme")
         val NIGHT_TEXT_DIMMING = floatPreferencesKey("night_text_dimming")
+        val AUTO_HIDE_CHROME_ENABLED = booleanPreferencesKey("auto_hide_chrome_enabled")
+        val AUTO_HIDE_CHROME_DELAY_SEC = intPreferencesKey("auto_hide_chrome_delay_sec")
+        val AUTO_HIDE_FADE_SPEED_MS = intPreferencesKey("auto_hide_fade_speed_ms")
         val HAS_SEEN_GUIDE = booleanPreferencesKey("has_seen_guide")
         val HAS_COMPLETED_ONBOARDING = booleanPreferencesKey("has_completed_onboarding")
         val SEEDED_SAMPLE_VERSION = intPreferencesKey("seeded_sample_version")
@@ -158,7 +161,9 @@ class PreferencesRepository private constructor(private val appContext: Context)
         } else {
             debounceFlushJob?.cancel()
             hasPendingDebouncedWrite = false
-            persistDiff(updated)
+            ioScope.launch {
+                persistDiff(updated)
+            }
         }
     }
 
@@ -221,7 +226,9 @@ class PreferencesRepository private constructor(private val appContext: Context)
         warmFilterStrength = raw.warmFilterStrength.coerceIn(0f, 0.45f),
         nightStartHour = raw.nightStartHour.coerceIn(0, 23),
         nightEndHour = raw.nightEndHour.coerceIn(0, 23),
-        nightTextDimming = raw.nightTextDimming.coerceIn(0f, 0.38f)
+        nightTextDimming = raw.nightTextDimming.coerceIn(0f, 0.38f),
+        autoHideReaderChromeDelaySec = raw.autoHideReaderChromeDelaySec.coerceIn(3, 60),
+        autoHideFadeSpeedMs = raw.autoHideFadeSpeedMs.coerceIn(80, 600)
     )
 
     private fun mapFromDataStore(prefs: Preferences): ReaderPreferences {
@@ -266,6 +273,9 @@ class PreferencesRepository private constructor(private val appContext: Context)
             preferredDayTheme = enumOrDefault(prefs[Keys.PREFERRED_DAY_THEME], ReadingTheme.WARM_CREAM),
             preferredNightTheme = enumOrDefault(prefs[Keys.PREFERRED_NIGHT_THEME], ReadingTheme.WARM_NIGHT),
             nightTextDimming = (prefs[Keys.NIGHT_TEXT_DIMMING] ?: 0f).coerceIn(0f, 0.38f),
+            autoHideReaderChromeEnabled = prefs[Keys.AUTO_HIDE_CHROME_ENABLED] ?: true,
+            autoHideReaderChromeDelaySec = (prefs[Keys.AUTO_HIDE_CHROME_DELAY_SEC] ?: 8).coerceIn(3, 60),
+            autoHideFadeSpeedMs = (prefs[Keys.AUTO_HIDE_FADE_SPEED_MS] ?: 220).coerceIn(80, 600),
             hasSeenGuide = prefs[Keys.HAS_SEEN_GUIDE] ?: false,
             hasCompletedOnboarding = prefs[Keys.HAS_COMPLETED_ONBOARDING] ?: false,
             seededSampleVersion = prefs[Keys.SEEDED_SAMPLE_VERSION] ?: 0
@@ -315,6 +325,15 @@ class PreferencesRepository private constructor(private val appContext: Context)
         if (next.preferredDayTheme != prev.preferredDayTheme) prefs[Keys.PREFERRED_DAY_THEME] = next.preferredDayTheme.name
         if (next.preferredNightTheme != prev.preferredNightTheme) prefs[Keys.PREFERRED_NIGHT_THEME] = next.preferredNightTheme.name
         if (next.nightTextDimming != prev.nightTextDimming) prefs[Keys.NIGHT_TEXT_DIMMING] = next.nightTextDimming
+        if (next.autoHideReaderChromeEnabled != prev.autoHideReaderChromeEnabled) {
+            prefs[Keys.AUTO_HIDE_CHROME_ENABLED] = next.autoHideReaderChromeEnabled
+        }
+        if (next.autoHideReaderChromeDelaySec != prev.autoHideReaderChromeDelaySec) {
+            prefs[Keys.AUTO_HIDE_CHROME_DELAY_SEC] = next.autoHideReaderChromeDelaySec
+        }
+        if (next.autoHideFadeSpeedMs != prev.autoHideFadeSpeedMs) {
+            prefs[Keys.AUTO_HIDE_FADE_SPEED_MS] = next.autoHideFadeSpeedMs
+        }
         if (next.hasSeenGuide != prev.hasSeenGuide) prefs[Keys.HAS_SEEN_GUIDE] = next.hasSeenGuide
         if (next.hasCompletedOnboarding != prev.hasCompletedOnboarding) prefs[Keys.HAS_COMPLETED_ONBOARDING] = next.hasCompletedOnboarding
         if (next.seededSampleVersion != prev.seededSampleVersion) prefs[Keys.SEEDED_SAMPLE_VERSION] = next.seededSampleVersion
