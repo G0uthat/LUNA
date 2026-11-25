@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FontDownload
 import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsOff
@@ -47,6 +48,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +62,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -75,10 +78,13 @@ import com.example.engine.GitHubUpdateManager
 import com.example.engine.SystemMediaController
 import com.example.engine.UpdateCheckOutcome
 import com.example.engine.UpdateEnforcementMode
+import com.example.notebook.ui.NotebookFonts
 import com.example.ui.theme.LocalFolioPalette
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val LUMA_DISCORD_URL = "https://discord.gg/f2Ey5NP9dN"
 
@@ -95,6 +101,7 @@ internal fun LumaCreditsSettingsContent(
     val palette = LocalFolioPalette.current
     val context = LocalContext.current
     var copiedDiscord by remember { mutableStateOf(false) }
+    var showFontLicensesDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -287,7 +294,47 @@ internal fun LumaCreditsSettingsContent(
         // 4. Isolated GitHub APK Updates Card so checkOutcome emissions don't recompose sibling cards
         GitHubUpdatesSettingsCard()
 
-        // 5. Optional Permissions & Interactive Tour Replay
+        // 5. Font Licenses ("Licencias de fuentes" — OFL 1.1 & Apache 2.0)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(SubCardShape18)
+                .background(palette.surfaceAlt.copy(alpha = 0.6f))
+                .border(1.dp, palette.border, SubCardShape18)
+                .clickable { showFontLicensesDialog = true }
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .testTag("credits_font_licenses_row"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.FontDownload,
+                contentDescription = null,
+                tint = palette.accent,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Licencias de fuentes",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.ink
+                )
+                Text(
+                    text = "30 tipografías libres empaquetadas (SIL OFL 1.1 y Apache 2.0)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.inkMuted
+                )
+            }
+            Icon(
+                imageVector = Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = palette.accent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        // 6. Optional Permissions & Interactive Tour Replay
         if (onReplayOnboarding != null) {
             Row(
                 modifier = Modifier
@@ -326,6 +373,155 @@ internal fun LumaCreditsSettingsContent(
                     tint = palette.accent,
                     modifier = Modifier.size(20.dp)
                 )
+            }
+        }
+    }
+
+    if (showFontLicensesDialog) {
+        FontLicensesDialog(onDismiss = { showFontLicensesDialog = false })
+    }
+}
+
+@Composable
+private fun FontLicensesDialog(
+    onDismiss: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val context = LocalContext.current
+    var expandedLicenseAsset by remember { mutableStateOf<String?>(null) }
+    var licenseText by remember { mutableStateOf("") }
+
+    LaunchedEffect(expandedLicenseAsset) {
+        val assetName = expandedLicenseAsset
+        if (assetName == null) {
+            licenseText = ""
+        } else {
+            licenseText = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.assets.open("font_licenses/$assetName").bufferedReader().use { it.readText() }
+                }.getOrDefault("No se pudo cargar el archivo de licencia.")
+            }
+        }
+    }
+
+    LumaFloatingDropdownDialog(
+        onDismiss = onDismiss,
+        alignment = Alignment.Center,
+        maxWidth = 520.dp,
+        maxHeightFraction = 0.88f,
+        testTag = "font_licenses_dialog"
+    ) { dismissWithAnim ->
+        LumaDropdownHeader(
+            title = "Licencias de fuentes",
+            subtitle = "Atribución oficial de todas las tipografías empaquetadas",
+            leadingIcon = Icons.Rounded.FontDownload,
+            onDismiss = dismissWithAnim,
+            closeTestTag = "font_licenses_close"
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // License full-text toggles
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("SIL OFL 1.1" to "OFL-1.1.txt", "Apache 2.0" to "APACHE-2.0.txt").forEach { (label, file) ->
+                    val open = expandedLicenseAsset == file
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(SubCardShape14)
+                            .background(if (open) palette.accent else palette.surfaceAlt)
+                            .border(1.dp, if (open) palette.accent else palette.border, SubCardShape14)
+                            .clickable { expandedLicenseAsset = if (open) null else file }
+                            .padding(vertical = 10.dp, horizontal = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (open) "Ocultar $label" else "Leer $label",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (open) palette.onAccent else palette.ink
+                        )
+                    }
+                }
+            }
+
+            if (expandedLicenseAsset != null && licenseText.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(SubCardShape14)
+                        .background(palette.surfaceAlt)
+                        .border(1.dp, palette.border, SubCardShape14)
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = licenseText,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.5.sp,
+                        lineHeight = 14.sp,
+                        color = palette.ink
+                    )
+                }
+            }
+
+            // Full attribution list (28 catalog study fonts + Noto Sans & Noto Sans Symbols fallback)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(SubCardShape16)
+                    .background(palette.surfaceAlt.copy(alpha = 0.65f))
+                    .border(1.dp, palette.border, SubCardShape16)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val allCredits = remember {
+                    NotebookFonts.CATALOG.map { Triple(it.displayName, it.attribution, it.licenseName) } + listOf(
+                        Triple("Noto Sans", "Google", "SIL OFL 1.1"),
+                        Triple("Noto Sans Symbols", "Google", "SIL OFL 1.1")
+                    )
+                }
+                allCredits.forEachIndexed { idx, (name, author, license) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = name,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = palette.ink
+                            )
+                            Text(
+                                text = author,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                        Text(
+                            text = license,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.accent,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(palette.accentSoft)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    if (idx < allCredits.lastIndex) {
+                        HorizontalDivider(color = palette.border.copy(alpha = 0.45f))
+                    }
+                }
             }
         }
     }

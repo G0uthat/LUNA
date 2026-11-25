@@ -542,24 +542,34 @@ fun FluidBookReader(
                                 PageAnimationMode.BOOK_CURL -> Modifier
                                     .graphicsLayer {
                                         val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                                        val absOffset = abs(pageOffset).coerceIn(0f, 1f)
+                                        val absOffset = abs(pageOffset).coerceIn(0f, 1.5f)
                                         cameraDistance = 14f * this.density
-                                        if (pageOffset >= 0f) {
+                                        if (absOffset >= 0.995f) {
+                                            rotationY = 0f
+                                            translationX = 0f
+                                            scaleX = 1f
+                                            scaleY = 1f
+                                            alpha = 0f
+                                        } else if (pageOffset > 0f) {
                                             transformOrigin = TransformOrigin(0f, 0.5f)
                                             rotationY = -pageOffset * 52f
                                             translationX = pageOffset * size.width * 0.14f
-                                            alpha = 1f - absOffset * 0.22f
+                                            val tailFade = ((1f - absOffset) / 0.18f).coerceIn(0f, 1f)
+                                            alpha = (1f - absOffset * 0.22f) * tailFade
                                         } else {
                                             transformOrigin = TransformOrigin(0.5f, 0.5f)
+                                            rotationY = 0f
+                                            translationX = 0f
                                             scaleX = 0.96f + (1f - absOffset) * 0.04f
                                             scaleY = 0.96f + (1f - absOffset) * 0.04f
+                                            alpha = 1f
                                         }
                                     }
                                     .drawWithContent {
                                         drawContent()
                                         val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
                                         val curlStrength = abs(pageOffset).coerceIn(0f, 1f)
-                                        if (curlStrength > 0.01f) {
+                                        if (curlStrength in 0.01f..0.99f) {
                                             val shadowWidth = size.width * 0.18f * curlStrength
                                             drawRect(
                                                 brush = Brush.horizontalGradient(
@@ -578,8 +588,11 @@ fun FluidBookReader(
 
                                 PageAnimationMode.DEPTH_CARD -> Modifier.graphicsLayer {
                                     val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                                    val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-                                    if (pageOffset < 0f) {
+                                    val absOffset = abs(pageOffset).coerceIn(0f, 1.5f)
+                                    if (absOffset >= 0.995f) {
+                                        alpha = 0f
+                                        translationX = 0f
+                                    } else if (pageOffset < 0f) {
                                         val scale = 0.88f + (1f - absOffset) * 0.12f
                                         scaleX = scale
                                         scaleY = scale
@@ -587,6 +600,7 @@ fun FluidBookReader(
                                         translationX = -pageOffset * size.width * 0.72f
                                     } else {
                                         alpha = 1f - absOffset * 0.15f
+                                        translationX = 0f
                                     }
                                 }
 

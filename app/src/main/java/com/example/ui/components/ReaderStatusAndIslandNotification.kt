@@ -37,10 +37,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Alarm
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.BatteryAlert
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PhoneInTalk
 import androidx.compose.material.icons.rounded.Wifi
@@ -629,4 +632,7 @@ private fun criticalEventIcon(kind: CriticalEventKind): ImageVector = when (kind
     CriticalEventKind.INCOMING_CALL -> Icons.Rounded.PhoneInTalk
     CriticalEventKind.ALARM -> Icons.Rounded.Alarm
     CriticalEventKind.CRITICAL_ERROR -> Icons.Rounded.ErrorOutline
+    CriticalEventKind.EXPORT_PROGRESS -> Icons.Rounded.IosShare
+    CriticalEventKind.EXPORT_DONE -> Icons.Rounded.CheckCircle
+    CriticalEventKind.AI_TASK -> Icons.Rounded.AutoFixHigh
 }

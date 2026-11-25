@@ -50,7 +50,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,6 +62,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -519,6 +523,7 @@ fun LumaWideWordmark(
 fun ProfileDropdownCapsuleOverlay(
     visible: Boolean,
     anchorTopPx: Float,
+    anchorRightPx: Float = 0f,
     userProfile: UserProfile,
     unreadMessages: Int,
     isImporting: Boolean,
@@ -534,9 +539,21 @@ fun ProfileDropdownCapsuleOverlay(
     val density = LocalDensity.current
     val scrimInteraction = remember { MutableInteractionSource() }
     val innerPadPx = with(density) { 10.dp.toPx() }
+    val edgeMarginPx = with(density) { 8.dp.toPx() }
+    val defaultCapsuleWidthPx = with(density) { 226.dp.toPx() }
     val capsuleTopOffsetPx = (anchorTopPx - innerPadPx).coerceAtLeast(0f).roundToInt()
+    var measuredCapsuleWidthPx by remember { mutableIntStateOf(defaultCapsuleWidthPx.roundToInt()) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val maxWidthPx = with(density) { maxWidth.toPx() }
+        val capsuleLeftOffsetPx = if (anchorRightPx > 1f) {
+            (anchorRightPx + innerPadPx - measuredCapsuleWidthPx)
+                .coerceIn(edgeMarginPx, (maxWidthPx - measuredCapsuleWidthPx - edgeMarginPx).coerceAtLeast(edgeMarginPx))
+                .roundToInt()
+        } else {
+            (maxWidthPx - measuredCapsuleWidthPx - edgeMarginPx).coerceAtLeast(edgeMarginPx).roundToInt()
+        }
+
         // Gentle 15% dim + subtle frosted veil
         AnimatedVisibility(
             visible = visible,
@@ -557,13 +574,12 @@ fun ProfileDropdownCapsuleOverlay(
             )
         }
 
-        // Tall vertical pill/capsule aligned pixel-exact over the top-right profile sphere
+        // Tall vertical pill/capsule aligned pixel-exact over the profile sphere (both phone top-right AND tablet left-pane!)
         AnimatedVisibility(
             visible = visible,
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .offset { IntOffset(0, capsuleTopOffsetPx) }
-                .padding(end = 8.dp),
+                .align(Alignment.TopStart)
+                .offset { IntOffset(capsuleLeftOffsetPx, capsuleTopOffsetPx) },
             enter = scaleIn(
                 initialScale = 0.93f,
                 transformOrigin = TransformOrigin(0.88f, 0.06f),
@@ -595,6 +611,7 @@ fun ProfileDropdownCapsuleOverlay(
             Column(
                 modifier = Modifier
                     .widthIn(min = 206.dp, max = 238.dp)
+                    .onSizeChanged { measuredCapsuleWidthPx = it.width }
                     .shadow(
                         elevation = capsuleElevation,
                         shape = capsuleShape,

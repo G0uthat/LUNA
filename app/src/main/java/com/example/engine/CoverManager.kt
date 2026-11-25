@@ -33,6 +33,32 @@ object CoverManager {
 
     private const val COVER_W = 420
     private const val COVER_H = 620
+    private const val THUMB_W = 210
+    private const val THUMB_H = 310
+    private const val WEBP_QUALITY_FULL = 84
+    private const val WEBP_QUALITY_THUMB = 78
+
+    internal const val THUMB_SUFFIX = "_thumb.webp"
+
+    /**
+     * Resolves the precomputed lightweight 210×310 WebP grid thumbnail for [coverPath] when present,
+     * falling back transparently to [coverPath] for legacy JPEG covers or missing thumbnails.
+     */
+    fun resolveGridCoverPath(coverPath: String?): String? {
+        if (coverPath.isNullOrBlank()) return null
+        val thumb = thumbnailFileFor(coverPath)
+        return if (thumb != null && thumb.exists() && thumb.length() > 64L) {
+            thumb.absolutePath
+        } else {
+            coverPath
+        }
+    }
+
+    fun thumbnailFileFor(coverPath: String): File? {
+        val base = coverPath.substringBeforeLast('.', missingDelimiterValue = "")
+        if (base.isEmpty()) return null
+        return File("${base}${THUMB_SUFFIX}")
+    }
 
     suspend fun generateOrExtractCover(
         context: Context,
@@ -43,8 +69,8 @@ object CoverManager {
         accentColorHex: Long
     ): String = withContext(Dispatchers.IO) {
         val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-        val safeKey = "${abs(sourceFile.absolutePath.hashCode())}_${System.currentTimeMillis()}.jpg"
-        val outFile = File(coversDir, safeKey)
+        val baseKey = "${abs(sourceFile.absolutePath.hashCode())}_${System.currentTimeMillis()}"
+        val outFile = File(coversDir, "$baseKey.webp")
 
         val extracted: Bitmap? = when (format) {
             DocumentFormat.PDF -> extractPdfFirstPageBitmap(sourceFile)
@@ -60,11 +86,7 @@ object CoverManager {
             accentColorHex = accentColorHex
         )
 
-        runCatching {
-            FileOutputStream(outFile).use { fos ->
-                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 88, fos)
-            }
-        }
+        writeCoverAndThumbnail(finalBitmap, outFile)
         finalBitmap.recycle()
         outFile.absolutePath
     }
@@ -75,7 +97,7 @@ object CoverManager {
     ): String? = withContext(Dispatchers.IO) {
         runCatching {
             val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-            val outFile = File(coversDir, "custom_${System.currentTimeMillis()}.jpg")
+            val outFile = File(coversDir, "custom_${System.currentTimeMillis()}.webp")
             val decoded = BitmapDecodeUtils.decodeSampledUri(
                 contentResolver = context.contentResolver,
                 uri = imageUri,
@@ -89,9 +111,7 @@ object CoverManager {
             val scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
             if (scaled !== decoded) decoded.recycle()
 
-            FileOutputStream(outFile).use { fos ->
-                scaled.compress(Bitmap.CompressFormat.JPEG, 88, fos)
-            }
+            writeCoverAndThumbnail(scaled, outFile)
             scaled.recycle()
             outFile.absolutePath
         }.getOrNull()
@@ -105,21 +125,49 @@ object CoverManager {
         accentColorHex: Long
     ): String = withContext(Dispatchers.IO) {
         val coversDir = File(context.filesDir, "covers").apply { mkdirs() }
-        val outFile = File(coversDir, "art_${System.currentTimeMillis()}.jpg")
+        val outFile = File(coversDir, "art_${System.currentTimeMillis()}.webp")
         val bmp = renderArtisticPosterCover(
             title = title,
             author = author,
             formatLabel = format.label,
             accentColorHex = accentColorHex
         )
-        runCatching {
-            FileOutputStream(outFile).use { fos ->
-                bmp.compress(Bitmap.CompressFormat.JPEG, 88, fos)
-            }
-        }
+        writeCoverAndThumbnail(bmp, outFile)
         bmp.recycle()
         outFile.absolutePath
     }
+
+    private fun writeCoverAndThumbnail(bitmap: Bitmap, fullFile: File) {
+        val format = webpFormat()
+        runCatching {
+            FileOutputStream(fullFile).use { fos ->
+                bitmap.compress(format, WEBP_QUALITY_FULL, fos)
+            }
+        }
+        // Precompute lightweight 210px thumbnail for instant zero-jank Library grid decode (~4x fewer pixels)
+        val thumbFile = thumbnailFileFor(fullFile.absolutePath) ?: return
+        runCatching {
+            val ratio = bitmap.width.toFloat() / bitmap.height.toFloat().coerceAtLeast(1f)
+            val tw = THUMB_W.coerceAtMost(bitmap.width.coerceAtLeast(1))
+            val th = (tw / ratio).toInt().coerceIn(140, THUMB_H)
+            val thumbBmp = Bitmap.createScaledBitmap(bitmap, tw, th, true)
+            try {
+                FileOutputStream(thumbFile).use { fos ->
+                    thumbBmp.compress(format, WEBP_QUALITY_THUMB, fos)
+                }
+            } finally {
+                if (thumbBmp !== bitmap) thumbBmp.recycle()
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun webpFormat(): Bitmap.CompressFormat =
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            Bitmap.CompressFormat.WEBP_LOSSY
+        } else {
+            Bitmap.CompressFormat.WEBP
+        }
 
     private fun extractPdfFirstPageBitmap(pdfFile: File): Bitmap? = runCatching {
         ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->

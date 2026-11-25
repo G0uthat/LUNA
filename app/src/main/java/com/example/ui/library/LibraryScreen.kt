@@ -95,13 +95,29 @@ import com.example.ui.components.TourTargetBounds
 import com.example.ui.components.UserAvatarCircle
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
+import android.net.Uri
+import androidx.compose.material.icons.rounded.Draw
+import androidx.compose.runtime.rememberCoroutineScope
+import com.example.notebook.data.NotebookPageTemplate
+import com.example.notebook.data.NotebookRepository
+import com.example.notebook.data.NotebookSummaryItem
+import com.example.notebook.ui.CreateNotebookDialog
+import com.example.notebook.ui.EmptyNotebooksCard
+import com.example.notebook.ui.NotebookGridCard
+import com.example.notebook.ui.NotebookOptionsDialog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.roundToInt
 
 private enum class LibraryViewTab(val label: String) {
     BOOKS("Libros"),
-    SERIES("Series")
+    SERIES("Series"),
+    NOTEBOOKS("Cuadernos")
 }
 
 private val SwitcherOuterShape = RoundedCornerShape(14.dp)
@@ -112,11 +128,14 @@ private val SeriesHeaderShape = RoundedCornerShape(18.dp)
 @Composable
 fun LibraryScreen(
     viewModel: LibraryViewModel,
-    onOpenDocument: (Long) -> Unit
+    notebookRepositoryProvider: () -> NotebookRepository,
+    onOpenDocument: (Long) -> Unit,
+    onOpenNotebook: (Long) -> Unit
 ) {
     val palette = LocalFolioPalette.current
     val motion = LocalLumaMotion.current
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val socialRepo = remember(context) { SocialRepository.getInstance(context) }
 
     // Narrow state slices: avoid collecting full ReaderPreferences or dictionarySources at Library root
@@ -147,6 +166,24 @@ fun LibraryScreen(
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showAppGuide by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showCreateNotebookDialog by remember { mutableStateOf(false) }
+    var optionsNotebook by remember { mutableStateOf<NotebookSummaryItem?>(null) }
+    var isCreatingNotebook by remember { mutableStateOf(false) }
+
+    // Strictly lazy notebook list: NotebookRepository is NOT instantiated until user enters Cuadernos tab!
+    var notebooksActivated by remember { mutableStateOf(false) }
+    LaunchedEffect(activeTab) {
+        if (activeTab == LibraryViewTab.NOTEBOOKS) {
+            notebooksActivated = true
+        }
+    }
+    var notebooks by remember { mutableStateOf<List<NotebookSummaryItem>>(emptyList()) }
+    LaunchedEffect(notebooksActivated) {
+        if (!notebooksActivated) return@LaunchedEffect
+        notebookRepositoryProvider().notebookSummaries.collect { list ->
+            notebooks = list
+        }
+    }
 
     var showPermissionsOnboarding by remember { mutableStateOf(false) }
     var showInteractiveTour by remember { mutableStateOf(false) }
@@ -165,6 +202,7 @@ fun LibraryScreen(
     var rootLeftWindowPx by remember { mutableFloatStateOf(0f) }
     var rootTopWindowPx by remember { mutableFloatStateOf(0f) }
     var profileSphereTopInRootPx by remember { mutableFloatStateOf(0f) }
+    var profileSphereRightInRootPx by remember { mutableFloatStateOf(0f) }
     var filterButtonBottomInRootPx by remember { mutableFloatStateOf(0f) }
     var tourTargets by remember { mutableStateOf(TourTargetBounds()) }
 
@@ -184,7 +222,8 @@ fun LibraryScreen(
     val anyFloatingMenuOpen by remember {
         derivedStateOf {
             showProfileMenu || filterMenuExpanded || showAccountDialog || showFriendsDialog ||
-                showSettingsSheet || showAppGuide || showPermissionsOnboarding || optionsBook != null
+                showSettingsSheet || showAppGuide || showPermissionsOnboarding ||
+                optionsBook != null || showCreateNotebookDialog || optionsNotebook != null
         }
     }
 
@@ -229,6 +268,65 @@ fun LibraryScreen(
     ) { uri ->
         if (uri != null) {
             socialRepo.updateAvatarFromUri(uri)
+        }
+    }
+
+    // Zero-permission SAF PDF picker for creating a Study Notebook over PDF pages
+    val notebookPdfPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null && !isCreatingNotebook) {
+            isCreatingNotebook = true
+            notebooksActivated = true
+            coroutineScope.launch {
+                try {
+                    val info = withContext(Dispatchers.IO) { viewModel.resolveExternalFileInfo(uri) }
+                    val tempFile = withContext(Dispatchers.IO) {
+                        val tmp = File(context.cacheDir, "nb_pdf_${System.currentTimeMillis()}.pdf")
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            FileOutputStream(tmp).use { out -> input.copyTo(out) }
+                        }
+                        tmp
+                    }
+                    val title = info.displayName.substringBeforeLast('.').ifBlank { "Apuntes PDF" }
+                    val newNbId = notebookRepositoryProvider().createNotebookFromPdf(title, tempFile)
+                    runCatching { tempFile.delete() }
+                    onOpenNotebook(newNbId)
+                } finally {
+                    isCreatingNotebook = false
+                }
+            }
+        }
+    }
+
+    // Zero-permission Android Photo Picker for creating a Study Notebook over an image/slide
+    val notebookImagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null && !isCreatingNotebook) {
+            isCreatingNotebook = true
+            notebooksActivated = true
+            coroutineScope.launch {
+                try {
+                    val info = withContext(Dispatchers.IO) { viewModel.resolveExternalFileInfo(uri) }
+                    val title = info.displayName.substringBeforeLast('.').ifBlank { "Apunte visual" }
+                    val newNbId = notebookRepositoryProvider().createNotebookFromImageUri(title, uri)
+                    onOpenNotebook(newNbId)
+                } finally {
+                    isCreatingNotebook = false
+                }
+            }
+        }
+    }
+
+    val launchNotebookPdfPicker = remember(notebookPdfPickerLauncher) {
+        { notebookPdfPickerLauncher.launch(arrayOf("application/pdf")) }
+    }
+    val launchNotebookImagePicker = remember(notebookImagePickerLauncher) {
+        {
+            notebookImagePickerLauncher.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            )
         }
     }
 
@@ -293,6 +391,13 @@ fun LibraryScreen(
             }
         }
     }
+    val filteredNotebooks by remember(notebooks) {
+        derivedStateOf {
+            val query = searchQuery
+            if (query.isBlank()) notebooks
+            else notebooks.filter { it.title.contains(query, ignoreCase = true) }
+        }
+    }
     val continueDoc = remember(documents) { documents.firstOrNull() }
 
     Scaffold(
@@ -338,6 +443,7 @@ fun LibraryScreen(
                             onGuideRect = { rect -> tourTargets = tourTargets.copy(guideButtonRect = rect.toRootRelative()) },
                             onProfileBounds = { topY, rect ->
                                 profileSphereTopInRootPx = (topY - rootTopWindowPx).coerceAtLeast(0f)
+                                profileSphereRightInRootPx = (rect.right - rootLeftWindowPx).coerceAtLeast(0f)
                                 tourTargets = tourTargets.copy(profileSphereRect = rect.toRootRelative())
                             }
                         )
@@ -357,7 +463,7 @@ fun LibraryScreen(
                             }
                         }
 
-                        // Compact tablet studio quick-action card for importing books or creating series
+                        // Compact tablet studio quick-action card for importing books or creating notebooks/series
                         TactileCard(
                             containerColor = palette.surface,
                             borderColor = palette.border,
@@ -365,58 +471,66 @@ fun LibraryScreen(
                             cornerRadius = 22.dp,
                             lipDepth = 2.dp
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                TactileButton(
-                                    onClick = launchImport,
-                                    cornerRadius = 14.dp,
-                                    lipDepth = 2.dp,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("tablet_quick_import_button")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(17.dp))
-                                    Spacer(Modifier.width(5.dp))
-                                    Text("Importar", fontWeight = FontWeight.Bold, maxLines = 1)
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(palette.surfaceAlt)
-                                        .border(1.dp, palette.border, RoundedCornerShape(14.dp))
-                                        .clickable { showCreatePlaylistDialog = true }
-                                        .padding(horizontal = 14.dp, vertical = 11.dp)
-                                        .testTag("tablet_quick_new_series_button"),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    TactileButton(
+                                        onClick = launchImport,
+                                        cornerRadius = 14.dp,
+                                        lipDepth = 2.dp,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("tablet_quick_import_button")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.QueueMusic,
-                                            contentDescription = "Nueva serie",
-                                            tint = palette.accent,
-                                            modifier = Modifier.size(17.dp)
-                                        )
-                                        Text(
-                                            text = "Serie",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = palette.ink
-                                        )
+                                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                                        Spacer(Modifier.width(5.dp))
+                                        Text("Importar", fontWeight = FontWeight.Bold, maxLines = 1)
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(palette.accentSoft)
+                                            .border(1.dp, palette.accent.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                                            .clickable {
+                                                notebooksActivated = true
+                                                showCreateNotebookDialog = true
+                                            }
+                                            .padding(horizontal = 14.dp, vertical = 11.dp)
+                                            .testTag("tablet_quick_new_notebook_button"),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Draw,
+                                                contentDescription = "Nuevo cuaderno",
+                                                tint = palette.accent,
+                                                modifier = Modifier.size(17.dp)
+                                            )
+                                            Text(
+                                                text = "Cuaderno",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = palette.accent
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Right Panel: Libros / Series Switcher + Search/Filter + Catalog Grid
+                    // Right Panel: Libros / Series / Cuadernos Switcher + Search/Filter + Catalog Grid
                     Column(
                         modifier = Modifier
                             .weight(1f)
@@ -435,6 +549,10 @@ fun LibraryScreen(
                             },
                             onSearchQueryChange = { searchQuery = it },
                             onCreatePlaylist = { showCreatePlaylistDialog = true },
+                            onCreateNotebook = {
+                                notebooksActivated = true
+                                showCreateNotebookDialog = true
+                            },
                             onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
                             onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
                             onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
@@ -450,7 +568,37 @@ fun LibraryScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
+                            if (activeTab == LibraryViewTab.NOTEBOOKS) {
+                                if (filteredNotebooks.isEmpty()) {
+                                    item(key = "lib_notebooks_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_notebooks") {
+                                        EmptyNotebooksCard(
+                                            onCreateBlank = { showCreateNotebookDialog = true },
+                                            onImportPdf = launchNotebookPdfPicker,
+                                            onImportImage = launchNotebookImagePicker
+                                        )
+                                    }
+                                } else {
+                                    items(
+                                        items = filteredNotebooks,
+                                        key = { "nb_${it.id}" },
+                                        contentType = { "notebook_card" }
+                                    ) { nb ->
+                                        Box(
+                                            modifier = Modifier.animateItem(
+                                                fadeInSpec = motion.tweenSpec(215),
+                                                fadeOutSpec = motion.exitTween(185),
+                                                placementSpec = motion.glideSpring()
+                                            )
+                                        ) {
+                                            NotebookGridCard(
+                                                notebook = nb,
+                                                onOpen = { onOpenNotebook(nb.id) },
+                                                onLongPress = { optionsNotebook = nb }
+                                            )
+                                        }
+                                    }
+                                }
+                            } else if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
                                 if (filteredSeries.isEmpty()) {
                                     item(key = "lib_series_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_series") {
                                         EmptySeriesCard(onCreate = { showCreatePlaylistDialog = true })
@@ -550,6 +698,7 @@ fun LibraryScreen(
                             onGuideRect = { rect -> tourTargets = tourTargets.copy(guideButtonRect = rect.toRootRelative()) },
                             onProfileBounds = { topY, rect ->
                                 profileSphereTopInRootPx = (topY - rootTopWindowPx).coerceAtLeast(0f)
+                                profileSphereRightInRootPx = (rect.right - rootLeftWindowPx).coerceAtLeast(0f)
                                 tourTargets = tourTargets.copy(profileSphereRect = rect.toRootRelative())
                             }
                         )
@@ -573,7 +722,7 @@ fun LibraryScreen(
                         }
                     }
 
-                    // 3. Slim Two-Rectangle Switcher ("Libros" | "Series") ABOVE Search Bar + Square Filter Button
+                    // 3. Three-Tab Switcher ("Libros" | "Series" | "Cuadernos") ABOVE Search Bar + Action Button
                     item(key = "lib_tabs_and_search", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
                         LibraryTabsAndSearchControls(
                             activeTab = activeTab,
@@ -586,6 +735,10 @@ fun LibraryScreen(
                             },
                             onSearchQueryChange = { searchQuery = it },
                             onCreatePlaylist = { showCreatePlaylistDialog = true },
+                            onCreateNotebook = {
+                                notebooksActivated = true
+                                showCreateNotebookDialog = true
+                            },
                             onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
                             onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
                             onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
@@ -595,8 +748,38 @@ fun LibraryScreen(
                         )
                     }
 
-                    // 4. Content Area: Either Series Overview OR Steam-Style Book Cover Grid
-                    if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
+                    // 4. Content Area: Cuadernos OR Series Overview OR Steam-Style Book Cover Grid
+                    if (activeTab == LibraryViewTab.NOTEBOOKS) {
+                        if (filteredNotebooks.isEmpty()) {
+                            item(key = "lib_notebooks_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_notebooks") {
+                                EmptyNotebooksCard(
+                                    onCreateBlank = { showCreateNotebookDialog = true },
+                                    onImportPdf = launchNotebookPdfPicker,
+                                    onImportImage = launchNotebookImagePicker
+                                )
+                            }
+                        } else {
+                            items(
+                                items = filteredNotebooks,
+                                key = { "nb_${it.id}" },
+                                contentType = { "notebook_card" }
+                            ) { nb ->
+                                Box(
+                                    modifier = Modifier.animateItem(
+                                        fadeInSpec = motion.tweenSpec(215),
+                                        fadeOutSpec = motion.exitTween(185),
+                                        placementSpec = motion.glideSpring()
+                                    )
+                                ) {
+                                    NotebookGridCard(
+                                        notebook = nb,
+                                        onOpen = { onOpenNotebook(nb.id) },
+                                        onLongPress = { optionsNotebook = nb }
+                                    )
+                                }
+                            }
+                        }
+                    } else if (activeTab == LibraryViewTab.SERIES && activeSeries == null) {
                         if (filteredSeries.isEmpty()) {
                             item(key = "lib_series_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_series") {
                                 EmptySeriesCard(onCreate = { showCreatePlaylistDialog = true })
@@ -679,6 +862,7 @@ fun LibraryScreen(
             LibraryProfileDropdownHost(
                 visible = showProfileMenu,
                 anchorTopPx = profileSphereTopInRootPx,
+                anchorRightPx = profileSphereRightInRootPx,
                 socialRepo = socialRepo,
                 isImporting = isImporting,
                 onDismiss = { showProfileMenu = false },
@@ -841,6 +1025,45 @@ fun LibraryScreen(
         )
     }
 
+    if (showCreateNotebookDialog) {
+        CreateNotebookDialog(
+            onCreate = { title, template, widthPx, heightPx, bgColor ->
+                showCreateNotebookDialog = false
+                notebooksActivated = true
+                coroutineScope.launch {
+                    val newId = notebookRepositoryProvider().createNotebook(
+                        title = title,
+                        template = template,
+                        pageWidthPx = widthPx,
+                        pageHeightPx = heightPx,
+                        backgroundColor = bgColor
+                    )
+                    onOpenNotebook(newId)
+                }
+            },
+            onCreateFromPdf = launchNotebookPdfPicker,
+            onCreateFromImage = launchNotebookImagePicker,
+            onDismiss = { showCreateNotebookDialog = false }
+        )
+    }
+
+    optionsNotebook?.let { nb ->
+        NotebookOptionsDialog(
+            notebook = nb,
+            onRename = { newTitle ->
+                coroutineScope.launch {
+                    notebookRepositoryProvider().renameNotebook(nb.id, newTitle)
+                }
+            },
+            onDelete = {
+                coroutineScope.launch {
+                    notebookRepositoryProvider().deleteNotebook(nb.id)
+                }
+            },
+            onDismiss = { optionsNotebook = null }
+        )
+    }
+
     bookForPlaylistModal?.let { doc ->
         val memberships = remember(playlistRefs, doc.id) {
             playlistRefs.filter { it.documentId == doc.id }.map { it.playlistId }.toSet()
@@ -995,6 +1218,7 @@ private fun LibraryTabsAndSearchControls(
     onSelectTab: (LibraryViewTab) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onCreatePlaylist: () -> Unit,
+    onCreateNotebook: () -> Unit,
     onToggleFilterMenu: () -> Unit,
     onTabsRect: (Rect) -> Unit,
     onSearchFilterRect: (Rect) -> Unit,
@@ -1029,7 +1253,8 @@ private fun LibraryTabsAndSearchControls(
                         text = tab.label,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = if (selected) palette.onAccent else palette.inkMuted
+                        color = if (selected) palette.onAccent else palette.inkMuted,
+                        maxLines = 1
                     )
                 }
             }
@@ -1047,7 +1272,11 @@ private fun LibraryTabsAndSearchControls(
                 onValueChange = onSearchQueryChange,
                 placeholder = {
                     Text(
-                        text = if (isSeriesOverview) "Buscar serie o saga…" else "Buscar título o autor…",
+                        text = when {
+                            activeTab == LibraryViewTab.NOTEBOOKS -> "Buscar cuaderno de estudio…"
+                            isSeriesOverview -> "Buscar serie o saga…"
+                            else -> "Buscar título o autor…"
+                        },
                         color = palette.inkMuted
                     )
                 },
@@ -1079,7 +1308,24 @@ private fun LibraryTabsAndSearchControls(
                     .testTag("library_search_input")
             )
 
-            if (isSeriesOverview) {
+            if (activeTab == LibraryViewTab.NOTEBOOKS) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(SearchInputShape)
+                        .background(palette.accent)
+                        .clickable(onClick = onCreateNotebook)
+                        .testTag("create_notebook_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = "Nuevo cuaderno",
+                        tint = palette.onAccent,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            } else if (isSeriesOverview) {
                 Box(
                     modifier = Modifier
                         .size(52.dp)
@@ -1273,6 +1519,7 @@ private fun EmptyBooksCard(isInSeries: Boolean) {
 private fun LibraryProfileDropdownHost(
     visible: Boolean,
     anchorTopPx: Float,
+    anchorRightPx: Float,
     socialRepo: SocialRepository,
     isImporting: Boolean,
     onDismiss: () -> Unit,
@@ -1290,6 +1537,7 @@ private fun LibraryProfileDropdownHost(
     ProfileDropdownCapsuleOverlay(
         visible = visible,
         anchorTopPx = anchorTopPx,
+        anchorRightPx = anchorRightPx,
         userProfile = userProfile,
         unreadMessages = totalUnreadMessages,
         isImporting = isImporting,

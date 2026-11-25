@@ -34,8 +34,11 @@
 -keep class * extends androidx.room.RoomDatabase { *; }
 -keep class com.example.data.local.FolioDatabase* { *; }
 -keep class com.example.data.local.FolioDao* { *; }
+-keep class com.example.notebook.data.NotebookDao* { *; }
 -keep @androidx.room.Entity class com.example.data.local.** { *; }
 -keep @androidx.room.Dao interface com.example.data.local.** { *; }
+-keep @androidx.room.Entity class com.example.notebook.data.** { *; }
+-keep @androidx.room.Dao interface com.example.notebook.data.** { *; }
 -keepclassmembers class * extends androidx.room.RoomDatabase {
     <init>(...);
 }
@@ -43,10 +46,12 @@
 
 # ------------------------------------------------------------------------------
 # 3. JSONObject / JsonConverters / Data Models & Serialized Enums
-#    (PreferencesRepository, PeerSyncEngine, JsonConverters, DocumentEntity)
+#    (PreferencesRepository, PeerSyncEngine, JsonConverters, DocumentEntity, Notebook)
 # ------------------------------------------------------------------------------
 -keep class com.example.data.local.JsonConverters { *; }
 -keep class com.example.data.model.** { *; }
+-keep class com.example.notebook.model.** { *; }
+-keep class com.example.notebook.data.NotebookJsonCodec { *; }
 -keepclassmembers enum com.example.** {
     public static **[] values();
     public static ** valueOf(java.lang.String);

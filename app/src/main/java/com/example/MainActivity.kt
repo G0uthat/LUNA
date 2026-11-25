@@ -61,11 +61,21 @@ import com.example.engine.MemoryPressureManager
 import com.example.engine.ParsedDocumentDiskCache
 import com.example.engine.SocialRepository
 import com.example.engine.SystemMediaController
+import android.content.Intent
+import android.net.Uri
+import androidx.core.content.IntentCompat
+import com.example.notebook.data.NotebookRepository
+import com.example.notebook.ui.NotebookScreen
+import com.example.notebook.ui.NotebookViewModel
 import com.example.ui.components.DynamicIslandEventBanner
+import com.example.ui.components.ExternalBatchImportDialog
+import com.example.ui.components.ExternalBatchProgressState
+import com.example.ui.components.ExternalImportChooserDialog
 import com.example.ui.components.GitHubUpdateDialog
 import com.example.ui.components.LocalLumaOverlayController
 import com.example.ui.components.LumaOverlayController
 import com.example.ui.components.LumaOverlayHost
+import com.example.ui.components.PendingExternalFile
 import com.example.ui.library.CoverBitmapCache
 import com.example.ui.library.LibraryScreen
 import com.example.ui.library.LibraryViewModel
@@ -127,6 +137,69 @@ class MainActivity : ComponentActivity() {
     private val folioRepository by lazy {
         FolioRepository(FolioDatabase.getInstance(applicationContext).folioDao())
     }
+    // Strictly lazy Study Notebook repository: NEVER instantiated at app launch until user opens Cuadernos!
+    private val notebookRepository by lazy {
+        NotebookRepository(applicationContext, FolioDatabase.getInstance(applicationContext).notebookDao())
+    }
+    private data class IncomingExternalIntent(
+        val id: Long = System.nanoTime(),
+        val action: String,
+        val uris: List<Uri>
+    )
+
+    private val pendingExternalIntentState = mutableStateOf<IncomingExternalIntent?>(null)
+
+    private fun extractAndConsumeExternalIntent(intent: Intent?): IncomingExternalIntent? {
+        if (intent == null) return null
+        // Never re-import when Android relaunches the activity from Recents history
+        if ((intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0) return null
+
+        val action = intent.action ?: return null
+        val collected = LinkedHashSet<Uri>()
+
+        when (action) {
+            Intent.ACTION_VIEW -> {
+                intent.data?.let { collected.add(it) }
+            }
+            Intent.ACTION_SEND -> {
+                IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let {
+                    collected.add(it)
+                }
+                intent.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        clip.getItemAt(i)?.uri?.let { collected.add(it) }
+                    }
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?.forEach { collected.add(it) }
+                intent.clipData?.let { clip ->
+                    for (i in 0 until clip.itemCount) {
+                        clip.getItemAt(i)?.uri?.let { collected.add(it) }
+                    }
+                }
+            }
+            else -> return null
+        }
+
+        if (collected.isEmpty()) return null
+
+        // Consume the intent immediately so rotation or returning from background NEVER re-imports!
+        val consumed = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        setIntent(consumed)
+
+        return IncomingExternalIntent(action = action, uris = collected.toList())
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        extractAndConsumeExternalIntent(intent)?.let { req ->
+            pendingExternalIntentState.value = req
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         if (BuildConfig.DEBUG) {
@@ -164,6 +237,14 @@ class MainActivity : ComponentActivity() {
         }
 
         enableEdgeToEdge()
+
+        // Capture & consume any file(s) launched via "Abrir con Luma" or "Compartir"
+        // (strictly skipped on config-change recreation where savedInstanceState != null)
+        if (savedInstanceState == null) {
+            extractAndConsumeExternalIntent(intent)?.let { req ->
+                pendingExternalIntentState.value = req
+            }
+        }
 
         // Defer all non-first-frame subsystems until AFTER the first frame is drawn
         window.decorView.post {
@@ -276,6 +357,18 @@ class MainActivity : ComponentActivity() {
                 effectiveRefreshRateHz = effectiveRefreshRateHz
             ) {
                 var activeDocumentId by rememberSaveable { mutableStateOf<Long?>(null) }
+                var activeNotebookId by rememberSaveable { mutableStateOf<Long?>(null) }
+                var pendingExternalFile by remember { mutableStateOf<PendingExternalFile?>(null) }
+                var isHandlingExternalFile by remember { mutableStateOf(false) }
+                var batchImportProgress by remember { mutableStateOf<ExternalBatchProgressState?>(null) }
+
+                // Active session flush hooks: saves current Notebook or Reader state before navigating away
+                var activeNotebookFlush by remember { mutableStateOf<(() -> Unit)?>(null) }
+                var activeReaderFlush by remember { mutableStateOf<(() -> Unit)?>(null) }
+                val flushActiveSessionBeforeNavigate: () -> Unit = {
+                    activeNotebookFlush?.invoke()
+                    activeReaderFlush?.invoke()
+                }
 
                 // Only allow media progress ticker when the reader is actually open
                 LaunchedEffect(activeDocumentId) {
@@ -288,34 +381,227 @@ class MainActivity : ComponentActivity() {
                     }
                 )
 
+                // Resolve incoming "Abrir con Luma" / "Compartir" / "Enviar a un cuaderno" URI(s) off main thread
+                val incomingReq by pendingExternalIntentState
+                LaunchedEffect(incomingReq?.id) {
+                    val req = incomingReq ?: return@LaunchedEffect
+                    pendingExternalIntentState.value = null
+
+                    if (req.uris.size > 1) {
+                        // Multiple shared files (ACTION_SEND_MULTIPLE): inspect off main thread
+                        val inspections = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                            req.uris.map { libraryViewModel.resolveExternalFileInfo(it) }
+                        }
+                        val validImages = inspections.filter { it.isImage && it.errorReason == null }
+                        val validDocs = inspections.filter { !it.isImage && it.isSupported }
+
+                        if (validImages.isNotEmpty() && validDocs.isEmpty()) {
+                            // Multiple images shared -> create multi-page Study Notebook with progress!
+                            batchImportProgress = ExternalBatchProgressState(1, validImages.size, validImages.first().displayName)
+                            val title = validImages.first().displayName.substringBeforeLast('.').ifBlank { "Cuaderno de imágenes" }
+                            val newNbId = notebookRepository.createNotebookFromImageUris(
+                                title = title,
+                                imageUris = validImages.map { it.uri },
+                                onProgress = { done, total ->
+                                    batchImportProgress = ExternalBatchProgressState(
+                                        currentIndex = done,
+                                        totalCount = total,
+                                        currentFileName = validImages.getOrNull(done - 1)?.displayName ?: "Imagen $done"
+                                    )
+                                }
+                            )
+                            batchImportProgress = null
+                            flushActiveSessionBeforeNavigate()
+                            activeDocumentId = null
+                            activeNotebookId = newNbId
+                        } else {
+                            // Batch document import with progress; opens the last imported document automatically
+                            batchImportProgress = ExternalBatchProgressState(1, req.uris.size, inspections.firstOrNull()?.displayName ?: "Archivo 1")
+                            libraryViewModel.importMultipleDocuments(
+                                uris = req.uris,
+                                onProgress = { idx, total, name ->
+                                    batchImportProgress = ExternalBatchProgressState(idx, total, name)
+                                },
+                                onComplete = { summary ->
+                                    batchImportProgress = null
+                                    summary.lastDocumentId?.let { lastId ->
+                                        flushActiveSessionBeforeNavigate()
+                                        activeNotebookId = null
+                                        activeDocumentId = lastId
+                                    }
+                                }
+                            )
+                        }
+                    } else {
+                        val singleUri = req.uris.first()
+                        val resolved = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                            libraryViewModel.resolveExternalFileInfo(singleUri)
+                        }
+                        if (req.action == Intent.ACTION_SEND && resolved.isImage && resolved.isSupported) {
+                            // "Enviar a un cuaderno" direct 1-tap image flow
+                            batchImportProgress = ExternalBatchProgressState(1, 1, resolved.displayName)
+                            val cleanTitle = resolved.displayName.substringBeforeLast('.').ifBlank { "Apunte con imagen" }
+                            val newNbId = notebookRepository.createNotebookFromImageUri(cleanTitle, resolved.uri)
+                            batchImportProgress = null
+                            flushActiveSessionBeforeNavigate()
+                            activeDocumentId = null
+                            activeNotebookId = newNbId
+                        } else {
+                            pendingExternalFile = resolved
+                        }
+                    }
+                }
+
                 val overlayController = remember { LumaOverlayController() }
 
                 CompositionLocalProvider(LocalLumaOverlayController provides overlayController) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         val docId = activeDocumentId
-                        if (docId == null) {
-                            LibraryScreen(
-                                viewModel = libraryViewModel,
-                                onOpenDocument = { id -> activeDocumentId = id }
-                            )
-                            // Isolated state scope: Island events only recompose this overlay, not LibraryScreen
-                            GlobalLibraryIslandHost(
-                                onTapEvent = { event ->
-                                    DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
+                        val nbId = activeNotebookId
+                        when {
+                            nbId != null -> {
+                                // Strictly lazy Notebook Studio instantiation: only created when a Notebook is opened
+                                val notebookViewModel: NotebookViewModel = viewModel(
+                                    key = "notebook_$nbId",
+                                    factory = remember(nbId) {
+                                        NotebookViewModel.Factory(application, nbId, notebookRepository)
+                                    }
+                                )
+                                DisposableEffect(notebookViewModel) {
+                                    activeNotebookFlush = { notebookViewModel.flushPendingSaveAsync() }
+                                    onDispose { activeNotebookFlush = null }
+                                }
+                                NotebookScreen(
+                                    viewModel = notebookViewModel,
+                                    onBackToLibrary = { activeNotebookId = null },
+                                    onImportPdfToLibrary = { pdfFile, title ->
+                                        libraryViewModel.importLocalPdfFileToLibrary(pdfFile, title)
+                                    }
+                                )
+                                GlobalLibraryIslandHost(
+                                    onTapEvent = { event ->
+                                        DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
+                                    },
+                                    onDismiss = { DynamicIslandEventManager.dismissActiveEvent() }
+                                )
+                            }
+
+                            docId != null -> {
+                                val readerViewModel: ReaderViewModel = viewModel(
+                                    key = "reader_$docId",
+                                    factory = remember(docId) {
+                                        ReaderViewModel.Factory(application, docId, folioRepository, prefsRepo)
+                                    }
+                                )
+                                DisposableEffect(readerViewModel) {
+                                    activeReaderFlush = { readerViewModel.flushReadingStateAsync() }
+                                    onDispose { activeReaderFlush = null }
+                                }
+                                ReaderScreen(
+                                    viewModel = readerViewModel,
+                                    onBackToLibrary = { activeDocumentId = null }
+                                )
+                            }
+
+                            else -> {
+                                LibraryScreen(
+                                    viewModel = libraryViewModel,
+                                    notebookRepositoryProvider = { notebookRepository },
+                                    onOpenDocument = { id ->
+                                        activeNotebookId = null
+                                        activeDocumentId = id
+                                    },
+                                    onOpenNotebook = { id ->
+                                        activeDocumentId = null
+                                        activeNotebookId = id
+                                    }
+                                )
+                                // Isolated state scope: Island events only recompose this overlay, not LibraryScreen
+                                GlobalLibraryIslandHost(
+                                    onTapEvent = { event ->
+                                        DynamicIslandEventManager.openActiveEvent(this@MainActivity, event)
+                                    },
+                                    onDismiss = { DynamicIslandEventManager.dismissActiveEvent() }
+                                )
+                            }
+                        }
+
+                        // "Abrir con Luma" / "Compartir" Chooser Dialog
+                        pendingExternalFile?.let { ext ->
+                            ExternalImportChooserDialog(
+                                pending = ext,
+                                isBusy = isHandlingExternalFile,
+                                onOpenInReader = {
+                                    isHandlingExternalFile = true
+                                    libraryViewModel.importDocumentWithResult(
+                                        uri = ext.uri,
+                                        onError = {
+                                            isHandlingExternalFile = false
+                                            pendingExternalFile = null
+                                        },
+                                        onImported = { imported ->
+                                            isHandlingExternalFile = false
+                                            pendingExternalFile = null
+                                            flushActiveSessionBeforeNavigate()
+                                            activeNotebookId = null
+                                            activeDocumentId = imported.id
+                                        }
+                                    )
                                 },
-                                onDismiss = { DynamicIslandEventManager.dismissActiveEvent() }
-                            )
-                        } else {
-                            val readerViewModel: ReaderViewModel = viewModel(
-                                key = "reader_$docId",
-                                factory = remember(docId) {
-                                    ReaderViewModel.Factory(application, docId, folioRepository, prefsRepo)
+                                onCreateNotebook = {
+                                    isHandlingExternalFile = true
+                                    val cleanTitle = ext.displayName.substringBeforeLast('.').ifBlank { "Cuaderno de estudio" }
+                                    if (ext.isImage) {
+                                        lifecycleScope.launch {
+                                            val newNbId = notebookRepository.createNotebookFromImageUri(cleanTitle, ext.uri)
+                                            isHandlingExternalFile = false
+                                            pendingExternalFile = null
+                                            flushActiveSessionBeforeNavigate()
+                                            activeDocumentId = null
+                                            activeNotebookId = newNbId
+                                        }
+                                    } else if (ext.format != null) {
+                                        libraryViewModel.importDocumentWithResult(
+                                            uri = ext.uri,
+                                            onError = {
+                                                isHandlingExternalFile = false
+                                                pendingExternalFile = null
+                                            },
+                                            onImported = { imported ->
+                                                lifecycleScope.launch {
+                                                    val newNbId = if (imported.format == DocumentFormat.PDF) {
+                                                        notebookRepository.createNotebookFromPdf(imported.title, File(imported.filePath))
+                                                    } else {
+                                                        notebookRepository.createNotebook(title = "Apuntes · ${imported.title}")
+                                                    }
+                                                    isHandlingExternalFile = false
+                                                    pendingExternalFile = null
+                                                    flushActiveSessionBeforeNavigate()
+                                                    activeDocumentId = null
+                                                    activeNotebookId = newNbId
+                                                }
+                                            }
+                                        )
+                                    } else {
+                                        lifecycleScope.launch {
+                                            val newNbId = notebookRepository.createNotebook(title = cleanTitle)
+                                            isHandlingExternalFile = false
+                                            pendingExternalFile = null
+                                            flushActiveSessionBeforeNavigate()
+                                            activeDocumentId = null
+                                            activeNotebookId = newNbId
+                                        }
+                                    }
+                                },
+                                onDismiss = {
+                                    pendingExternalFile = null
                                 }
                             )
-                            ReaderScreen(
-                                viewModel = readerViewModel,
-                                onBackToLibrary = { activeDocumentId = null }
-                            )
+                        }
+
+                        // Multi-file import progress dialog (ACTION_SEND_MULTIPLE)
+                        batchImportProgress?.let { progress ->
+                            ExternalBatchImportDialog(progress = progress)
                         }
 
                         // Choreographer FPS monitor: ONLY runs when explicitly enabled by user in settings AND resumed
@@ -362,6 +648,9 @@ class MainActivity : ComponentActivity() {
         deferredServicesStarted = true
         val appCtx = applicationContext
         lifecycleScope.launch(Dispatchers.IO) {
+            val prefsSnapshot = preferencesRepository.awaitInitialPreferences()
+            com.example.engine.LumaDiskCacheManager.setLimitMb(prefsSnapshot.diskCacheLimitMb)
+            com.example.engine.LumaDiskCacheManager.enforceGlobalBudget(appCtx)
             GitHubUpdateManager.enforceCachedMandatoryLockIfNeeded(appCtx)
             SystemMediaController.start(appCtx)
             DynamicIslandEventManager.start(appCtx)

@@ -6,6 +6,9 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.notebook.data.NotebookDao
+import com.example.notebook.data.NotebookEntity
+import com.example.notebook.data.NotebookPageEntity
 
 @Database(
     entities = [
@@ -16,13 +19,16 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BookmarkEntity::class,
         DrawingLayerEntity::class,
         OcrPageCacheEntity::class,
-        DictionarySourceEntity::class
+        DictionarySourceEntity::class,
+        NotebookEntity::class,
+        NotebookPageEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class FolioDatabase : RoomDatabase() {
     abstract fun folioDao(): FolioDao
+    abstract fun notebookDao(): NotebookDao
 
     companion object {
         @Volatile
@@ -109,6 +115,52 @@ abstract class FolioDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration v4 -> v5: creates isolated Study Notebook tables (`notebooks` and
+         * `notebook_pages` with FK CASCADE and covering indices) without touching any existing
+         * library documents, highlights, bookmarks, reader drawings, or OCR caches.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `notebooks` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `coverImagePath` TEXT NOT NULL,
+                        `pageWidthPx` INTEGER NOT NULL,
+                        `pageHeightPx` INTEGER NOT NULL,
+                        `pageTemplate` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_notebooks_updatedAt` ON `notebooks` (`updatedAt`)")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `notebook_pages` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `notebookId` INTEGER NOT NULL,
+                        `pageIndex` INTEGER NOT NULL,
+                        `backgroundType` TEXT NOT NULL,
+                        `backgroundColor` INTEGER NOT NULL,
+                        `backgroundAssetPath` TEXT NOT NULL,
+                        `contentJson` TEXT NOT NULL,
+                        `schemaVersion` INTEGER NOT NULL,
+                        `thumbnailPath` TEXT NOT NULL,
+                        FOREIGN KEY(`notebookId`) REFERENCES `notebooks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_notebook_pages_notebookId` ON `notebook_pages` (`notebookId`)")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_notebook_pages_notebookId_pageIndex` " +
+                        "ON `notebook_pages` (`notebookId`, `pageIndex`)"
+                )
+            }
+        }
+
         private fun addColumnIfMissing(
             db: SupportSQLiteDatabase,
             tableName: String,
@@ -138,7 +190,7 @@ abstract class FolioDatabase : RoomDatabase() {
                     "luma_reader.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }

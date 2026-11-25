@@ -45,7 +45,10 @@ enum class CriticalEventKind {
     ONLINE_RESTORED,
     INCOMING_CALL,
     ALARM,
-    CRITICAL_ERROR
+    CRITICAL_ERROR,
+    EXPORT_PROGRESS,
+    EXPORT_DONE,
+    AI_TASK
 }
 
 @Immutable
@@ -320,6 +323,28 @@ object DynamicIslandEventManager {
                 subtitle = detail.ifBlank { "Revisa el archivo e intenta de nuevo" },
                 accentColorArgb = 0xFFEF4444L,
                 durationMs = 5600L
+            )
+        )
+    }
+
+    fun postOperationStatus(
+        kind: CriticalEventKind,
+        badgeLabel: String,
+        title: String,
+        subtitle: String,
+        accentColorArgb: Long = 0xFF1D5BFFL,
+        durationMs: Long = 3800L,
+        dedupeKey: String = "luma_operation_status"
+    ) {
+        enqueueEvent(
+            DynamicIslandEvent.CriticalState(
+                kind = kind,
+                badgeLabel = badgeLabel,
+                title = title,
+                subtitle = subtitle,
+                accentColorArgb = accentColorArgb,
+                durationMs = durationMs,
+                dedupeKey = dedupeKey
             )
         )
     }

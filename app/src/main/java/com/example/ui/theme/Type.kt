@@ -10,51 +10,27 @@ import com.example.R
 
 // Lazy-initialized FontFamilies ensure reader & brand fonts are not allocated or loaded during
 // cold startup unless the active UI or reader actually requests them.
+// Each bundled .ttf is a static Regular weight; registering only FontWeight.Normal allows Compose
+// to apply proper FontSynthesis for Bold/SemiBold headings instead of overriding Bold with Regular.
 
 val PlusJakartaSansFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
-    FontFamily(
-        Font(R.font.plus_jakarta_sans, FontWeight.Normal),
-        Font(R.font.plus_jakarta_sans, FontWeight.Medium),
-        Font(R.font.plus_jakarta_sans, FontWeight.SemiBold),
-        Font(R.font.plus_jakarta_sans, FontWeight.Bold),
-        Font(R.font.plus_jakarta_sans, FontWeight.ExtraBold)
-    )
+    FontFamily(Font(R.font.plus_jakarta_sans, FontWeight.Normal))
 }
 
 val LiterataFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
-    FontFamily(
-        Font(R.font.literata, FontWeight.Normal),
-        Font(R.font.literata, FontWeight.Medium),
-        Font(R.font.literata, FontWeight.SemiBold),
-        Font(R.font.literata, FontWeight.Bold)
-    )
+    FontFamily(Font(R.font.literata, FontWeight.Normal))
 }
 
 val LexendFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
-    FontFamily(
-        Font(R.font.lexend, FontWeight.Normal),
-        Font(R.font.lexend, FontWeight.Medium),
-        Font(R.font.lexend, FontWeight.SemiBold),
-        Font(R.font.lexend, FontWeight.Bold)
-    )
+    FontFamily(Font(R.font.lexend, FontWeight.Normal))
 }
 
 val JetBrainsMonoFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
-    FontFamily(
-        Font(R.font.jetbrains_mono, FontWeight.Normal),
-        Font(R.font.jetbrains_mono, FontWeight.Medium),
-        Font(R.font.jetbrains_mono, FontWeight.Bold)
-    )
+    FontFamily(Font(R.font.jetbrains_mono, FontWeight.Normal))
 }
 
 val LumaBrandFontFamily: FontFamily by lazy(LazyThreadSafetyMode.NONE) {
-    FontFamily(
-        Font(R.font.outfit, FontWeight.Normal),
-        Font(R.font.outfit, FontWeight.Medium),
-        Font(R.font.outfit, FontWeight.SemiBold),
-        Font(R.font.outfit, FontWeight.Bold),
-        Font(R.font.outfit, FontWeight.ExtraBold)
-    )
+    FontFamily(Font(R.font.outfit, FontWeight.Normal))
 }
 
 fun buildFolioTypography(useSystemFont: Boolean): Typography {

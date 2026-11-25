@@ -203,6 +203,7 @@ data class ReaderPreferences(
     val autoHideReaderChromeEnabled: Boolean = true,
     val autoHideReaderChromeDelaySec: Int = 8,
     val autoHideFadeSpeedMs: Int = 220,
+    val diskCacheLimitMb: Int = 500,
     val hasSeenGuide: Boolean = false,
     val hasCompletedOnboarding: Boolean = false,
     val seededSampleVersion: Int = 0

@@ -624,7 +624,15 @@ fun AppSettingsContent(
                 )
             }
 
-            // 7. Auto-covers helper
+            // 7. Storage & Acceleration Disk Cache (configurable limit + Limpiar caché)
+            DiskCacheSettingsCard(
+                diskCacheLimitMb = prefs.diskCacheLimitMb,
+                onLimitChange = { limitMb ->
+                    onUpdatePrefs { it.copy(diskCacheLimitMb = limitMb) }
+                }
+            )
+
+            // 8. Auto-covers helper
             if (onRegenerateCovers != null) {
                 TactileButton(
                     onClick = onRegenerateCovers,

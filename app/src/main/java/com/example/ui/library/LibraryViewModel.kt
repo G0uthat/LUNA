@@ -16,8 +16,10 @@ import com.example.data.local.PreferencesRepository
 import com.example.data.model.DocumentFormat
 import com.example.data.model.ReaderPreferences
 import com.example.engine.CoverManager
+import com.example.engine.CriticalEventKind
 import com.example.engine.DocumentParser
 import com.example.engine.DynamicIslandEventManager
+import com.example.engine.ExternalFileInspector
 import com.example.engine.SampleLibraryGenerator
 import com.example.ui.components.LumaActionAnimType
 import com.example.ui.components.LumaFeedbackEvent
@@ -279,75 +281,314 @@ class LibraryViewModel(
         }
     }
 
+    data class ImportedDocumentResult(
+        val id: Long,
+        val title: String,
+        val filePath: String,
+        val format: DocumentFormat,
+        val wasDuplicate: Boolean = false
+    )
+
+    data class BatchImportSummary(
+        val lastDocumentId: Long?,
+        val importedCount: Int,
+        val duplicateCount: Int,
+        val failedCount: Int,
+        val lastError: String? = null
+    )
+
+    fun resolveExternalFileInfo(uri: Uri): com.example.ui.components.PendingExternalFile {
+        val context = getApplication<Application>()
+        val inspected = ExternalFileInspector.inspectUri(context, uri)
+        return com.example.ui.components.PendingExternalFile(
+            uri = uri,
+            displayName = inspected.sanitizedName,
+            format = inspected.format,
+            isImage = inspected.isImage,
+            errorReason = inspected.errorReason
+        )
+    }
+
     fun importDocument(uri: Uri, onImportedOpen: (Long) -> Unit) {
+        importDocumentWithResult(uri) { result ->
+            onImportedOpen(result.id)
+        }
+    }
+
+    fun importDocumentWithResult(
+        uri: Uri,
+        onError: () -> Unit = {},
+        onImported: (ImportedDocumentResult) -> Unit
+    ) {
         viewModelScope.launch {
             _isImporting.value = true
             try {
-                val context = getApplication<Application>()
-                val displayName = withContext(Dispatchers.IO) {
-                    resolveDisplayName(uri) ?: "documento_${System.currentTimeMillis()}.epub"
-                }
-                val format = detectFormat(displayName, context.contentResolver.getType(uri))
-                if (format == null) {
-                    emitFeedback(LumaActionAnimType.ERROR, "Usa EPUB, PDF, DOCX, PPTX, TXT o FB2")
-                    return@launch
-                }
-
-                val newId = withContext(Dispatchers.IO) {
-                    val booksDir = File(context.filesDir, "books").apply { mkdirs() }
-                    val safeName = "${System.currentTimeMillis()}_${displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_")}"
-                    val destFile = File(booksDir, safeName)
-
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(destFile).use { output ->
-                            input.copyTo(output)
-                        }
-                    } ?: error("No se pudo leer el archivo seleccionado.")
-
-                    val parsed = DocumentParser.parse(context, destFile, format)
-                    val units = when (format) {
-                        DocumentFormat.PDF -> parsed.pdfPageCount
-                        DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
-                        else -> parsed.chapters.size
-                    }
-                    val isImagePdf = format == DocumentFormat.PDF && parsed.pdfPageTexts.all { it.length < 30 }
-                    val accentColor = coverColors[(destFile.name.hashCode().and(0x7FFFFFFF)) % coverColors.size]
-
-                    // Automatically extract embedded cover (PDF page 1 / EPUB cover) or synthesize poster artwork
-                    val coverPath = CoverManager.generateOrExtractCover(
-                        context = context,
-                        sourceFile = destFile,
-                        format = format,
-                        title = parsed.title,
-                        author = parsed.author,
-                        accentColorHex = accentColor
+                val imported = importSingleDocumentCore(uri)
+                if (imported.wasDuplicate) {
+                    DynamicIslandEventManager.postOperationStatus(
+                        kind = CriticalEventKind.EXPORT_DONE,
+                        badgeLabel = "YA EN BIBLIOTECA",
+                        title = imported.title,
+                        subtitle = "Abriendo copia existente sin duplicar",
+                        accentColorArgb = 0xFF1D5BFFL,
+                        durationMs = 3600L,
+                        dedupeKey = "luma_external_import"
                     )
-
-                    repository.insertDocument(
-                        DocumentEntity(
-                            title = parsed.title,
-                            author = parsed.author,
-                            format = format.name,
-                            filePath = destFile.absolutePath,
-                            totalUnits = units.coerceAtLeast(1),
-                            currentUnit = 0,
-                            progressPercent = 0f,
-                            totalWords = parsed.totalWords,
-                            coverColorHex = accentColor,
-                            coverImagePath = coverPath,
-                            badgeTag = if (isImagePdf) "Manhwa OCR" else format.label
-                        )
+                } else {
+                    emitFeedback(LumaActionAnimType.IMPORTED)
+                    DynamicIslandEventManager.postOperationStatus(
+                        kind = CriticalEventKind.EXPORT_DONE,
+                        badgeLabel = "IMPORTADO",
+                        title = imported.title,
+                        subtitle = "${imported.format.label} añadido a tu biblioteca",
+                        accentColorArgb = 0xFF10B981L,
+                        durationMs = 3400L,
+                        dedupeKey = "luma_external_import"
                     )
                 }
-                emitFeedback(LumaActionAnimType.IMPORTED)
-                onImportedOpen(newId)
+                onImported(imported)
             } catch (e: Exception) {
-                emitFeedback(LumaActionAnimType.ERROR, e.localizedMessage ?: "Archivo inválido")
+                val msg = e.localizedMessage?.ifBlank { null } ?: "Archivo no soportado o inválido"
+                emitFeedback(LumaActionAnimType.ERROR, msg)
+                DynamicIslandEventManager.postOperationStatus(
+                    kind = CriticalEventKind.CRITICAL_ERROR,
+                    badgeLabel = "NO IMPORTADO",
+                    title = "Archivo rechazado",
+                    subtitle = msg,
+                    accentColorArgb = 0xFFEF4444L,
+                    durationMs = 4600L,
+                    dedupeKey = "luma_external_import"
+                )
+                onError()
             } finally {
                 _isImporting.value = false
             }
         }
     }
+
+    /**
+     * Imports multiple shared documents sequentially on Dispatchers.IO with live progress,
+     * magic-byte validation, security checks, and SHA-256 deduplication.
+     */
+    fun importMultipleDocuments(
+        uris: List<Uri>,
+        onProgress: (index: Int, total: Int, displayName: String) -> Unit,
+        onComplete: (BatchImportSummary) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isImporting.value = true
+            val context = getApplication<Application>()
+            var lastDocId: Long? = null
+            var importedCount = 0
+            var duplicateCount = 0
+            var failedCount = 0
+            var lastError: String? = null
+            val total = uris.size
+
+            try {
+                uris.forEachIndexed { idx, uri ->
+                    val label = withContext(Dispatchers.IO) {
+                        ExternalFileInspector.sanitizeDisplayName(resolveDisplayName(uri), "archivo_${idx + 1}")
+                    }
+                    onProgress(idx + 1, total, label)
+                    DynamicIslandEventManager.postOperationStatus(
+                        kind = CriticalEventKind.EXPORT_PROGRESS,
+                        badgeLabel = "IMPORTANDO ${idx + 1}/$total",
+                        title = label,
+                        subtitle = "Verificando formato y evitando duplicados…",
+                        accentColorArgb = 0xFF1D5BFFL,
+                        durationMs = 8000L,
+                        dedupeKey = "luma_external_import"
+                    )
+                    try {
+                        val res = importSingleDocumentCore(uri)
+                        lastDocId = res.id
+                        if (res.wasDuplicate) duplicateCount++ else importedCount++
+                    } catch (e: Exception) {
+                        failedCount++
+                        lastError = e.localizedMessage ?: "Archivo no compatible"
+                    }
+                }
+
+                val summaryText = buildString {
+                    if (importedCount > 0) append("$importedCount nuevos")
+                    if (duplicateCount > 0) {
+                        if (isNotEmpty()) append(" · ")
+                        append("$duplicateCount ya existentes")
+                    }
+                    if (failedCount > 0) {
+                        if (isNotEmpty()) append(" · ")
+                        append("$failedCount omitidos")
+                    }
+                    if (isEmpty()) append("Sin archivos compatibles")
+                }
+                if (lastDocId != null) {
+                    emitFeedback(LumaActionAnimType.IMPORTED)
+                } else {
+                    emitFeedback(LumaActionAnimType.ERROR, lastError ?: "Ningún archivo era compatible")
+                }
+                DynamicIslandEventManager.postOperationStatus(
+                    kind = if (lastDocId != null) CriticalEventKind.EXPORT_DONE else CriticalEventKind.CRITICAL_ERROR,
+                    badgeLabel = if (lastDocId != null) "IMPORTACIÓN COMPLETA" else "SIN ARCHIVOS VÁLIDOS",
+                    title = summaryText,
+                    subtitle = if (lastDocId != null) "Abriendo el último documento…" else (lastError ?: "Usa PDF, EPUB, DOCX, PPTX, TXT o FB2"),
+                    accentColorArgb = if (lastDocId != null) 0xFF10B981L else 0xFFEF4444L,
+                    durationMs = 4200L,
+                    dedupeKey = "luma_external_import"
+                )
+                onComplete(
+                    BatchImportSummary(
+                        lastDocumentId = lastDocId,
+                        importedCount = importedCount,
+                        duplicateCount = duplicateCount,
+                        failedCount = failedCount,
+                        lastError = lastError
+                    )
+                )
+            } finally {
+                _isImporting.value = false
+            }
+        }
+    }
+
+    /**
+     * Core hardened single-document import pipeline (runs strictly on Dispatchers.IO):
+     * 1. Streams URI with size cap (150 MB), magic-byte classification, zip-bomb guard, & SHA-256 hash.
+     * 2. Deduplicates against existing library documents by SHA-256 content hash.
+     * 3. Parses document, extracts cover, inserts into Room, and records hash in index.
+     */
+    private suspend fun importSingleDocumentCore(uri: Uri): ImportedDocumentResult =
+        withContext(Dispatchers.IO) {
+            val context = getApplication<Application>()
+            val booksDir = File(context.filesDir, "books").apply { mkdirs() }
+            val validated = ExternalFileInspector.copyValidateAndHashDocument(context, uri, booksDir)
+
+            try {
+                // Content-hash duplicate check (zero duplicate disk files!)
+                val existingPairs = repository.getDocumentsForCoverCheck().map { it.id to it.filePath }
+                val duplicateId = ExternalFileInspector.findDuplicateDocumentId(
+                    context = context,
+                    sha256Hex = validated.sha256Hex,
+                    existingDocs = existingPairs
+                )
+                if (duplicateId != null) {
+                    val existingDoc = repository.getDocumentById(duplicateId)
+                    if (existingDoc != null && File(existingDoc.filePath).exists()) {
+                        runCatching { validated.tempFile.delete() }
+                        val existingFmt = DocumentFormat.fromExtension(existingDoc.format) ?: validated.format
+                        return@withContext ImportedDocumentResult(
+                            id = existingDoc.id,
+                            title = existingDoc.title,
+                            filePath = existingDoc.filePath,
+                            format = existingFmt,
+                            wasDuplicate = true
+                        )
+                    }
+                }
+
+                val safeName = "${System.currentTimeMillis()}_${ExternalFileInspector.sanitizeStorageFileName(validated.sanitizedName)}"
+                val finalName = if (safeName.endsWith(".${validated.format.extension}", ignoreCase = true)) {
+                    safeName
+                } else {
+                    "$safeName.${validated.format.extension}"
+                }
+                val destFile = File(booksDir, finalName)
+                if (!validated.tempFile.renameTo(destFile)) {
+                    validated.tempFile.copyTo(destFile, overwrite = true)
+                    validated.tempFile.delete()
+                }
+
+                val format = validated.format
+                val parsed = DocumentParser.parse(context, destFile, format)
+                val units = when (format) {
+                    DocumentFormat.PDF -> parsed.pdfPageCount
+                    DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+                    else -> parsed.chapters.size
+                }
+                val isImagePdf = format == DocumentFormat.PDF && parsed.pdfPageTexts.all { it.length < 30 }
+                val accentColor = coverColors[(destFile.name.hashCode().and(0x7FFFFFFF)) % coverColors.size]
+
+                val coverPath = CoverManager.generateOrExtractCover(
+                    context = context,
+                    sourceFile = destFile,
+                    format = format,
+                    title = parsed.title,
+                    author = parsed.author,
+                    accentColorHex = accentColor
+                )
+
+                val newId = repository.insertDocument(
+                    DocumentEntity(
+                        title = parsed.title,
+                        author = parsed.author,
+                        format = format.name,
+                        filePath = destFile.absolutePath,
+                        totalUnits = units.coerceAtLeast(1),
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = parsed.totalWords,
+                        coverColorHex = accentColor,
+                        coverImagePath = coverPath,
+                        badgeTag = if (isImagePdf) "Manhwa OCR" else format.label
+                    )
+                )
+                ExternalFileInspector.recordDocumentHash(context, validated.sha256Hex, newId)
+                ImportedDocumentResult(
+                    id = newId,
+                    title = parsed.title,
+                    filePath = destFile.absolutePath,
+                    format = format,
+                    wasDuplicate = false
+                )
+            } catch (t: Throwable) {
+                runCatching { validated.tempFile.delete() }
+                throw t
+            }
+        }
+
+    /**
+     * Imports a local PDF file (e.g., an exported Study Notebook PDF) directly into Luma's library.
+     * Runs strictly on Dispatchers.IO and returns the new Room DocumentEntity ID.
+     */
+    suspend fun importLocalPdfFileToLibrary(sourcePdf: File, displayTitle: String): Long? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val context = getApplication<Application>()
+                val booksDir = File(context.filesDir, "books").apply { mkdirs() }
+                val safeName = "${System.currentTimeMillis()}_${displayTitle.replace(Regex("[^a-zA-Z0-9._-]"), "_")}.pdf"
+                val destFile = File(booksDir, safeName)
+                sourcePdf.copyTo(destFile, overwrite = true)
+
+                val parsed = DocumentParser.parse(context, destFile, DocumentFormat.PDF)
+                val units = parsed.pdfPageCount.coerceAtLeast(1)
+                val cleanTitle = displayTitle.trim().ifBlank { parsed.title }
+                val accentColor = coverColors[(destFile.name.hashCode().and(0x7FFFFFFF)) % coverColors.size]
+                val coverPath = CoverManager.generateOrExtractCover(
+                    context = context,
+                    sourceFile = destFile,
+                    format = DocumentFormat.PDF,
+                    title = cleanTitle,
+                    author = "Cuaderno Luma",
+                    accentColorHex = accentColor
+                )
+
+                repository.insertDocument(
+                    DocumentEntity(
+                        title = cleanTitle,
+                        author = "Cuaderno Luma",
+                        format = DocumentFormat.PDF.name,
+                        filePath = destFile.absolutePath,
+                        totalUnits = units,
+                        currentUnit = 0,
+                        progressPercent = 0f,
+                        totalWords = parsed.totalWords,
+                        coverColorHex = accentColor,
+                        coverImagePath = coverPath,
+                        badgeTag = "PDF · Apuntes"
+                    )
+                )
+            }.getOrNull()
+        }
 
     private fun resolveDisplayName(uri: Uri): String? {
         val resolver = getApplication<Application>().contentResolver

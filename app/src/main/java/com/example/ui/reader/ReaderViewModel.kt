@@ -150,6 +150,23 @@ class ReaderViewModel(
         pageBitmaps.evictAll()
     }
 
+    fun flushReadingStateAsync() {
+        val state = _uiState.value
+        val doc = state.document ?: return
+        val parsed = state.parsed
+        val total = when {
+            parsed == null -> doc.totalUnits.coerceAtLeast(1)
+            parsed.format == DocumentFormat.PDF -> parsed.pdfPageCount.coerceAtLeast(1)
+            parsed.format == DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+            else -> parsed.chapters.size.coerceAtLeast(1)
+        }
+        val unit = state.currentUnitIndex.coerceIn(0, (total - 1).coerceAtLeast(0))
+        val progress = if (total <= 1) 1f else ((unit + 1).toFloat() / total.toFloat()).coerceIn(0f, 1f)
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            runCatching { repository.updateProgress(doc.id, unit, progress) }
+        }
+    }
+
     private fun loadDocument() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }

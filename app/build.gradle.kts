@@ -183,6 +183,8 @@ dependencies {
   // implementation(libs.retrofit)
   implementation(libs.mlkit.text.recognition)
   implementation(libs.mlkit.translate)
+  implementation(libs.mlkit.digital.ink.recognition)
+  implementation(libs.mlkit.subject.segmentation)
   implementation(libs.pdfbox.android)
   implementation(libs.jsoup)
   implementation(libs.lottie.compose)

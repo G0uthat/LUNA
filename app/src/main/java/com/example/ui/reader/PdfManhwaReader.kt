@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
@@ -565,19 +566,27 @@ fun PdfManhwaReader(
                             PageAnimationMode.BOOK_CURL -> Modifier
                                 .graphicsLayer {
                                     val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                                    val absOffset = abs(pageOffset).coerceIn(0f, 1f)
+                                    val absOffset = abs(pageOffset).coerceIn(0f, 1.5f)
                                     cameraDistance = 14f * density
-                                    if (pageOffset >= 0f) {
+                                    if (absOffset >= 0.995f) {
+                                        // Offscreen beyondViewport page: hide completely so 3D perspective never bleeds onto active page
+                                        rotationY = 0f
+                                        alpha = 0f
+                                    } else if (pageOffset > 0f) {
                                         transformOrigin = TransformOrigin(0f, 0.5f)
                                         rotationY = -pageOffset * 48f
-                                        alpha = 1f - absOffset * 0.18f
+                                        val tailFade = ((1f - absOffset) / 0.18f).coerceIn(0f, 1f)
+                                        alpha = (1f - absOffset * 0.18f) * tailFade
+                                    } else {
+                                        rotationY = 0f
+                                        alpha = 1f
                                     }
                                 }
                                 .drawWithContent {
                                     drawContent()
                                     val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
                                     val curlStrength = abs(pageOffset).coerceIn(0f, 1f)
-                                    if (curlStrength > 0.01f) {
+                                    if (curlStrength in 0.01f..0.99f) {
                                         val shadowWidth = size.width * 0.16f * curlStrength
                                         drawRect(
                                             brush = Brush.horizontalGradient(
@@ -594,35 +603,57 @@ fun PdfManhwaReader(
 
                             PageAnimationMode.DEPTH_CARD -> Modifier.graphicsLayer {
                                 val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                                val absOffset = abs(pageOffset).coerceIn(0f, 1f)
-                                if (pageOffset < 0f) {
+                                val absOffset = abs(pageOffset).coerceIn(0f, 1.5f)
+                                if (absOffset >= 0.995f) {
+                                    alpha = 0f
+                                    translationX = 0f
+                                } else if (pageOffset < 0f) {
                                     val scale = 0.88f + (1f - absOffset) * 0.12f
                                     scaleX = scale
                                     scaleY = scale
                                     alpha = 0.5f + (1f - absOffset) * 0.5f
                                     translationX = -pageOffset * size.width * 0.7f
+                                } else {
+                                    alpha = 1f
+                                    translationX = 0f
                                 }
                             }
 
                             PageAnimationMode.FADE -> Modifier.graphicsLayer {
                                 val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                                translationX = pageOffset * size.width
-                                alpha = (1f - abs(pageOffset)).coerceIn(0f, 1f)
+                                val absOffset = abs(pageOffset)
+                                if (absOffset >= 0.995f) {
+                                    translationX = 0f
+                                    alpha = 0f
+                                } else {
+                                    translationX = pageOffset * size.width
+                                    alpha = (1f - absOffset).coerceIn(0f, 1f)
+                                }
                             }
 
                             PageAnimationMode.E_INK -> Modifier.graphicsLayer {
                                 val pageOffset = (pagerState.currentPage - pageIdx) + pagerState.currentPageOffsetFraction
-                                translationX = pageOffset * size.width
-                                alpha = if (abs(pageOffset) < 0.5f) 1f else 0f
+                                val absOffset = abs(pageOffset)
+                                if (absOffset >= 0.5f) {
+                                    translationX = 0f
+                                    alpha = 0f
+                                } else {
+                                    translationX = pageOffset * size.width
+                                    alpha = 1f
+                                }
                             }
 
                             else -> Modifier
                         }
                     }
 
+                    val pageZoom = if (pageIdx == pagerState.currentPage) zoomScale else 1f
+                    val pagePan = if (pageIdx == pagerState.currentPage) panOffset else Offset.Zero
+
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxSize()
+                            .clipToBounds()
                             .then(animMod)
                     ) {
                         val viewportHeight = maxHeight
@@ -660,8 +691,8 @@ fun PdfManhwaReader(
                                         showTranslatedOverlay = showTranslatedOverlay,
                                         applyNightFilter = applyPdfNightFilter,
                                         strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
-                                        zoomScale = zoomScale,
-                                        panOffset = panOffset,
+                                        zoomScale = pageZoom,
+                                        panOffset = pagePan,
                                         isDrawingMode = canDrawOnCanvas,
                                         activeTool = activeTool,
                                         activeColorArgb = activeColorArgb,
@@ -693,8 +724,8 @@ fun PdfManhwaReader(
                                 showTranslatedOverlay = showTranslatedOverlay,
                                 applyNightFilter = applyPdfNightFilter,
                                 strokes = drawingsByLocation["pdf-page-$pageIdx"].orEmpty(),
-                                zoomScale = zoomScale,
-                                panOffset = panOffset,
+                                zoomScale = pageZoom,
+                                panOffset = pagePan,
                                 isDrawingMode = canDrawOnCanvas,
                                 activeTool = activeTool,
                                 activeColorArgb = activeColorArgb,

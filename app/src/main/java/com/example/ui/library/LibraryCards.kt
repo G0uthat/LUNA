@@ -77,6 +77,13 @@ internal object CoverBitmapCache {
         com.example.engine.MemoryPressureManager.registerTrimmer("cover_bitmap_cache") { level ->
             com.example.engine.MemoryPressureManager.trimLruCache(cache, level)
         }
+        com.example.engine.LumaDiskCacheManager.registerRamCacheClearHook {
+            clear()
+        }
+    }
+
+    fun clear() {
+        cache.evictAll()
     }
 
     fun get(path: String?): Bitmap? {
@@ -91,7 +98,8 @@ internal object CoverBitmapCache {
 
     fun preload(path: String?) {
         if (path.isNullOrBlank() || get(path) != null) return
-        val file = File(path)
+        val resolvedPath = com.example.engine.CoverManager.resolveGridCoverPath(path) ?: return
+        val file = File(resolvedPath)
         if (!file.exists()) return
         runCatching {
             BitmapDecodeUtils.decodeSampledFile(
@@ -105,9 +113,12 @@ internal object CoverBitmapCache {
 }
 
 @Composable
-internal fun rememberDecodedCoverBitmap(coverPath: String?): Bitmap? {
+internal fun rememberDecodedCoverBitmap(
+    coverPath: String?,
+    preferThumbnail: Boolean = true
+): Bitmap? {
     val cached = remember(coverPath) { CoverBitmapCache.get(coverPath) }
-    val bitmap by produceState<Bitmap?>(initialValue = cached, key1 = coverPath) {
+    val bitmap by produceState<Bitmap?>(initialValue = cached, key1 = coverPath, key2 = preferThumbnail) {
         if (cached != null) {
             value = cached
             return@produceState
@@ -117,7 +128,12 @@ internal fun rememberDecodedCoverBitmap(coverPath: String?): Bitmap? {
         } else {
             withContext(Dispatchers.IO) {
                 runCatching {
-                    val file = File(coverPath)
+                    val effectivePath = if (preferThumbnail) {
+                        com.example.engine.CoverManager.resolveGridCoverPath(coverPath) ?: coverPath
+                    } else {
+                        coverPath
+                    }
+                    val file = File(effectivePath)
                     if (file.exists()) {
                         BitmapDecodeUtils.decodeSampledFile(
                             path = file.absolutePath,

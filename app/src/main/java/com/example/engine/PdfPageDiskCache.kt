@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 object PdfPageDiskCache {
 
-    private const val MAX_CACHE_BYTES = 1536L * 1024L * 1024L // 1.5 GB max LRU budget
     private const val MAX_CACHE_FILES = 4000
     private const val JPEG_QUALITY = 92
 
@@ -73,9 +72,10 @@ object PdfPageDiskCache {
             if (!tmp.renameTo(target)) {
                 tmp.delete()
             }
-            if (writesSinceSweep.incrementAndGet() >= 48) {
+            if (writesSinceSweep.incrementAndGet() >= 24) {
                 writesSinceSweep.set(0)
                 evictIfNeeded(dir)
+                LumaDiskCacheManager.enforceGlobalBudget(context)
             }
         }.onFailure {
             runCatching { tmp.delete() }
@@ -106,13 +106,14 @@ object PdfPageDiskCache {
     }
 
     private fun evictIfNeeded(dir: File) {
+        val maxBytes = LumaDiskCacheManager.pdfPageCacheMaxBytes()
         val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".jpg") } ?: return
         var totalBytes = files.sumOf { it.length() }
-        if (files.size <= MAX_CACHE_FILES && totalBytes <= MAX_CACHE_BYTES) return
+        if (files.size <= MAX_CACHE_FILES && totalBytes <= maxBytes) return
         val sortedOldestFirst = files.sortedBy { it.lastModified() }
         var remaining = files.size
         for (f in sortedOldestFirst) {
-            if (remaining <= MAX_CACHE_FILES && totalBytes <= MAX_CACHE_BYTES) break
+            if (remaining <= MAX_CACHE_FILES && totalBytes <= maxBytes) break
             val len = f.length()
             if (f.delete()) {
                 totalBytes -= len

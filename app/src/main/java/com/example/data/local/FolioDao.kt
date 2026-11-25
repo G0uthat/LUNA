@@ -148,6 +148,15 @@ interface FolioDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertOcrPage(entity: OcrPageCacheEntity)
 
+    @Query("SELECT COALESCE(SUM(LENGTH(ocrJson)), 0) FROM ocr_page_cache")
+    suspend fun getOcrCacheBytes(): Long
+
+    @Query("SELECT COUNT(*) FROM ocr_page_cache")
+    suspend fun getOcrCacheCount(): Int
+
+    @Query("DELETE FROM ocr_page_cache")
+    suspend fun clearAllOcrCache()
+
     // Dictionary Sources
     @Query("SELECT id, name, urlTemplate, isWikipediaApi, isEnabled, sortOrder FROM dictionary_sources ORDER BY sortOrder ASC, id ASC")
     fun observeDictionarySources(): Flow<List<DictionarySourceEntity>>

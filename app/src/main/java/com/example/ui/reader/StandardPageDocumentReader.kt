@@ -67,6 +67,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -381,9 +382,12 @@ fun StandardPageDocumentReader(
                     )
             ) { idx ->
                 val sheet = sheets[idx]
+                val sheetZoom = if (idx == pagerState.currentPage) zoomScale else 1f
+                val sheetPan = if (idx == pagerState.currentPage) panOffset else Offset.Zero
                 BoxWithConstraints(
                     modifier = Modifier
                         .fillMaxSize()
+                        .clipToBounds()
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -421,8 +425,8 @@ fun StandardPageDocumentReader(
                                     formatBadge = activeFormatLabel,
                                     prefs = prefs,
                                     strokes = drawingsByLocation[sheet.locationKey].orEmpty(),
-                                    zoomScale = zoomScale,
-                                    panOffset = panOffset,
+                                    zoomScale = sheetZoom,
+                                    panOffset = sheetPan,
                                     canDraw = canInteractWithCanvas,
                                     canPanZoom = canPanOrZoom,
                                     activeTool = activeTool,
@@ -451,8 +455,8 @@ fun StandardPageDocumentReader(
                             formatBadge = activeFormatLabel,
                             prefs = prefs,
                             strokes = drawingsByLocation[sheet.locationKey].orEmpty(),
-                            zoomScale = zoomScale,
-                            panOffset = panOffset,
+                            zoomScale = sheetZoom,
+                            panOffset = sheetPan,
                             canDraw = canInteractWithCanvas,
                             canPanZoom = canPanOrZoom,
                             activeTool = activeTool,

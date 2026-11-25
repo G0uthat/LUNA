@@ -94,6 +94,7 @@ class PreferencesRepository private constructor(private val appContext: Context)
         val AUTO_HIDE_CHROME_ENABLED = booleanPreferencesKey("auto_hide_chrome_enabled")
         val AUTO_HIDE_CHROME_DELAY_SEC = intPreferencesKey("auto_hide_chrome_delay_sec")
         val AUTO_HIDE_FADE_SPEED_MS = intPreferencesKey("auto_hide_fade_speed_ms")
+        val DISK_CACHE_LIMIT_MB = intPreferencesKey("disk_cache_limit_mb")
         val HAS_SEEN_GUIDE = booleanPreferencesKey("has_seen_guide")
         val HAS_COMPLETED_ONBOARDING = booleanPreferencesKey("has_completed_onboarding")
         val SEEDED_SAMPLE_VERSION = intPreferencesKey("seeded_sample_version")
@@ -121,6 +122,7 @@ class PreferencesRepository private constructor(private val appContext: Context)
             appContext.readerDataStore.data.collect { prefs ->
                 val mapped = mapFromDataStore(prefs)
                 lastPersisted = mapped
+                com.example.engine.LumaDiskCacheManager.setLimitMb(mapped.diskCacheLimitMb)
                 // Do not clobber in-flight optimistic slider drags before the debounced flush completes
                 if (!hasPendingDebouncedWrite) {
                     _preferences.value = mapped
@@ -161,8 +163,15 @@ class PreferencesRepository private constructor(private val appContext: Context)
         } else {
             debounceFlushJob?.cancel()
             hasPendingDebouncedWrite = false
+            val limitChanged = updated.diskCacheLimitMb != previous.diskCacheLimitMb
+            if (limitChanged) {
+                com.example.engine.LumaDiskCacheManager.setLimitMb(updated.diskCacheLimitMb)
+            }
             ioScope.launch {
                 persistDiff(updated)
+                if (limitChanged) {
+                    com.example.engine.LumaDiskCacheManager.enforceGlobalBudget(appContext)
+                }
             }
         }
     }
@@ -228,7 +237,11 @@ class PreferencesRepository private constructor(private val appContext: Context)
         nightEndHour = raw.nightEndHour.coerceIn(0, 23),
         nightTextDimming = raw.nightTextDimming.coerceIn(0f, 0.38f),
         autoHideReaderChromeDelaySec = raw.autoHideReaderChromeDelaySec.coerceIn(3, 60),
-        autoHideFadeSpeedMs = raw.autoHideFadeSpeedMs.coerceIn(80, 600)
+        autoHideFadeSpeedMs = raw.autoHideFadeSpeedMs.coerceIn(80, 600),
+        diskCacheLimitMb = raw.diskCacheLimitMb.coerceIn(
+            com.example.engine.LumaDiskCacheManager.MIN_LIMIT_MB,
+            com.example.engine.LumaDiskCacheManager.MAX_LIMIT_MB
+        )
     )
 
     private fun mapFromDataStore(prefs: Preferences): ReaderPreferences {
@@ -276,6 +289,11 @@ class PreferencesRepository private constructor(private val appContext: Context)
             autoHideReaderChromeEnabled = prefs[Keys.AUTO_HIDE_CHROME_ENABLED] ?: true,
             autoHideReaderChromeDelaySec = (prefs[Keys.AUTO_HIDE_CHROME_DELAY_SEC] ?: 8).coerceIn(3, 60),
             autoHideFadeSpeedMs = (prefs[Keys.AUTO_HIDE_FADE_SPEED_MS] ?: 220).coerceIn(80, 600),
+            diskCacheLimitMb = (prefs[Keys.DISK_CACHE_LIMIT_MB] ?: com.example.engine.LumaDiskCacheManager.DEFAULT_LIMIT_MB)
+                .coerceIn(
+                    com.example.engine.LumaDiskCacheManager.MIN_LIMIT_MB,
+                    com.example.engine.LumaDiskCacheManager.MAX_LIMIT_MB
+                ),
             hasSeenGuide = prefs[Keys.HAS_SEEN_GUIDE] ?: false,
             hasCompletedOnboarding = prefs[Keys.HAS_COMPLETED_ONBOARDING] ?: false,
             seededSampleVersion = prefs[Keys.SEEDED_SAMPLE_VERSION] ?: 0
@@ -333,6 +351,9 @@ class PreferencesRepository private constructor(private val appContext: Context)
         }
         if (next.autoHideFadeSpeedMs != prev.autoHideFadeSpeedMs) {
             prefs[Keys.AUTO_HIDE_FADE_SPEED_MS] = next.autoHideFadeSpeedMs
+        }
+        if (next.diskCacheLimitMb != prev.diskCacheLimitMb) {
+            prefs[Keys.DISK_CACHE_LIMIT_MB] = next.diskCacheLimitMb
         }
         if (next.hasSeenGuide != prev.hasSeenGuide) prefs[Keys.HAS_SEEN_GUIDE] = next.hasSeenGuide
         if (next.hasCompletedOnboarding != prev.hasCompletedOnboarding) prefs[Keys.HAS_COMPLETED_ONBOARDING] = next.hasCompletedOnboarding

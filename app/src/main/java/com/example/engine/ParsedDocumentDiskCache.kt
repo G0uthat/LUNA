@@ -38,7 +38,6 @@ object ParsedDocumentDiskCache {
     private const val MAGIC = 0x4C554D41 // "LUMA"
     private const val CACHE_VERSION = 1
     private const val MAX_CACHE_FILES = 250
-    private const val MAX_CACHE_BYTES = 512L * 1024L * 1024L
 
     private const val ELEM_SHAPE = 1
     private const val ELEM_PICTURE = 2
@@ -52,6 +51,12 @@ object ParsedDocumentDiskCache {
             synchronized(hotMemoryCache) {
                 MemoryPressureManager.trimLruCache(hotMemoryCache, level)
             }
+        }
+    }
+
+    fun clearMemoryCache() {
+        synchronized(hotMemoryCache) {
+            hotMemoryCache.evictAll()
         }
     }
 
@@ -413,6 +418,7 @@ object ParsedDocumentDiskCache {
                 temp.delete()
             }
             evictIfNeeded(dir)
+            LumaDiskCacheManager.enforceGlobalBudget(context)
         }.onFailure {
             runCatching { temp.delete() }
         }
@@ -433,13 +439,14 @@ object ParsedDocumentDiskCache {
     }
 
     private fun evictIfNeeded(dir: File) {
+        val maxBytes = LumaDiskCacheManager.parsedCacheMaxBytes()
         val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".bin") } ?: return
         var totalBytes = files.sumOf { it.length() }
-        if (files.size <= MAX_CACHE_FILES && totalBytes <= MAX_CACHE_BYTES) return
+        if (files.size <= MAX_CACHE_FILES && totalBytes <= maxBytes) return
         val sortedOldestFirst = files.sortedBy { it.lastModified() }
         var remainingCount = files.size
         for (f in sortedOldestFirst) {
-            if (remainingCount <= MAX_CACHE_FILES && totalBytes <= MAX_CACHE_BYTES) break
+            if (remainingCount <= MAX_CACHE_FILES && totalBytes <= maxBytes) break
             val len = f.length()
             if (f.delete()) {
                 totalBytes -= len
