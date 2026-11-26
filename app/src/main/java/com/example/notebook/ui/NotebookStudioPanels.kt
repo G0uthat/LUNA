@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.Colorize
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
@@ -955,11 +956,14 @@ fun NotebookStudioOverflowMenuDialog(
     lockAspectRatio: Boolean,
     showPageStrip: Boolean,
     copiedObjectCount: Int,
+    autoHideChromeEnabled: Boolean = false,
+    onToggleAutoHideChrome: ((Boolean) -> Unit)? = null,
     onToggleStylusOnly: (Boolean) -> Unit,
     onToggleLockAspect: (Boolean) -> Unit,
     onTogglePageStrip: (Boolean) -> Unit,
     onOpenBackgroundAndSize: () -> Unit,
     onOpenStarterTemplates: () -> Unit = {},
+    onOpenCloudAccount: (() -> Unit)? = null,
     onPasteCopied: () -> Unit,
     onClearCurrentPage: () -> Unit,
     onDismiss: () -> Unit
@@ -977,6 +981,17 @@ fun NotebookStudioOverflowMenuDialog(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("Opciones del estudio", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = palette.ink)
+
+            if (onToggleAutoHideChrome != null) {
+                MenuSwitchRow(
+                    icon = Icons.Rounded.VisibilityOff,
+                    title = "Ocultado inmersivo",
+                    subtitle = "Oculta barra superior y herramientas tras un tiempo",
+                    checked = autoHideChromeEnabled,
+                    onCheckedChange = onToggleAutoHideChrome,
+                    testTag = "nb_toggle_auto_hide_chrome"
+                )
+            }
 
             MenuSwitchRow(
                 icon = Icons.Rounded.Draw,
@@ -1027,6 +1042,20 @@ fun NotebookStudioOverflowMenuDialog(
                 Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Plantillas de arranque (Cornell, Mapa…)")
+            }
+
+            if (onOpenCloudAccount != null) {
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onOpenCloudAccount()
+                    },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("nb_menu_cloud_account_btn")
+                ) {
+                    Icon(Icons.Rounded.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Mi cuenta y sincronización")
+                }
             }
 
             if (copiedObjectCount > 0) {

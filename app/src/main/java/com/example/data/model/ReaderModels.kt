@@ -203,6 +203,11 @@ data class ReaderPreferences(
     val autoHideReaderChromeEnabled: Boolean = true,
     val autoHideReaderChromeDelaySec: Int = 8,
     val autoHideFadeSpeedMs: Int = 220,
+    // Auto-hide immersive notebook menus (especially useful on compact landscape phones)
+    val autoHideNotebookChromeEnabled: Boolean = true,
+    val autoHideNotebookChromeLandscapeOnly: Boolean = true,
+    val autoHideNotebookChromeDelaySec: Int = 6,
+    val autoHideNotebookFadeSpeedMs: Int = 220,
     val diskCacheLimitMb: Int = 500,
     val hasSeenGuide: Boolean = false,
     val hasCompletedOnboarding: Boolean = false,

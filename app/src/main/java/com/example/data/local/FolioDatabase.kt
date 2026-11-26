@@ -6,6 +6,10 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.drive.DriveDao
+import com.example.drive.DriveFileEntity
+import com.example.drive.DriveSourceEntity
+import com.example.drive.DriveSyncTaskEntity
 import com.example.notebook.data.NotebookDao
 import com.example.notebook.data.NotebookEntity
 import com.example.notebook.data.NotebookPageEntity
@@ -21,14 +25,18 @@ import com.example.notebook.data.NotebookPageEntity
         OcrPageCacheEntity::class,
         DictionarySourceEntity::class,
         NotebookEntity::class,
-        NotebookPageEntity::class
+        NotebookPageEntity::class,
+        DriveSourceEntity::class,
+        DriveFileEntity::class,
+        DriveSyncTaskEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class FolioDatabase : RoomDatabase() {
     abstract fun folioDao(): FolioDao
     abstract fun notebookDao(): NotebookDao
+    abstract fun driveDao(): DriveDao
 
     companion object {
         @Volatile
@@ -161,6 +169,82 @@ abstract class FolioDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Non-destructive migration v5 -> v6: creates Google Drive BYOC source, file index,
+         * and offline sync queue tables without touching any existing documents or notebooks.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `drive_sources` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `folderId` TEXT NOT NULL,
+                        `folderLink` TEXT NOT NULL,
+                        `accentColorHex` INTEGER NOT NULL,
+                        `enabled` INTEGER NOT NULL,
+                        `isDefaultSaveTarget` INTEGER NOT NULL,
+                        `lastSyncedAt` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_drive_sources_folderId` ON `drive_sources` (`folderId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_sources_isDefaultSaveTarget` ON `drive_sources` (`isDefaultSaveTarget`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `drive_files` (
+                        `driveFileId` TEXT NOT NULL,
+                        `sourceId` INTEGER NOT NULL,
+                        `parentFolderId` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `mimeType` TEXT NOT NULL,
+                        `sizeBytes` INTEGER NOT NULL,
+                        `modifiedTimeMs` INTEGER NOT NULL,
+                        `md5Checksum` TEXT NOT NULL,
+                        `thumbnailLink` TEXT NOT NULL,
+                        `localFilePath` TEXT NOT NULL,
+                        `localThumbnailPath` TEXT NOT NULL,
+                        `linkedDocumentId` INTEGER NOT NULL,
+                        `linkedNotebookId` INTEGER NOT NULL,
+                        `syncStatus` TEXT NOT NULL,
+                        `localModifiedAt` INTEGER NOT NULL,
+                        `lastError` TEXT NOT NULL,
+                        PRIMARY KEY(`driveFileId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_files_sourceId_parentFolderId` ON `drive_files` (`sourceId`, `parentFolderId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_files_linkedDocumentId` ON `drive_files` (`linkedDocumentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_files_linkedNotebookId` ON `drive_files` (`linkedNotebookId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_files_syncStatus` ON `drive_files` (`syncStatus`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `drive_sync_queue` (
+                        `taskId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `action` TEXT NOT NULL,
+                        `driveFileId` TEXT NOT NULL,
+                        `sourceId` INTEGER NOT NULL,
+                        `targetFolderId` TEXT NOT NULL,
+                        `previousFolderId` TEXT NOT NULL,
+                        `localFilePath` TEXT NOT NULL,
+                        `localDocumentId` INTEGER NOT NULL,
+                        `localNotebookId` INTEGER NOT NULL,
+                        `displayName` TEXT NOT NULL,
+                        `mimeType` TEXT NOT NULL,
+                        `retryCount` INTEGER NOT NULL,
+                        `lastError` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_drive_sync_queue_createdAt` ON `drive_sync_queue` (`createdAt`)")
+            }
+        }
+
         private fun addColumnIfMissing(
             db: SupportSQLiteDatabase,
             tableName: String,
@@ -190,7 +274,7 @@ abstract class FolioDatabase : RoomDatabase() {
                     "luma_reader.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Palette
@@ -58,6 +59,8 @@ import com.example.data.model.IslandNotificationFilterMode
 import com.example.data.model.ReaderMenuStyle
 import com.example.data.model.ReaderPreferences
 import com.example.data.model.TargetFpsOption
+import com.example.drive.DriveRepository
+import com.example.drive.DriveSourcesSettingsContent
 import com.example.engine.DisplayRefreshRateController
 import com.example.engine.DynamicIslandEventManager
 import com.example.engine.SystemMediaController
@@ -71,10 +74,16 @@ private val SettingsCardShape18 = RoundedCornerShape(18.dp)
 private val SettingsCardShape16 = RoundedCornerShape(16.dp)
 private val SettingsChipShape14 = RoundedCornerShape(14.dp)
 
+const val SETTINGS_TAB_GENERAL = 0
+const val SETTINGS_TAB_DICT_AI = 1
+const val SETTINGS_TAB_CREDITS = 2
+const val SETTINGS_TAB_DRIVE_SOURCES = 3
+
 /**
  * Centralized App Configuration sheet (reachable from Library settings gear & discreet Reader gear):
  * - Tab 0: General & Visual (7 Themes incl. Azul Marino, Device System Font toggle, Menu Style
  *          [Marcapáginas arrastrable / Isla dinámica / Clásico], Dock Size scale for Tablets, Auto-Covers)
+ * - Tab 3: Fuentes (Google Drive BYOC — Client ID/API Key, OAuth 2.0, carpetas, auto-sync, guía paso a paso)
  * - Tab 1: Diccionario e IA (Google Traductor vs User BYOK AI API Key + custom {palabra} sources)
  * - Tab 2: Créditos, comunidad Discord y actualizaciones en GitHub.
  */
@@ -103,7 +112,7 @@ fun AppSettingsSheet(
     ) { dismissAnimated ->
         LumaDropdownHeader(
             title = "Ajustes",
-            subtitle = "Tema, lectura, diccionario y créditos",
+            subtitle = "Tema, fuentes de Drive, lectura y diccionario",
             leadingIcon = Icons.Rounded.Settings,
             onDismiss = dismissAnimated,
             closeTestTag = "app_settings_close"
@@ -162,7 +171,7 @@ fun AppSettingsContent(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Segmented Tabs (horizontally scrollable so all 3 fit comfortably on compact screens)
+        // Segmented Tabs (horizontally scrollable so all 4 fit comfortably on compact screens)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -172,27 +181,37 @@ fun AppSettingsContent(
             TactileChip(
                 label = "Diseño y Menú",
                 icon = Icons.Rounded.Palette,
-                selected = activeTab == 0,
-                onClick = { onTabChange(0) },
+                selected = activeTab == SETTINGS_TAB_GENERAL,
+                onClick = { onTabChange(SETTINGS_TAB_GENERAL) },
                 modifier = Modifier.testTag("settings_tab_general")
+            )
+            TactileChip(
+                label = "Fuentes",
+                icon = Icons.Rounded.CloudQueue,
+                selected = activeTab == SETTINGS_TAB_DRIVE_SOURCES,
+                onClick = { onTabChange(SETTINGS_TAB_DRIVE_SOURCES) },
+                modifier = Modifier.testTag("settings_tab_drive_sources")
             )
             TactileChip(
                 label = "Diccionario e IA",
                 icon = Icons.Rounded.MenuBook,
-                selected = activeTab == 1,
-                onClick = { onTabChange(1) },
+                selected = activeTab == SETTINGS_TAB_DICT_AI,
+                onClick = { onTabChange(SETTINGS_TAB_DICT_AI) },
                 modifier = Modifier.testTag("settings_tab_dict_ai")
             )
             TactileChip(
                 label = "Créditos",
                 icon = Icons.Rounded.Favorite,
-                selected = activeTab == 2,
-                onClick = { onTabChange(2) },
+                selected = activeTab == SETTINGS_TAB_CREDITS,
+                onClick = { onTabChange(SETTINGS_TAB_CREDITS) },
                 modifier = Modifier.testTag("settings_tab_credits")
             )
         }
 
-        if (activeTab == 0) {
+        if (activeTab == SETTINGS_TAB_DRIVE_SOURCES) {
+            val driveRepo = remember(context) { DriveRepository.getInstance(context) }
+            DriveSourcesSettingsContent(driveRepo = driveRepo)
+        } else if (activeTab == SETTINGS_TAB_GENERAL) {
             // 1. Soft Visual Themes, Warm Blue-Light Shield & Configurable Night Reading Mode
             SoftThemeAndNightModePanel(
                 prefs = prefs,
@@ -539,6 +558,172 @@ fun AppSettingsContent(
                                     }
                                     .padding(vertical = 8.dp)
                                     .testTag("auto_hide_fade_${ms}ms"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) palette.onAccent else palette.ink,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5.6 Immersive Auto-Hide Chrome for Study Notebooks (auto-fades top bar & tool dock)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(SettingsCardShape18)
+                    .background(palette.surfaceAlt.copy(alpha = 0.65f))
+                    .border(1.dp, palette.border, SettingsCardShape18)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Ocultado inmersivo en cuadernos",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.ink
+                        )
+                        Text(
+                            text = "Oculta la barra superior y herramientas tras un tiempo sin usar los menús; toca la pestaña superior para mostrarlos",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.inkMuted
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = prefs.autoHideNotebookChromeEnabled,
+                        onCheckedChange = { enabled ->
+                            onUpdatePrefs { it.copy(autoHideNotebookChromeEnabled = enabled) }
+                        },
+                        colors = SwitchDefaults.colors(checkedTrackColor = palette.accent),
+                        modifier = Modifier.testTag("nb_auto_hide_chrome_switch")
+                    )
+                }
+
+                if (prefs.autoHideNotebookChromeEnabled) {
+                    Text(
+                        text = "Cuándo ocultar automáticamente",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    val scopeOptions = listOf(
+                        true to "Solo en horizontal",
+                        false to "Siempre"
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for ((landscapeOnly, label) in scopeOptions) {
+                            val selected = prefs.autoHideNotebookChromeLandscapeOnly == landscapeOnly
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(SettingsChipShape14)
+                                    .background(if (selected) palette.accent else palette.surface)
+                                    .border(
+                                        width = if (selected) 0.dp else 1.dp,
+                                        color = if (selected) palette.accent else palette.border,
+                                        shape = SettingsChipShape14
+                                    )
+                                    .clickable {
+                                        onUpdatePrefs { it.copy(autoHideNotebookChromeLandscapeOnly = landscapeOnly) }
+                                    }
+                                    .padding(vertical = 8.dp)
+                                    .testTag(if (landscapeOnly) "nb_auto_hide_scope_landscape" else "nb_auto_hide_scope_always"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) palette.onAccent else palette.ink,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Tiempo antes de ocultar",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    val nbDelayOptions = listOf(3 to "3s", 6 to "6s", 10 to "10s", 15 to "15s")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for ((sec, label) in nbDelayOptions) {
+                            val selected = prefs.autoHideNotebookChromeDelaySec == sec
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(SettingsChipShape14)
+                                    .background(if (selected) palette.accent else palette.surface)
+                                    .border(
+                                        width = if (selected) 0.dp else 1.dp,
+                                        color = if (selected) palette.accent else palette.border,
+                                        shape = SettingsChipShape14
+                                    )
+                                    .clickable {
+                                        onUpdatePrefs { it.copy(autoHideNotebookChromeDelaySec = sec) }
+                                    }
+                                    .padding(vertical = 8.dp)
+                                    .testTag("nb_auto_hide_delay_${sec}s"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) palette.onAccent else palette.ink
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Rapidez del degradado",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    val nbFadeOptions = listOf(120 to "Muy rápido", 220 to "Rápido", 380 to "Suave")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for ((ms, label) in nbFadeOptions) {
+                            val selected = prefs.autoHideNotebookFadeSpeedMs == ms
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(SettingsChipShape14)
+                                    .background(if (selected) palette.accent else palette.surface)
+                                    .border(
+                                        width = if (selected) 0.dp else 1.dp,
+                                        color = if (selected) palette.accent else palette.border,
+                                        shape = SettingsChipShape14
+                                    )
+                                    .clickable {
+                                        onUpdatePrefs { it.copy(autoHideNotebookFadeSpeedMs = ms) }
+                                    }
+                                    .padding(vertical = 8.dp)
+                                    .testTag("nb_auto_hide_fade_${ms}ms"),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(

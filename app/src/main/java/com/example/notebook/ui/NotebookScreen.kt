@@ -5,8 +5,14 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +39,7 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.IosShare
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Remove
@@ -44,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -72,6 +80,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.core.cloud.CloudAccountManager
+import com.example.core.cloud.CloudMyAccountDialog
 import com.example.notebook.data.NotebookBackgroundType
 import com.example.notebook.data.NotebookPageTemplate
 import com.example.notebook.engine.NotebookExportFormat
@@ -99,10 +109,17 @@ import kotlin.math.roundToInt
 fun NotebookScreen(
     viewModel: NotebookViewModel,
     onBackToLibrary: () -> Unit,
-    onImportPdfToLibrary: suspend (File, String) -> Long? = { _, _ -> null }
+    onImportPdfToLibrary: suspend (File, String) -> Long? = { _, _ -> null },
+    autoHideChromeEnabled: Boolean = true,
+    autoHideLandscapeOnly: Boolean = true,
+    autoHideDelaySec: Int = 6,
+    autoHideFadeSpeedMs: Int = 220,
+    onToggleAutoHideChrome: ((Boolean) -> Unit)? = null
 ) {
     val palette = LocalFolioPalette.current
     val context = LocalContext.current
+    val cloudAccountManager = remember(context) { CloudAccountManager.getInstance(context) }
+    var showCloudAccountDialog by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
@@ -265,6 +282,81 @@ fun NotebookScreen(
     ) {
         val widthClass = NotebookWindowWidthClass.fromWidth(maxWidth)
         val isWide = widthClass.isWide
+        val isCompactLandscape = maxHeight < 520.dp && maxWidth > maxHeight
+        val effectiveAutoHide = autoHideChromeEnabled && (!autoHideLandscapeOnly || isCompactLandscape)
+        val fadeMs = autoHideFadeSpeedMs.coerceIn(80, 600)
+
+        var isChromeVisible by rememberSaveable { mutableStateOf(true) }
+        var chromeInteractionNonce by remember { mutableIntStateOf(0) }
+        val bumpChromeTimer: () -> Unit = {
+            isChromeVisible = true
+            chromeInteractionNonce++
+        }
+
+        val hasBlockingOverlay = showPropertiesPanel ||
+            showPageStrip ||
+            showColorPicker ||
+            showLayersDialog ||
+            showOverflowMenu ||
+            showTitleEditDialog ||
+            showBgAndSizeDialog ||
+            showExportDialog ||
+            showStarterTemplatesDialog ||
+            editingTextBox != null ||
+            editingCallout != null ||
+            editingImage != null ||
+            editingTable != null
+
+        LaunchedEffect(effectiveAutoHide) {
+            if (!effectiveAutoHide) {
+                isChromeVisible = true
+            }
+        }
+
+        LaunchedEffect(
+            effectiveAutoHide,
+            isChromeVisible,
+            chromeInteractionNonce,
+            hasBlockingOverlay,
+            autoHideDelaySec
+        ) {
+            if (effectiveAutoHide && isChromeVisible && !hasBlockingOverlay) {
+                delay(autoHideDelaySec.coerceIn(3, 30) * 1000L)
+                isChromeVisible = false
+            }
+        }
+
+        val canvasTopPad by animateDpAsState(
+            targetValue = if (isChromeVisible) {
+                if (isCompactLandscape) 50.dp else 66.dp
+            } else {
+                4.dp
+            },
+            animationSpec = tween(durationMillis = fadeMs),
+            label = "nb_canvas_top_pad"
+        )
+        val canvasBottomPad by animateDpAsState(
+            targetValue = if (isChromeVisible) {
+                if (isWide) {
+                    if (isCompactLandscape) 6.dp else 12.dp
+                } else {
+                    if (isCompactLandscape) 56.dp else 78.dp
+                }
+            } else {
+                4.dp
+            },
+            animationSpec = tween(durationMillis = fadeMs),
+            label = "nb_canvas_bottom_pad"
+        )
+        val canvasStartPad by animateDpAsState(
+            targetValue = if (isChromeVisible && isWide && !isDockCollapsed) {
+                if (isCompactLandscape) 58.dp else 76.dp
+            } else {
+                4.dp
+            },
+            animationSpec = tween(durationMillis = fadeMs),
+            label = "nb_canvas_start_pad"
+        )
 
         NotebookCanvasView(
             pageAspectRatio = pageAspectRatio,
@@ -363,118 +455,214 @@ fun NotebookScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(
-                    top = 62.dp,
-                    bottom = if (isWide) 12.dp else 78.dp,
-                    start = if (isWide && !isDockCollapsed) 76.dp else 4.dp,
+                    top = canvasTopPad,
+                    bottom = canvasBottomPad,
+                    start = canvasStartPad,
                     end = 4.dp
                 )
         )
 
-        // Top Studio Bar: Back, Editable Title, Undo, Redo, Layers, Export, Overflow Menu (⋯) — all >= 48dp touch targets
-        Row(
+        // Top Studio Bar: sleeker on compact landscape phones, auto-hides smoothly in immersive mode
+        AnimatedVisibility(
+            visible = isChromeVisible,
+            enter = fadeIn(tween(fadeMs)) + slideInVertically(tween(fadeMs)) { -it / 2 },
+            exit = fadeOut(tween(fadeMs)) + slideOutVertically(tween(fadeMs)) { -it / 2 },
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .statusBarsPadding()
-                .displayCutoutPadding()
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(palette.surface.copy(alpha = 0.92f))
-                .border(1.dp, palette.border, RoundedCornerShape(20.dp))
-                .padding(horizontal = 4.dp, vertical = 2.dp)
-                .testTag("notebook_top_bar"),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            TopBarIcon(
-                icon = Icons.AutoMirrored.Rounded.ArrowBack,
-                desc = "Volver a biblioteca",
-                onClick = handleExit,
-                testTag = "nb_back_button"
-            )
-
-            // Editable Notebook Title + Page Indicator pill
+            val topBarCorner = if (isCompactLandscape) 16.dp else 20.dp
             Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { showTitleEditDialog = true }
-                    .padding(horizontal = 6.dp)
-                    .testTag("nb_editable_title_btn"),
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .padding(
+                        horizontal = if (isCompactLandscape) 8.dp else 10.dp,
+                        vertical = if (isCompactLandscape) 3.dp else 6.dp
+                    )
+                    .clip(RoundedCornerShape(topBarCorner))
+                    .background(palette.surface.copy(alpha = 0.92f))
+                    .border(1.dp, palette.border, RoundedCornerShape(topBarCorner))
+                    .padding(
+                        horizontal = 4.dp,
+                        vertical = if (isCompactLandscape) 1.dp else 2.dp
+                    )
+                    .testTag("notebook_top_bar"),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (isCompactLandscape) 1.dp else 2.dp)
             ) {
-                Text(
-                    text = nb?.title ?: "Cuaderno",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = palette.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
+                TopBarIcon(
+                    icon = Icons.AutoMirrored.Rounded.ArrowBack,
+                    desc = "Volver a biblioteca",
+                    onClick = handleExit,
+                    compact = isCompactLandscape,
+                    testTag = "nb_back_button"
                 )
-                Icon(
-                    imageVector = Icons.Rounded.Edit,
-                    contentDescription = "Editar título",
-                    tint = palette.inkMuted,
-                    modifier = Modifier.size(14.dp)
+
+                // Editable Notebook Title + Page Indicator pill
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = if (isCompactLandscape) 38.dp else 48.dp)
+                        .clip(RoundedCornerShape(if (isCompactLandscape) 10.dp else 12.dp))
+                        .clickable {
+                            bumpChromeTimer()
+                            showTitleEditDialog = true
+                        }
+                        .padding(horizontal = if (isCompactLandscape) 4.dp else 6.dp)
+                        .testTag("nb_editable_title_btn"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = nb?.title ?: "Cuaderno",
+                        style = if (isCompactLandscape) {
+                            MaterialTheme.typography.labelLarge
+                        } else {
+                            MaterialTheme.typography.titleSmall
+                        },
+                        fontWeight = FontWeight.ExtraBold,
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Icon(
+                        imageVector = Icons.Rounded.Edit,
+                        contentDescription = "Editar título",
+                        tint = palette.inkMuted,
+                        modifier = Modifier.size(if (isCompactLandscape) 12.dp else 14.dp)
+                    )
+                }
+
+                // Quick Page Strip toggle pill (e.g. "1/3")
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = if (isCompactLandscape) 32.dp else 44.dp)
+                        .clip(RoundedCornerShape(if (isCompactLandscape) 10.dp else 12.dp))
+                        .background(if (showPageStrip) palette.accent else palette.surfaceAlt)
+                        .border(
+                            1.dp,
+                            if (showPageStrip) palette.accent else palette.border,
+                            RoundedCornerShape(if (isCompactLandscape) 10.dp else 12.dp)
+                        )
+                        .clickable {
+                            bumpChromeTimer()
+                            showPageStrip = !showPageStrip
+                        }
+                        .padding(
+                            horizontal = if (isCompactLandscape) 8.dp else 10.dp,
+                            vertical = if (isCompactLandscape) 4.dp else 6.dp
+                        )
+                        .testTag("nb_page_strip_toggle"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${uiState.currentPageIndex + 1}/${uiState.pages.size.coerceAtLeast(1)}",
+                        fontSize = if (isCompactLandscape) 10.5.sp else 11.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (showPageStrip) palette.onAccent else palette.ink
+                    )
+                }
+
+                TopBarIcon(
+                    icon = Icons.AutoMirrored.Rounded.Undo,
+                    desc = "Deshacer",
+                    enabled = uiState.canUndo,
+                    onClick = {
+                        bumpChromeTimer()
+                        viewModel.undo()
+                    },
+                    compact = isCompactLandscape,
+                    testTag = "nb_undo_button"
+                )
+                TopBarIcon(
+                    icon = Icons.AutoMirrored.Rounded.Redo,
+                    desc = "Rehacer",
+                    enabled = uiState.canRedo,
+                    onClick = {
+                        bumpChromeTimer()
+                        viewModel.redo()
+                    },
+                    compact = isCompactLandscape,
+                    testTag = "nb_redo_button"
+                )
+                TopBarIcon(
+                    icon = Icons.Rounded.Layers,
+                    desc = "Capas",
+                    onClick = {
+                        bumpChromeTimer()
+                        showLayersDialog = true
+                    },
+                    compact = isCompactLandscape,
+                    testTag = "nb_layers_button"
+                )
+                TopBarIcon(
+                    icon = Icons.Rounded.IosShare,
+                    desc = "Exportar PDF o imagen",
+                    tint = palette.accent,
+                    onClick = {
+                        bumpChromeTimer()
+                        showExportDialog = true
+                    },
+                    compact = isCompactLandscape,
+                    testTag = "nb_export_button"
+                )
+                TopBarIcon(
+                    icon = Icons.Rounded.MoreHoriz,
+                    desc = "Más opciones",
+                    onClick = {
+                        bumpChromeTimer()
+                        showOverflowMenu = true
+                    },
+                    compact = isCompactLandscape,
+                    testTag = "nb_overflow_menu_button"
                 )
             }
+        }
 
-            // Quick Page Strip toggle pill (e.g. "1/3")
+        // Subtle floating pill to restore hidden menus in 1 tap during immersive notebook mode
+        AnimatedVisibility(
+            visible = !isChromeVisible,
+            enter = fadeIn(tween(fadeMs)),
+            exit = fadeOut(tween(fadeMs)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .padding(top = 4.dp, end = 8.dp)
+        ) {
             Box(
                 modifier = Modifier
-                    .heightIn(min = 44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (showPageStrip) palette.accent else palette.surfaceAlt)
-                    .border(1.dp, if (showPageStrip) palette.accent else palette.border, RoundedCornerShape(12.dp))
-                    .clickable { showPageStrip = !showPageStrip }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                    .testTag("nb_page_strip_toggle"),
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clickable(onClick = bumpChromeTimer)
+                    .testTag("nb_restore_chrome_pill"),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "${uiState.currentPageIndex + 1}/${uiState.pages.size.coerceAtLeast(1)}",
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = if (showPageStrip) palette.onAccent else palette.ink
-                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(palette.surface.copy(alpha = 0.88f))
+                        .border(1.dp, palette.border, RoundedCornerShape(50))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = "Mostrar menús del cuaderno",
+                        tint = palette.accent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Menú",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                }
             }
-
-            TopBarIcon(
-                icon = Icons.AutoMirrored.Rounded.Undo,
-                desc = "Deshacer",
-                enabled = uiState.canUndo,
-                onClick = viewModel::undo,
-                testTag = "nb_undo_button"
-            )
-            TopBarIcon(
-                icon = Icons.AutoMirrored.Rounded.Redo,
-                desc = "Rehacer",
-                enabled = uiState.canRedo,
-                onClick = viewModel::redo,
-                testTag = "nb_redo_button"
-            )
-            TopBarIcon(
-                icon = Icons.Rounded.Layers,
-                desc = "Capas",
-                onClick = { showLayersDialog = true },
-                testTag = "nb_layers_button"
-            )
-            TopBarIcon(
-                icon = Icons.Rounded.IosShare,
-                desc = "Exportar PDF o imagen",
-                tint = palette.accent,
-                onClick = { showExportDialog = true },
-                testTag = "nb_export_button"
-            )
-            TopBarIcon(
-                icon = Icons.Rounded.MoreHoriz,
-                desc = "Más opciones",
-                onClick = { showOverflowMenu = true },
-                testTag = "nb_overflow_menu_button"
-            )
         }
 
         // Collapsible Page Thumbnail Strip (with Add, Duplicate, Reorder, Delete & Cross-page Copy/Paste)
@@ -485,7 +673,11 @@ fun NotebookScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 64.dp, start = if (isWide) 82.dp else 10.dp, end = 10.dp)
+                .padding(
+                    top = if (isCompactLandscape) 52.dp else 66.dp,
+                    start = if (isWide) (if (isCompactLandscape) 62.dp else 82.dp) else 10.dp,
+                    end = 10.dp
+                )
         ) {
             NotebookPageStrip(
                 pages = uiState.pages,
@@ -493,159 +685,277 @@ fun NotebookScreen(
                 pageAspectRatio = pageAspectRatio,
                 hasSelectedObjects = uiState.selectedObjectIds.isNotEmpty(),
                 copiedObjectCount = uiState.copiedObjects.size,
-                onSelectPage = { idx -> viewModel.selectPage(idx, resetZoom = true) },
-                onAddPage = viewModel::addBlankPage,
-                onDuplicatePage = viewModel::duplicateCurrentPage,
-                onMovePage = viewModel::movePage,
-                onDeletePage = viewModel::deletePage,
-                onCopySelected = viewModel::copySelectedObjects,
-                onPasteCopied = viewModel::pasteCopiedObjects,
+                onSelectPage = { idx ->
+                    bumpChromeTimer()
+                    viewModel.selectPage(idx, resetZoom = true)
+                },
+                onAddPage = {
+                    bumpChromeTimer()
+                    viewModel.addBlankPage()
+                },
+                onDuplicatePage = {
+                    bumpChromeTimer()
+                    viewModel.duplicateCurrentPage()
+                },
+                onMovePage = { from, to ->
+                    bumpChromeTimer()
+                    viewModel.movePage(from, to)
+                },
+                onDeletePage = { idx ->
+                    bumpChromeTimer()
+                    viewModel.deletePage(idx)
+                },
+                onCopySelected = {
+                    bumpChromeTimer()
+                    viewModel.copySelectedObjects()
+                },
+                onPasteCopied = {
+                    bumpChromeTimer()
+                    viewModel.pasteCopiedObjects()
+                },
                 onCloseStrip = { showPageStrip = false }
             )
         }
 
-        // Adaptive Studio Dock (collapsible floating side dock on Medium/Expanded; bottom dock on Compact)
-        NotebookStudioToolbar(
-            widthClass = widthClass,
-            isDockCollapsed = isDockCollapsed,
-            onToggleDockCollapsed = { isDockCollapsed = !isDockCollapsed },
-            activeTool = uiState.activeTool,
-            activeShapeKind = uiState.activeShapeKind,
-            activeStickerKind = uiState.activeStickerKind,
-            activeColorArgb = uiState.activeColorArgb,
-            activeHighlighterColorArgb = uiState.activeHighlighterColorArgb,
-            recentColors = uiState.recentColors,
-            savedColors = uiState.savedColors,
-            strokeWidthNorm = uiState.activeStrokeWidthNorm,
-            alpha = uiState.activeAlpha,
-            stabilizerLevel = uiState.activeStabilizerLevel,
-            eraserMode = uiState.eraserMode,
-            isEyedropperActive = uiState.isEyedropperActive,
-            shapeFillEnabled = uiState.activeShapeFillEnabled,
-            shapeDashedEnabled = uiState.activeShapeDashed,
-            shapeShadowEnabled = uiState.activeShapeShadow,
-            showPropertiesPanel = showPropertiesPanel,
-            myStickerPaths = uiState.myStickerPaths,
-            onSelectTool = { tool ->
-                viewModel.selectTool(tool)
-                if (tool == NotebookTool.TEXT_BOX || tool == NotebookTool.TITLE_BANNER || tool == NotebookTool.TABLE) {
-                    showPropertiesPanel = false
-                }
+        // Adaptive Studio Dock (strictly below top bar with statusBarsPadding so menus never overlap in landscape)
+        AnimatedVisibility(
+            visible = isChromeVisible,
+            enter = fadeIn(tween(fadeMs)) + if (isWide) {
+                slideInHorizontally(tween(fadeMs)) { -it / 2 }
+            } else {
+                slideInVertically(tween(fadeMs)) { it / 2 }
             },
-            onSelectShapeKind = viewModel::selectShapeKind,
-            onSelectStickerKind = viewModel::selectStickerKind,
-            onSelectColor = viewModel::selectColor,
-            onOpenColorPicker = { showColorPicker = true },
-            onToggleEyedropper = { viewModel.toggleEyedropper() },
-            onStrokeWidthChange = viewModel::setStrokeWidthNorm,
-            onAlphaChange = viewModel::setAlpha,
-            onStabilizerChange = viewModel::setStabilizerLevel,
-            onSelectEraserMode = viewModel::setEraserMode,
-            onToggleShapeFill = viewModel::toggleShapeFill,
-            onToggleShapeDashed = viewModel::toggleShapeDashed,
-            onToggleShapeShadow = viewModel::toggleShapeShadow,
-            onTogglePropertiesPanel = { showPropertiesPanel = !showPropertiesPanel },
-            onPickImage = {
-                pasteImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            },
-            onAddQuickTitleBanner = {
-                showPropertiesPanel = false
-                editingTextBox = TextObject(
-                    x = 0.08f,
-                    y = 0.05f,
-                    width = 0.84f,
-                    height = 0.10f,
-                    spans = emptyList(),
-                    fontId = NotebookFonts.DEFAULT_BANNER_ID,
-                    fontSizeNorm = 0.036f,
-                    alignment = TextAlignMode.CENTER,
-                    isBanner = true,
-                    hasShadow = true,
-                    fillColorArgb = 0xFFEFF6FFL,
-                    borderColorArgb = 0xFF1D5BFFL,
-                    cornerRadiusDp = 18f
-                )
-            },
-            onPasteClipboardImage = {
-                showPropertiesPanel = false
-                viewModel.pasteImageFromClipboard()
-            },
-            onPickMyStickerPng = {
-                myStickerPngPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            },
-            onPlaceMySticker = { absPath ->
-                showPropertiesPanel = false
-                viewModel.placeCustomSticker(absPath)
-            },
-            onOpenStarterTemplates = {
-                showPropertiesPanel = false
-                showStarterTemplatesDialog = true
+            exit = fadeOut(tween(fadeMs)) + if (isWide) {
+                slideOutHorizontally(tween(fadeMs)) { -it / 2 }
+            } else {
+                slideOutVertically(tween(fadeMs)) { it / 2 }
             },
             modifier = if (isWide) {
                 Modifier
                     .align(Alignment.CenterStart)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
                     .displayCutoutPadding()
-                    .padding(start = 10.dp, top = 62.dp, bottom = 14.dp)
+                    .padding(
+                        start = if (isCompactLandscape) 8.dp else 10.dp,
+                        top = if (isCompactLandscape) 52.dp else 70.dp,
+                        bottom = if (isCompactLandscape) 8.dp else 14.dp
+                    )
             } else {
                 Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(horizontal = 10.dp, vertical = 8.dp)
             }
-        )
+        ) {
+            NotebookStudioToolbar(
+                widthClass = widthClass,
+                isCompactLandscape = isCompactLandscape,
+                isDockCollapsed = isDockCollapsed,
+                onToggleDockCollapsed = {
+                    bumpChromeTimer()
+                    isDockCollapsed = !isDockCollapsed
+                },
+                activeTool = uiState.activeTool,
+                activeShapeKind = uiState.activeShapeKind,
+                activeStickerKind = uiState.activeStickerKind,
+                activeColorArgb = uiState.activeColorArgb,
+                activeHighlighterColorArgb = uiState.activeHighlighterColorArgb,
+                recentColors = uiState.recentColors,
+                savedColors = uiState.savedColors,
+                strokeWidthNorm = uiState.activeStrokeWidthNorm,
+                alpha = uiState.activeAlpha,
+                stabilizerLevel = uiState.activeStabilizerLevel,
+                eraserMode = uiState.eraserMode,
+                isEyedropperActive = uiState.isEyedropperActive,
+                shapeFillEnabled = uiState.activeShapeFillEnabled,
+                shapeDashedEnabled = uiState.activeShapeDashed,
+                shapeShadowEnabled = uiState.activeShapeShadow,
+                showPropertiesPanel = showPropertiesPanel,
+                myStickerPaths = uiState.myStickerPaths,
+                onSelectTool = { tool ->
+                    bumpChromeTimer()
+                    viewModel.selectTool(tool)
+                    if (tool == NotebookTool.TEXT_BOX || tool == NotebookTool.TITLE_BANNER || tool == NotebookTool.TABLE) {
+                        showPropertiesPanel = false
+                    }
+                },
+                onSelectShapeKind = {
+                    bumpChromeTimer()
+                    viewModel.selectShapeKind(it)
+                },
+                onSelectStickerKind = {
+                    bumpChromeTimer()
+                    viewModel.selectStickerKind(it)
+                },
+                onSelectColor = {
+                    bumpChromeTimer()
+                    viewModel.selectColor(it)
+                },
+                onOpenColorPicker = {
+                    bumpChromeTimer()
+                    showColorPicker = true
+                },
+                onToggleEyedropper = {
+                    bumpChromeTimer()
+                    viewModel.toggleEyedropper()
+                },
+                onStrokeWidthChange = {
+                    bumpChromeTimer()
+                    viewModel.setStrokeWidthNorm(it)
+                },
+                onAlphaChange = {
+                    bumpChromeTimer()
+                    viewModel.setAlpha(it)
+                },
+                onStabilizerChange = {
+                    bumpChromeTimer()
+                    viewModel.setStabilizerLevel(it)
+                },
+                onSelectEraserMode = {
+                    bumpChromeTimer()
+                    viewModel.setEraserMode(it)
+                },
+                onToggleShapeFill = {
+                    bumpChromeTimer()
+                    viewModel.toggleShapeFill()
+                },
+                onToggleShapeDashed = {
+                    bumpChromeTimer()
+                    viewModel.toggleShapeDashed()
+                },
+                onToggleShapeShadow = {
+                    bumpChromeTimer()
+                    viewModel.toggleShapeShadow()
+                },
+                onTogglePropertiesPanel = {
+                    bumpChromeTimer()
+                    showPropertiesPanel = !showPropertiesPanel
+                },
+                onPickImage = {
+                    bumpChromeTimer()
+                    pasteImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onAddQuickTitleBanner = {
+                    bumpChromeTimer()
+                    showPropertiesPanel = false
+                    editingTextBox = TextObject(
+                        x = 0.08f,
+                        y = 0.05f,
+                        width = 0.84f,
+                        height = 0.10f,
+                        spans = emptyList(),
+                        fontId = NotebookFonts.DEFAULT_BANNER_ID,
+                        fontSizeNorm = 0.036f,
+                        alignment = TextAlignMode.CENTER,
+                        isBanner = true,
+                        hasShadow = true,
+                        fillColorArgb = 0xFFEFF6FFL,
+                        borderColorArgb = 0xFF1D5BFFL,
+                        cornerRadiusDp = 18f
+                    )
+                },
+                onPasteClipboardImage = {
+                    bumpChromeTimer()
+                    showPropertiesPanel = false
+                    viewModel.pasteImageFromClipboard()
+                },
+                onPickMyStickerPng = {
+                    bumpChromeTimer()
+                    myStickerPngPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onPlaceMySticker = { absPath ->
+                    bumpChromeTimer()
+                    showPropertiesPanel = false
+                    viewModel.placeCustomSticker(absPath)
+                },
+                onOpenStarterTemplates = {
+                    bumpChromeTimer()
+                    showPropertiesPanel = false
+                    showStarterTemplatesDialog = true
+                }
+            )
+        }
 
-        // Floating Zoom Pill (− / 100% / +) — bottom-right, >= 48dp touch height
-        Row(
+        // Floating Zoom Pill (− / 100% / +) — bottom-right, auto-hides with chrome
+        AnimatedVisibility(
+            visible = isChromeVisible,
+            enter = fadeIn(tween(fadeMs)),
+            exit = fadeOut(tween(fadeMs)),
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .navigationBarsPadding()
-                .padding(end = 12.dp, bottom = if (isWide) 14.dp else 78.dp)
-                .clip(RoundedCornerShape(50))
-                .background(palette.surface.copy(alpha = 0.90f))
-                .border(1.dp, palette.border, RoundedCornerShape(50))
-                .padding(horizontal = 4.dp, vertical = 2.dp)
-                .testTag("nb_zoom_pill"),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-                    .clip(CircleShape)
-                    .clickable {
-                        val next = (zoomScale - 0.25f).coerceIn(0.5f, 5.0f)
-                        if (next <= 1f) viewModel.setZoomPan(next, 0f, 0f)
-                        else viewModel.setZoomPan(next, panOffset.x, panOffset.y)
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Rounded.Remove, contentDescription = "Alejar", tint = palette.ink, modifier = Modifier.size(18.dp))
-            }
-            Box(
-                modifier = Modifier
-                    .heightIn(min = 44.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { viewModel.resetZoomPan() }
-                    .padding(horizontal = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "${(zoomScale * 100f).roundToInt()}%",
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.ink
+                .displayCutoutPadding()
+                .padding(
+                    end = if (isCompactLandscape) 8.dp else 12.dp,
+                    bottom = if (isWide) (if (isCompactLandscape) 8.dp else 14.dp) else 78.dp
                 )
-            }
-            Box(
+        ) {
+            val zoomBtnMin = if (isCompactLandscape) 36.dp else 44.dp
+            Row(
                 modifier = Modifier
-                    .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-                    .clip(CircleShape)
-                    .clickable {
-                        val next = (zoomScale + 0.25f).coerceIn(0.5f, 5.0f)
-                        viewModel.setZoomPan(next, panOffset.x, panOffset.y)
-                    },
-                contentAlignment = Alignment.Center
+                    .clip(RoundedCornerShape(50))
+                    .background(palette.surface.copy(alpha = 0.90f))
+                    .border(1.dp, palette.border, RoundedCornerShape(50))
+                    .padding(horizontal = if (isCompactLandscape) 3.dp else 4.dp, vertical = if (isCompactLandscape) 1.dp else 2.dp)
+                    .testTag("nb_zoom_pill"),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Rounded.Add, contentDescription = "Acercar", tint = palette.ink, modifier = Modifier.size(18.dp))
+                Box(
+                    modifier = Modifier
+                        .sizeIn(minWidth = zoomBtnMin, minHeight = zoomBtnMin)
+                        .clip(CircleShape)
+                        .clickable {
+                            bumpChromeTimer()
+                            val next = (zoomScale - 0.25f).coerceIn(0.5f, 5.0f)
+                            if (next <= 1f) viewModel.setZoomPan(next, 0f, 0f)
+                            else viewModel.setZoomPan(next, panOffset.x, panOffset.y)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.Remove,
+                        contentDescription = "Alejar",
+                        tint = palette.ink,
+                        modifier = Modifier.size(if (isCompactLandscape) 16.dp else 18.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = zoomBtnMin)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            bumpChromeTimer()
+                            viewModel.resetZoomPan()
+                        }
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${(zoomScale * 100f).roundToInt()}%",
+                        fontSize = if (isCompactLandscape) 10.5.sp else 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .sizeIn(minWidth = zoomBtnMin, minHeight = zoomBtnMin)
+                        .clip(CircleShape)
+                        .clickable {
+                            bumpChromeTimer()
+                            val next = (zoomScale + 0.25f).coerceIn(0.5f, 5.0f)
+                            viewModel.setZoomPan(next, panOffset.x, panOffset.y)
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.Add,
+                        contentDescription = "Acercar",
+                        tint = palette.ink,
+                        modifier = Modifier.size(if (isCompactLandscape) 16.dp else 18.dp)
+                    )
+                }
             }
         }
 
@@ -658,7 +968,7 @@ fun NotebookScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 68.dp)
+                .padding(top = if (isCompactLandscape) 52.dp else 68.dp)
         ) {
             Row(
                 modifier = Modifier
@@ -704,6 +1014,13 @@ fun NotebookScreen(
     }
 
     // ---- Modal Studio Panels & Editors ----
+
+    if (showCloudAccountDialog) {
+        CloudMyAccountDialog(
+            accountManager = cloudAccountManager,
+            onDismiss = { showCloudAccountDialog = false }
+        )
+    }
 
     if (showTitleEditDialog) {
         NotebookTitleEditDialog(
@@ -754,11 +1071,14 @@ fun NotebookScreen(
             lockAspectRatio = uiState.lockAspectRatio,
             showPageStrip = showPageStrip,
             copiedObjectCount = uiState.copiedObjects.size,
+            autoHideChromeEnabled = autoHideChromeEnabled,
+            onToggleAutoHideChrome = onToggleAutoHideChrome,
             onToggleStylusOnly = viewModel::setStylusOnlyMode,
             onToggleLockAspect = viewModel::setLockAspectRatio,
             onTogglePageStrip = { showPageStrip = it },
             onOpenBackgroundAndSize = { showBgAndSizeDialog = true },
             onOpenStarterTemplates = { showStarterTemplatesDialog = true },
+            onOpenCloudAccount = { showCloudAccountDialog = true },
             onPasteCopied = viewModel::pasteCopiedObjects,
             onClearCurrentPage = viewModel::clearCurrentPage,
             onDismiss = { showOverflowMenu = false }
@@ -889,18 +1209,25 @@ private fun TopBarIcon(
     onClick: () -> Unit,
     enabled: Boolean = true,
     tint: Color? = null,
+    compact: Boolean = false,
     testTag: String? = null
 ) {
     val palette = LocalFolioPalette.current
     val resolvedTint = (tint ?: palette.ink).copy(alpha = if (enabled) 1f else 0.32f)
+    val minTouch = if (compact) 40.dp else 48.dp
     Box(
         modifier = Modifier
-            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .sizeIn(minWidth = minTouch, minHeight = minTouch)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .let { if (testTag != null) it.testTag(testTag) else it },
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = desc, tint = resolvedTint, modifier = Modifier.size(21.dp))
+        Icon(
+            icon,
+            contentDescription = desc,
+            tint = resolvedTint,
+            modifier = Modifier.size(if (compact) 18.dp else 21.dp)
+        )
     }
 }

@@ -144,7 +144,7 @@ fun AppearanceSettingsSheet(
                         )
                     }
 
-                    if (!isPdf) {
+                    if (!isPdf && documentFormat != DocumentFormat.PPTX) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -650,8 +650,8 @@ fun AnnotationsAndBookmarksSheet(
                                 Row {
                                     Box(
                                         modifier = Modifier
-                                            .size(36.dp)
-                                            .clip(RoundedCornerShape(10.dp))
+                                            .size(48.dp)
+                                            .clip(RoundedCornerShape(12.dp))
                                             .clickable { onEditHighlightNote(hl) },
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -659,13 +659,13 @@ fun AnnotationsAndBookmarksSheet(
                                             Icons.Rounded.EditNote,
                                             contentDescription = "Editar nota",
                                             tint = palette.ink,
-                                            modifier = Modifier.size(18.dp)
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                     Box(
                                         modifier = Modifier
-                                            .size(36.dp)
-                                            .clip(RoundedCornerShape(10.dp))
+                                            .size(48.dp)
+                                            .clip(RoundedCornerShape(12.dp))
                                             .clickable { onDeleteHighlight(hl.id) },
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -673,7 +673,7 @@ fun AnnotationsAndBookmarksSheet(
                                             Icons.Rounded.DeleteOutline,
                                             contentDescription = "Eliminar subrayado",
                                             tint = palette.inkMuted,
-                                            modifier = Modifier.size(18.dp)
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                 }
@@ -729,8 +729,8 @@ fun AnnotationsAndBookmarksSheet(
                                 )
                                 Box(
                                     modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(10.dp))
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(12.dp))
                                         .clickable { onDeleteBookmark(bm.id) },
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -738,7 +738,7 @@ fun AnnotationsAndBookmarksSheet(
                                         Icons.Rounded.DeleteOutline,
                                         contentDescription = "Eliminar marcador",
                                         tint = palette.inkMuted,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
@@ -888,7 +888,7 @@ private fun SliderSettingRow(
             Text(valueText, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = palette.accent)
         }
         Slider(
-            value = value,
+            value = value.coerceIn(range.start, range.endInclusive),
             onValueChange = onValueChange,
             valueRange = range,
             colors = SliderDefaults.colors(

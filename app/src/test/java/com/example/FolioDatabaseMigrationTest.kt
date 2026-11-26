@@ -7,6 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.FolioDatabase
+import com.example.drive.DriveSourceEntity
 import com.example.notebook.data.NotebookEntity
 import com.example.notebook.data.NotebookPageEntity
 import kotlinx.coroutines.flow.first
@@ -173,14 +174,15 @@ class FolioDatabaseMigrationTest {
         )
         rawDb.close()
 
-        // 2. Open via Room with MIGRATION_3_4 + MIGRATION_4_5 (strictly NO destructive fallback!)
+        // 2. Open via Room with MIGRATION_3_4 + MIGRATION_4_5 + MIGRATION_5_6 (strictly NO destructive fallback!)
         val migratedDb = Room.databaseBuilder(context, FolioDatabase::class.java, dbName)
             .openHelperFactory(FrameworkSQLiteOpenHelperFactory())
             .addMigrations(
                 FolioDatabase.MIGRATION_1_2,
                 FolioDatabase.MIGRATION_2_3,
                 FolioDatabase.MIGRATION_3_4,
-                FolioDatabase.MIGRATION_4_5
+                FolioDatabase.MIGRATION_4_5,
+                FolioDatabase.MIGRATION_5_6
             )
             .allowMainThreadQueries()
             .build()
@@ -204,6 +206,17 @@ class FolioDatabaseMigrationTest {
 
             migratedDb.notebookDao().deleteNotebook(nbId)
             assertTrue(migratedDb.notebookDao().getPagesOnce(nbId).isEmpty())
+
+            // New v6 Google Drive tables must be present and writable
+            val sourceId = migratedDb.driveDao().upsertSource(
+                DriveSourceEntity(
+                    name = "Drive Migrado",
+                    folderId = "1MigratedFolderId0001",
+                    isDefaultSaveTarget = true
+                )
+            )
+            assertTrue(sourceId > 0L)
+            assertEquals(1, migratedDb.driveDao().getSourcesOnce().size)
         } finally {
             migratedDb.close()
             dbFile.delete()

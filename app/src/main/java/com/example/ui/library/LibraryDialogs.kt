@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Image
@@ -80,6 +81,7 @@ internal fun BookOptionsFloatingDialog(
     onChangeCoverPhoto: () -> Unit,
     onRegenerateCover: () -> Unit,
     onEditMetadata: () -> Unit,
+    onSyncToDrive: (() -> Unit)? = null,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -224,6 +226,16 @@ internal fun BookOptionsFloatingDialog(
                 onClick = onEditMetadata,
                 testTag = "book_option_metadata"
             )
+            if (onSyncToDrive != null) {
+                LumaCapsuleOptionRow(
+                    icon = Icons.Rounded.CloudUpload,
+                    title = "SINCRONIZAR EN DRIVE",
+                    subtitle = "Guardar o respaldar en tu carpeta de Google Drive",
+                    iconOnRight = true,
+                    onClick = onSyncToDrive,
+                    testTag = "book_option_sync_drive"
+                )
+            }
             LumaCapsuleOptionRow(
                 icon = Icons.Rounded.DeleteOutline,
                 title = "ELIMINAR LIBRO",

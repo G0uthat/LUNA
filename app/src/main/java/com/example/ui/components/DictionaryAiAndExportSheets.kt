@@ -228,22 +228,54 @@ fun DictionaryAndAiSettingsContent(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                var aiSaveError by remember { mutableStateOf<String?>(null) }
+                var aiSavedConfirm by remember { mutableStateOf(false) }
+
                 OutlinedTextField(
                     value = baseUrlInput,
-                    onValueChange = { baseUrlInput = it },
+                    onValueChange = {
+                        baseUrlInput = it
+                        aiSaveError = null
+                        aiSavedConfirm = false
+                    },
                     label = { Text("URL Base del endpoint") },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().testTag("ai_base_url_input")
                 )
+
+                if (aiSaveError != null) {
+                    Text(
+                        text = aiSaveError.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                } else if (aiSavedConfirm) {
+                    Text(
+                        text = "Configuración de IA guardada ✓",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.accent
+                    )
+                }
 
                 TactileButton(
                     onClick = {
+                        val trimmedUrl = baseUrlInput.trim().ifEmpty { prefs.aiProvider.defaultBaseUrl }
+                        if (!trimmedUrl.startsWith("https://", ignoreCase = true) &&
+                            !trimmedUrl.startsWith("http://", ignoreCase = true)
+                        ) {
+                            aiSaveError = "La URL base debe comenzar por https:// o http://"
+                            aiSavedConfirm = false
+                            return@TactileButton
+                        }
+                        aiSaveError = null
+                        aiSavedConfirm = true
                         onUpdatePrefs {
                             it.copy(
                                 aiApiKey = apiKeyInput.trim(),
                                 aiModel = modelInput.trim().ifEmpty { it.aiProvider.defaultModel },
-                                aiBaseUrl = baseUrlInput.trim().ifEmpty { it.aiProvider.defaultBaseUrl }
+                                aiBaseUrl = trimmedUrl
                             )
                         }
                     },
@@ -294,16 +326,17 @@ fun DictionaryAndAiSettingsContent(
                     if (!source.isWikipediaApi) {
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { onDeleteSource(source.id) },
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { onDeleteSource(source.id) }
+                                .testTag("delete_dict_source_${source.id}"),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 Icons.Rounded.DeleteOutline,
                                 contentDescription = "Eliminar fuente",
                                 tint = palette.inkMuted,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -361,7 +394,8 @@ fun DictionaryAndAiSettingsContent(
                 val url = newSourceUrl.trim()
                 when {
                     name.isEmpty() -> sourceError = "Escribe un nombre para la fuente."
-                    !url.startsWith("http") -> sourceError = "La URL debe comenzar por https://"
+                    !url.startsWith("https://", ignoreCase = true) && !url.startsWith("http://", ignoreCase = true) ->
+                        sourceError = "La URL debe comenzar por https:// o http://"
                     !url.contains("{palabra}", ignoreCase = true) && !url.contains("{word}", ignoreCase = true) ->
                         sourceError = "Incluye {palabra} en la URL (ej. https://dle.rae.es/{palabra})."
                     else -> {
@@ -398,7 +432,14 @@ fun MergedExportDialog(
 ) {
     val palette = LocalFolioPalette.current
     val docFormat = DocumentFormat.fromExtension(document.format) ?: DocumentFormat.PDF
-    var selectedOption by remember { mutableStateOf(ExportFormatOption.NATIVE_MERGED) }
+    val supportsNativeMerged = docFormat == DocumentFormat.PDF ||
+        docFormat == DocumentFormat.EPUB ||
+        docFormat == DocumentFormat.DOCX
+    var selectedOption by remember(docFormat) {
+        mutableStateOf(
+            if (supportsNativeMerged) ExportFormatOption.NATIVE_MERGED else ExportFormatOption.UNIVERSAL_PDF
+        )
+    }
 
     LumaFloatingDropdownDialog(
         onDismiss = onDismiss,
@@ -445,41 +486,54 @@ fun MergedExportDialog(
             }
 
             // Format choices
-            if (docFormat == DocumentFormat.PPTX) {
-                ExportOptionCard(
-                    icon = Icons.Rounded.PictureAsPdf,
-                    title = "PDF de diapositivas con firmas y trazos",
-                    subtitle = "Exporta cada diapositiva PowerPoint con su proporción real, imágenes, texto seleccionable y tus anotaciones o firmas encima.",
-                    selected = true,
-                    onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
-                )
-            } else if (docFormat != DocumentFormat.PDF) {
-                ExportOptionCard(
-                    icon = Icons.Rounded.Description,
-                    title = "${docFormat.label} original fusionado",
-                    subtitle = if (docFormat == DocumentFormat.EPUB) {
-                        "Conserva texto XHTML seleccionable + capa SVG vectorial encima"
-                    } else {
-                        "Conserva texto editable con resaltados y notas"
-                    },
-                    selected = selectedOption == ExportFormatOption.NATIVE_MERGED,
-                    onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
-                )
-                ExportOptionCard(
-                    icon = Icons.Rounded.PictureAsPdf,
-                    title = "PDF en formato de hoja estándar + firmas",
-                    subtitle = "Genera PDF vectorial respetando el tamaño de hoja elegido (A4, Carta, A3, etc.) con texto seleccionable y tus firmas/dibujos.",
-                    selected = selectedOption == ExportFormatOption.UNIVERSAL_PDF,
-                    onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
-                )
-            } else {
-                ExportOptionCard(
-                    icon = Icons.Rounded.PictureAsPdf,
-                    title = "PDF fusionado (Dibujos + Texto/OCR seleccionable)",
-                    subtitle = "Inyecta trazos vectoriales sin aplastar el texto original y añade capa OCR invisible seleccionable para manhwas.",
-                    selected = true,
-                    onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
-                )
+            when (docFormat) {
+                DocumentFormat.PPTX -> {
+                    ExportOptionCard(
+                        icon = Icons.Rounded.PictureAsPdf,
+                        title = "PDF de diapositivas con firmas y trazos",
+                        subtitle = "Exporta cada diapositiva PowerPoint con su proporción real, imágenes, texto seleccionable y tus anotaciones o firmas encima.",
+                        selected = true,
+                        onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
+                    )
+                }
+                DocumentFormat.TXT, DocumentFormat.FB2 -> {
+                    ExportOptionCard(
+                        icon = Icons.Rounded.PictureAsPdf,
+                        title = "PDF vectorial con subrayados y trazos",
+                        subtitle = "Exporta tu ${docFormat.label} en el tamaño de hoja elegido (A4, Carta, A3, etc.) con texto seleccionable, resaltados y dibujos encima.",
+                        selected = true,
+                        onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
+                    )
+                }
+                DocumentFormat.PDF -> {
+                    ExportOptionCard(
+                        icon = Icons.Rounded.PictureAsPdf,
+                        title = "PDF fusionado (Dibujos + Texto/OCR seleccionable)",
+                        subtitle = "Inyecta trazos vectoriales sin aplastar el texto original y añade capa OCR invisible seleccionable para manhwas.",
+                        selected = true,
+                        onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
+                    )
+                }
+                DocumentFormat.EPUB, DocumentFormat.DOCX -> {
+                    ExportOptionCard(
+                        icon = Icons.Rounded.Description,
+                        title = "${docFormat.label} original fusionado",
+                        subtitle = if (docFormat == DocumentFormat.EPUB) {
+                            "Conserva texto XHTML seleccionable + capa SVG vectorial encima"
+                        } else {
+                            "Conserva texto editable con resaltados y notas"
+                        },
+                        selected = selectedOption == ExportFormatOption.NATIVE_MERGED,
+                        onClick = { selectedOption = ExportFormatOption.NATIVE_MERGED }
+                    )
+                    ExportOptionCard(
+                        icon = Icons.Rounded.PictureAsPdf,
+                        title = "PDF en formato de hoja estándar + firmas",
+                        subtitle = "Genera PDF vectorial respetando el tamaño de hoja elegido (A4, Carta, A3, etc.) con texto seleccionable y tus firmas/dibujos.",
+                        selected = selectedOption == ExportFormatOption.UNIVERSAL_PDF,
+                        onClick = { selectedOption = ExportFormatOption.UNIVERSAL_PDF }
+                    )
+                }
             }
 
             Spacer(Modifier.height(4.dp))

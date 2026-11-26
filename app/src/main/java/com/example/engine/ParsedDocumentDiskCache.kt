@@ -488,7 +488,8 @@ object ParsedDocumentDiskCache {
 
     private fun DataInputStream.readStringUtf(): String {
         val len = readInt()
-        if (len <= 0) return ""
+        if (len == 0) return ""
+        require(len in 1..(32 * 1024 * 1024)) { "Corrupt parsed cache string length: $len" }
         val buf = ByteArray(len)
         readFully(buf)
         return String(buf, Charsets.UTF_8)

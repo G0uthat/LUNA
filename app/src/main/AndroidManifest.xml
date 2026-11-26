@@ -104,6 +104,16 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+
+            <!-- OAuth 2.0 PKCE callback para integración BYOC con Google Drive del usuario -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="com.lord67.luma"
+                    android:host="oauth2redirect" />
+            </intent-filter>
         </activity>
 
         <service

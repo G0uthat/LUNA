@@ -156,6 +156,9 @@ object OcrEngine {
         right: Float,
         bottom: Float
     ): Pair<Long, Long> {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
+            return 0xFFFFFFFFL to 0xFF101828L
+        }
         val w = bitmap.width
         val h = bitmap.height
         val padX = (0.008f * w).toInt().coerceAtLeast(2)

@@ -439,15 +439,17 @@ object ExternalFileInspector {
         }.getOrNull()
     }
 
-    private fun detectFormatFromHeader(header: ByteArray): DocumentFormat? {
-        // %PDF-
-        if (header.size >= 4 &&
-            header[0] == 0x25.toByte() &&
-            header[1] == 0x50.toByte() &&
-            header[2] == 0x44.toByte() &&
-            header[3] == 0x46.toByte()
-        ) {
-            return DocumentFormat.PDF
+    internal fun detectFormatFromHeader(header: ByteArray): DocumentFormat? {
+        // %PDF- anywhere within the first 1024 bytes (per PDF 1.7 spec for files with leading BOM/preamble)
+        val scanLimit = minOf(header.size, 1024) - 4
+        for (i in 0..scanLimit) {
+            if (header[i] == 0x25.toByte() &&
+                header[i + 1] == 0x50.toByte() &&
+                header[i + 2] == 0x44.toByte() &&
+                header[i + 3] == 0x46.toByte()
+            ) {
+                return DocumentFormat.PDF
+            }
         }
 
         // XML FictionBook2 (<FictionBook)

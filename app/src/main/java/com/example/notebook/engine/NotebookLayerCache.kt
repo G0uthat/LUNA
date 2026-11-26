@@ -85,12 +85,14 @@ class NotebookLayerCache {
         }
 
         // 1. Background layer bitmap
-        if (backgroundBitmapCache == null) {
+        val existingBg = backgroundBitmapCache
+        val bgCanvas = if (existingBg == null || existingBg.isRecycled || backgroundCanvasCache == null) {
             val created = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
             backgroundBitmapCache = created
-            backgroundCanvasCache = Canvas(created)
+            Canvas(created).also { backgroundCanvasCache = it }
+        } else {
+            backgroundCanvasCache ?: Canvas(existingBg).also { backgroundCanvasCache = it }
         }
-        val bgCanvas = backgroundCanvasCache!!
         bgCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         NotebookCanvasRenderer.drawBackgroundLayer(
             canvas = bgCanvas,
@@ -113,11 +115,14 @@ class NotebookLayerCache {
                 layerCanvases[layer.id]?.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
                 continue
             }
-            val bmp = layerBitmaps[layer.id] ?: Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888).also {
-                layerBitmaps[layer.id] = it
-                layerCanvases[layer.id] = Canvas(it)
+            val existingLayerBmp = layerBitmaps[layer.id]
+            val canvas = if (existingLayerBmp == null || existingLayerBmp.isRecycled) {
+                val created = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                layerBitmaps[layer.id] = created
+                Canvas(created).also { layerCanvases[layer.id] = it }
+            } else {
+                layerCanvases[layer.id] ?: Canvas(existingLayerBmp).also { layerCanvases[layer.id] = it }
             }
-            val canvas = layerCanvases[layer.id]!!
             canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
             NotebookCanvasRenderer.drawSingleLayer(
                 canvas = canvas,
@@ -131,7 +136,6 @@ class NotebookLayerCache {
                 reusablePath = reusableStrokePath,
                 reusablePaint = reusableStrokePaint
             )
-            if (bmp.isRecycled) continue
         }
 
         val stale = layerBitmaps.keys.filterNot { it in activeLayerIds }

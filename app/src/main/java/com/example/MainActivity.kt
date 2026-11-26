@@ -32,11 +32,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,6 +67,10 @@ import com.example.engine.SystemMediaController
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.IntentCompat
+import com.example.core.cloud.CloudAccountManager
+import com.example.core.cloud.CloudWelcomeScreen
+import com.example.drive.DriveRepository
+import com.example.drive.GoogleDriveAuthManager
 import com.example.notebook.data.NotebookRepository
 import com.example.notebook.ui.NotebookScreen
 import com.example.notebook.ui.NotebookViewModel
@@ -141,6 +148,9 @@ class MainActivity : ComponentActivity() {
     private val notebookRepository by lazy {
         NotebookRepository(applicationContext, FolioDatabase.getInstance(applicationContext).notebookDao())
     }
+    private val cloudAccountManager by lazy {
+        CloudAccountManager.getInstance(applicationContext)
+    }
     private data class IncomingExternalIntent(
         val id: Long = System.nanoTime(),
         val action: String,
@@ -194,8 +204,30 @@ class MainActivity : ComponentActivity() {
         return IncomingExternalIntent(action = action, uris = collected.toList())
     }
 
+    /**
+     * Intercepts the OAuth 2.0 PKCE callback (`com.lord67.luma:/oauth2redirect?code=...&state=...`)
+     * before external file import inspects ACTION_VIEW intents.
+     */
+    private fun handleDriveOAuthIntentIfPresent(intent: Intent?): Boolean {
+        if (intent == null || intent.action != Intent.ACTION_VIEW) return false
+        val uri = intent.data ?: return false
+        if (uri.scheme != GoogleDriveAuthManager.REDIRECT_SCHEME || uri.host != GoogleDriveAuthManager.REDIRECT_HOST) {
+            return false
+        }
+        val consumed = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        setIntent(consumed)
+        lifecycleScope.launch(Dispatchers.IO) {
+            DriveRepository.getInstance(applicationContext).handleAuthRedirect(uri)
+            cloudAccountManager.onOAuthCallbackHandled()
+        }
+        return true
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (handleDriveOAuthIntentIfPresent(intent)) return
         extractAndConsumeExternalIntent(intent)?.let { req ->
             pendingExternalIntentState.value = req
         }
@@ -238,11 +270,13 @@ class MainActivity : ComponentActivity() {
 
         enableEdgeToEdge()
 
-        // Capture & consume any file(s) launched via "Abrir con Luma" or "Compartir"
+        // Capture & consume OAuth redirect or any file(s) launched via "Abrir con Luma" / "Compartir"
         // (strictly skipped on config-change recreation where savedInstanceState != null)
         if (savedInstanceState == null) {
-            extractAndConsumeExternalIntent(intent)?.let { req ->
-                pendingExternalIntentState.value = req
+            if (!handleDriveOAuthIntentIfPresent(intent)) {
+                extractAndConsumeExternalIntent(intent)?.let { req ->
+                    pendingExternalIntentState.value = req
+                }
             }
         }
 
@@ -399,21 +433,29 @@ class MainActivity : ComponentActivity() {
                             // Multiple images shared -> create multi-page Study Notebook with progress!
                             batchImportProgress = ExternalBatchProgressState(1, validImages.size, validImages.first().displayName)
                             val title = validImages.first().displayName.substringBeforeLast('.').ifBlank { "Cuaderno de imágenes" }
-                            val newNbId = notebookRepository.createNotebookFromImageUris(
-                                title = title,
-                                imageUris = validImages.map { it.uri },
-                                onProgress = { done, total ->
-                                    batchImportProgress = ExternalBatchProgressState(
-                                        currentIndex = done,
-                                        totalCount = total,
-                                        currentFileName = validImages.getOrNull(done - 1)?.displayName ?: "Imagen $done"
-                                    )
-                                }
-                            )
-                            batchImportProgress = null
-                            flushActiveSessionBeforeNavigate()
-                            activeDocumentId = null
-                            activeNotebookId = newNbId
+                            try {
+                                val newNbId = notebookRepository.createNotebookFromImageUris(
+                                    title = title,
+                                    imageUris = validImages.map { it.uri },
+                                    onProgress = { done, total ->
+                                        batchImportProgress = ExternalBatchProgressState(
+                                            currentIndex = done,
+                                            totalCount = total,
+                                            currentFileName = validImages.getOrNull(done - 1)?.displayName ?: "Imagen $done"
+                                        )
+                                    }
+                                )
+                                flushActiveSessionBeforeNavigate()
+                                activeDocumentId = null
+                                activeNotebookId = newNbId
+                            } catch (t: Throwable) {
+                                DynamicIslandEventManager.postCriticalError(
+                                    title = "No se pudo crear el cuaderno",
+                                    detail = t.localizedMessage ?: "Error leyendo las imágenes recibidas."
+                                )
+                            } finally {
+                                batchImportProgress = null
+                            }
                         } else {
                             // Batch document import with progress; opens the last imported document automatically
                             batchImportProgress = ExternalBatchProgressState(1, req.uris.size, inspections.firstOrNull()?.displayName ?: "Archivo 1")
@@ -441,11 +483,19 @@ class MainActivity : ComponentActivity() {
                             // "Enviar a un cuaderno" direct 1-tap image flow
                             batchImportProgress = ExternalBatchProgressState(1, 1, resolved.displayName)
                             val cleanTitle = resolved.displayName.substringBeforeLast('.').ifBlank { "Apunte con imagen" }
-                            val newNbId = notebookRepository.createNotebookFromImageUri(cleanTitle, resolved.uri)
-                            batchImportProgress = null
-                            flushActiveSessionBeforeNavigate()
-                            activeDocumentId = null
-                            activeNotebookId = newNbId
+                            try {
+                                val newNbId = notebookRepository.createNotebookFromImageUri(cleanTitle, resolved.uri)
+                                flushActiveSessionBeforeNavigate()
+                                activeDocumentId = null
+                                activeNotebookId = newNbId
+                            } catch (t: Throwable) {
+                                DynamicIslandEventManager.postCriticalError(
+                                    title = "No se pudo importar la imagen",
+                                    detail = t.localizedMessage ?: "Verifica los permisos del archivo compartido."
+                                )
+                            } finally {
+                                batchImportProgress = null
+                            }
                         } else {
                             pendingExternalFile = resolved
                         }
@@ -455,10 +505,28 @@ class MainActivity : ComponentActivity() {
                 val overlayController = remember { LumaOverlayController() }
 
                 CompositionLocalProvider(LocalLumaOverlayController provides overlayController) {
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    @OptIn(ExperimentalComposeUiApi::class)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .semantics { testTagsAsResourceId = true }
+                    ) {
+                        val cloudState by cloudAccountManager.uiState.collectAsStateWithLifecycle()
                         val docId = activeDocumentId
                         val nbId = activeNotebookId
+                        val showFirstLaunchWelcome = !cloudState.hasCompletedWelcome &&
+                            docId == null &&
+                            nbId == null &&
+                            pendingExternalIntentState.value == null &&
+                            pendingExternalFile == null
                         when {
+                            showFirstLaunchWelcome -> {
+                                CloudWelcomeScreen(
+                                    accountManager = cloudAccountManager,
+                                    onContinueIntoApp = { /* StateFlow updates hasCompletedWelcome immediately */ }
+                                )
+                            }
+
                             nbId != null -> {
                                 // Strictly lazy Notebook Studio instantiation: only created when a Notebook is opened
                                 val notebookViewModel: NotebookViewModel = viewModel(
@@ -471,11 +539,23 @@ class MainActivity : ComponentActivity() {
                                     activeNotebookFlush = { notebookViewModel.flushPendingSaveAsync() }
                                     onDispose { activeNotebookFlush = null }
                                 }
+                                val notebookPrefs by prefsRepo.preferencesFlow.collectAsStateWithLifecycle()
                                 NotebookScreen(
                                     viewModel = notebookViewModel,
                                     onBackToLibrary = { activeNotebookId = null },
                                     onImportPdfToLibrary = { pdfFile, title ->
                                         libraryViewModel.importLocalPdfFileToLibrary(pdfFile, title)
+                                    },
+                                    autoHideChromeEnabled = notebookPrefs.autoHideNotebookChromeEnabled,
+                                    autoHideLandscapeOnly = notebookPrefs.autoHideNotebookChromeLandscapeOnly,
+                                    autoHideDelaySec = notebookPrefs.autoHideNotebookChromeDelaySec,
+                                    autoHideFadeSpeedMs = notebookPrefs.autoHideNotebookFadeSpeedMs,
+                                    onToggleAutoHideChrome = { enabled ->
+                                        lifecycleScope.launch {
+                                            prefsRepo.updatePreferences {
+                                                it.copy(autoHideNotebookChromeEnabled = enabled)
+                                            }
+                                        }
                                     }
                                 )
                                 GlobalLibraryIslandHost(
@@ -553,12 +633,20 @@ class MainActivity : ComponentActivity() {
                                     val cleanTitle = ext.displayName.substringBeforeLast('.').ifBlank { "Cuaderno de estudio" }
                                     if (ext.isImage) {
                                         lifecycleScope.launch {
-                                            val newNbId = notebookRepository.createNotebookFromImageUri(cleanTitle, ext.uri)
-                                            isHandlingExternalFile = false
-                                            pendingExternalFile = null
-                                            flushActiveSessionBeforeNavigate()
-                                            activeDocumentId = null
-                                            activeNotebookId = newNbId
+                                            try {
+                                                val newNbId = notebookRepository.createNotebookFromImageUri(cleanTitle, ext.uri)
+                                                flushActiveSessionBeforeNavigate()
+                                                activeDocumentId = null
+                                                activeNotebookId = newNbId
+                                            } catch (t: Throwable) {
+                                                DynamicIslandEventManager.postCriticalError(
+                                                    title = "No se pudo crear el cuaderno",
+                                                    detail = t.localizedMessage ?: "No fue posible cargar la imagen compartida."
+                                                )
+                                            } finally {
+                                                isHandlingExternalFile = false
+                                                pendingExternalFile = null
+                                            }
                                         }
                                     } else if (ext.format != null) {
                                         libraryViewModel.importDocumentWithResult(
@@ -569,27 +657,43 @@ class MainActivity : ComponentActivity() {
                                             },
                                             onImported = { imported ->
                                                 lifecycleScope.launch {
-                                                    val newNbId = if (imported.format == DocumentFormat.PDF) {
-                                                        notebookRepository.createNotebookFromPdf(imported.title, File(imported.filePath))
-                                                    } else {
-                                                        notebookRepository.createNotebook(title = "Apuntes · ${imported.title}")
+                                                    try {
+                                                        val newNbId = if (imported.format == DocumentFormat.PDF) {
+                                                            notebookRepository.createNotebookFromPdf(imported.title, File(imported.filePath))
+                                                        } else {
+                                                            notebookRepository.createNotebook(title = "Apuntes · ${imported.title}")
+                                                        }
+                                                        flushActiveSessionBeforeNavigate()
+                                                        activeDocumentId = null
+                                                        activeNotebookId = newNbId
+                                                    } catch (t: Throwable) {
+                                                        DynamicIslandEventManager.postCriticalError(
+                                                            title = "No se pudo crear el cuaderno",
+                                                            detail = t.localizedMessage ?: "Error preparando el cuaderno."
+                                                        )
+                                                    } finally {
+                                                        isHandlingExternalFile = false
+                                                        pendingExternalFile = null
                                                     }
-                                                    isHandlingExternalFile = false
-                                                    pendingExternalFile = null
-                                                    flushActiveSessionBeforeNavigate()
-                                                    activeDocumentId = null
-                                                    activeNotebookId = newNbId
                                                 }
                                             }
                                         )
                                     } else {
                                         lifecycleScope.launch {
-                                            val newNbId = notebookRepository.createNotebook(title = cleanTitle)
-                                            isHandlingExternalFile = false
-                                            pendingExternalFile = null
-                                            flushActiveSessionBeforeNavigate()
-                                            activeDocumentId = null
-                                            activeNotebookId = newNbId
+                                            try {
+                                                val newNbId = notebookRepository.createNotebook(title = cleanTitle)
+                                                flushActiveSessionBeforeNavigate()
+                                                activeDocumentId = null
+                                                activeNotebookId = newNbId
+                                            } catch (t: Throwable) {
+                                                DynamicIslandEventManager.postCriticalError(
+                                                    title = "No se pudo crear el cuaderno",
+                                                    detail = t.localizedMessage ?: "Error al iniciar el cuaderno."
+                                                )
+                                            } finally {
+                                                isHandlingExternalFile = false
+                                                pendingExternalFile = null
+                                            }
                                         }
                                     }
                                 },
@@ -703,6 +807,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        cloudAccountManager.onHostActivityResumed()
         if (lastAppliedTargetFps != currentTargetFps) {
             lastAppliedTargetFps = currentTargetFps
             val applied = DisplayRefreshRateController.applyRefreshRate(this, currentTargetFps)

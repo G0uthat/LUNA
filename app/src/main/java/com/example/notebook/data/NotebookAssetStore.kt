@@ -314,9 +314,15 @@ object NotebookAssetStore {
         writeWebP(outFile, scaled, losslessIfAlpha = false, quality = 82)
         evictPath(outFile.absolutePath)
         evictPath("${outFile.absolutePath}@$THUMBNAIL_WIDTH")
-        putCachedBitmap(outFile.absolutePath, scaled)
-        if (scaled !== bitmap) {
-            // Do not recycle caller's bitmap; caller owns it
+        // Never cache caller-owned bitmap directly: caller recycles `bitmap` in its finally block
+        // (for landscape/square pages where scaled === bitmap, caching it directly would poison the cache).
+        val cacheOwnedBitmap = if (scaled === bitmap) {
+            runCatching { bitmap.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
+        } else {
+            scaled
+        }
+        if (cacheOwnedBitmap != null) {
+            putCachedBitmap(outFile.absolutePath, cacheOwnedBitmap)
         }
         outFile.absolutePath
     }

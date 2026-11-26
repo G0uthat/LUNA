@@ -204,8 +204,8 @@ object NotebookExporter {
                         onProgress = onProgress
                     )
                     bos.flush()
+                    runCatching { fos.fd.sync() }
                 }
-                fos.fd.sync()
             }
             currentCoroutineContext().ensureActive()
             if (outFile.exists()) outFile.delete()
@@ -480,7 +480,8 @@ object NotebookExporter {
             targetWidthPx = targetW,
             targetHeightPx = targetH,
             assetDecodeBudgetPx = maxOf(targetW, targetH).coerceAtMost(2048),
-            includeBackground = !(isPng && transparentBg)
+            includeBackground = !(isPng && transparentBg),
+            opaqueWhiteBase = !isPng
         )
         try {
             currentCoroutineContext().ensureActive()
@@ -515,47 +516,51 @@ object NotebookExporter {
 
         onProgress(NotebookExportProgress(0.02f, "Empaquetando $total páginas en ZIP…", 0, total))
 
-        ZipOutputStream(out).use { zos ->
-            zos.setLevel(if (isPng) 3 else 1) // PNG & JPG are already compressed; fast zip framing
-            pages.forEachIndexed { idx, page ->
-                currentCoroutineContext().ensureActive()
-                val step = idx + 1
-                onProgress(
-                    NotebookExportProgress(
-                        fraction = (idx.toFloat() / total) * 0.92f + 0.04f,
-                        message = "Exportando página $step de $total (${scale.label} ${ext.uppercase()})…",
-                        currentPage = step,
-                        totalPages = total
-                    )
+        // Do NOT close `zos` here because closing ZipOutputStream closes the caller's `out` stream
+        // before `bos.flush()` and `fos.fd.sync()` run; calling `zos.finish(); zos.flush()` writes the
+        // full ZIP central directory safely while letting the caller own closing the underlying stream.
+        val zos = ZipOutputStream(out)
+        zos.setLevel(if (isPng) 3 else 1) // PNG & JPG are already compressed; fast zip framing
+        pages.forEachIndexed { idx, page ->
+            currentCoroutineContext().ensureActive()
+            val step = idx + 1
+            onProgress(
+                NotebookExportProgress(
+                    fraction = (idx.toFloat() / total) * 0.92f + 0.04f,
+                    message = "Exportando página $step de $total (${scale.label} ${ext.uppercase()})…",
+                    currentPage = step,
+                    totalPages = total
                 )
+            )
 
-                val parsed = contentByPageId[page.id] ?: NotebookJsonCodec.decode(page.contentJson)
-                val bitmap = renderPageToBitmap(
-                    context = context,
-                    notebook = notebook,
-                    page = page,
-                    content = parsed,
-                    targetWidthPx = targetW,
-                    targetHeightPx = targetH,
-                    assetDecodeBudgetPx = decodeBudget,
-                    includeBackground = !(isPng && transparentBg)
-                )
-                try {
-                    currentCoroutineContext().ensureActive()
-                    val entryName = "${safeBase}_pag_${String.format("%02d", step)}.$ext"
-                    zos.putNextEntry(ZipEntry(entryName))
-                    if (isPng) {
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, zos)
-                    } else {
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 92, zos)
-                    }
-                    zos.closeEntry()
-                } finally {
-                    if (!bitmap.isRecycled) bitmap.recycle()
+            val parsed = contentByPageId[page.id] ?: NotebookJsonCodec.decode(page.contentJson)
+            val bitmap = renderPageToBitmap(
+                context = context,
+                notebook = notebook,
+                page = page,
+                content = parsed,
+                targetWidthPx = targetW,
+                targetHeightPx = targetH,
+                assetDecodeBudgetPx = decodeBudget,
+                includeBackground = !(isPng && transparentBg),
+                opaqueWhiteBase = !isPng
+            )
+            try {
+                currentCoroutineContext().ensureActive()
+                val entryName = "${safeBase}_pag_${String.format("%02d", step)}.$ext"
+                zos.putNextEntry(ZipEntry(entryName))
+                if (isPng) {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, zos)
+                } else {
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 92, zos)
                 }
+                zos.closeEntry()
+            } finally {
+                if (!bitmap.isRecycled) bitmap.recycle()
             }
-            zos.finish()
         }
+        zos.finish()
+        zos.flush()
         onProgress(NotebookExportProgress(1f, "ZIP completado ($total páginas)", total, total))
     }
 
@@ -586,10 +591,11 @@ object NotebookExporter {
         targetWidthPx: Int,
         targetHeightPx: Int,
         assetDecodeBudgetPx: Int,
-        includeBackground: Boolean
+        includeBackground: Boolean,
+        opaqueWhiteBase: Boolean = false
     ): Bitmap {
         val bitmap = Bitmap.createBitmap(targetWidthPx, targetHeightPx, Bitmap.Config.ARGB_8888)
-        bitmap.eraseColor(Color.TRANSPARENT)
+        bitmap.eraseColor(if (opaqueWhiteBase) Color.WHITE else Color.TRANSPARENT)
         val canvas = Canvas(bitmap)
         val template = NotebookPageTemplate.fromName(notebook.pageTemplate)
         val bgBitmap = if (includeBackground && page.backgroundAssetPath.isNotBlank()) {

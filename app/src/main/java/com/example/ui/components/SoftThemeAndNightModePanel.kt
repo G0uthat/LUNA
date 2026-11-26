@@ -652,24 +652,31 @@ private fun HourStepperPill(
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Box(
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
-                    .background(palette.surface)
-                    .border(1.dp, palette.border, CircleShape)
                     .clickable { onStep(-1) }
                     .testTag("${testTagPrefix}_minus"),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Remove,
-                    contentDescription = "Restar una hora",
-                    tint = palette.ink,
-                    modifier = Modifier.size(15.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(palette.surface)
+                        .border(1.dp, palette.border, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Remove,
+                        contentDescription = "Restar una hora",
+                        tint = palette.ink,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
             }
             Text(
                 text = formatHour(hour),
@@ -679,23 +686,31 @@ private fun HourStepperPill(
             )
             Box(
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
-                    .background(palette.surface)
-                    .border(1.dp, palette.border, CircleShape)
                     .clickable { onStep(1) }
                     .testTag("${testTagPrefix}_plus"),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Add,
-                    contentDescription = "Sumar una hora",
-                    tint = palette.ink,
-                    modifier = Modifier.size(15.dp)
-                )
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(palette.surface)
+                        .border(1.dp, palette.border, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = "Sumar una hora",
+                        tint = palette.ink,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
             }
         }
     }
 }
 
-private fun formatHour(hour: Int): String = String.format("%02d:00", hour.coerceIn(0, 23))
+private fun formatHour(hour: Int): String =
+    String.format(java.util.Locale.US, "%02d:00", hour.coerceIn(0, 23))

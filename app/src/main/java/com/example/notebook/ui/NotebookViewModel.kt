@@ -1703,7 +1703,9 @@ class NotebookViewModel(
     fun flushPendingSaveAsync() {
         commitContinuousTransform()
         saveJob?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
+        // Use an independent IO scope so leaving NotebookScreen (which clears viewModelScope)
+        // NEVER cancels an in-flight Room save after dirtyPageIds has already been drained.
+        CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
             persistDirtyPages()
         }
     }
@@ -1716,15 +1718,17 @@ class NotebookViewModel(
         }
         if (snapshotIds.isEmpty()) return
         val contentMap = _uiState.value.contentByPageId
-        for (pid in snapshotIds) {
-            val content = contentMap[pid] ?: continue
-            val json = NotebookJsonCodec.encode(content)
-            repository.savePageContent(
-                notebookId = notebookId,
-                pageId = pid,
-                contentJson = json,
-                schemaVersion = NotebookPageContent.CURRENT_SCHEMA_VERSION
-            )
+        withContext(kotlinx.coroutines.NonCancellable) {
+            for (pid in snapshotIds) {
+                val content = contentMap[pid] ?: continue
+                val json = NotebookJsonCodec.encode(content)
+                repository.savePageContent(
+                    notebookId = notebookId,
+                    pageId = pid,
+                    contentJson = json,
+                    schemaVersion = NotebookPageContent.CURRENT_SCHEMA_VERSION
+                )
+            }
         }
     }
 

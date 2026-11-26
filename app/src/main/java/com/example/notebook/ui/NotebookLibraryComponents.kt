@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.DriveFileRenameOutline
@@ -653,6 +654,7 @@ private fun OrientationChip(
 fun NotebookOptionsDialog(
     notebook: NotebookSummaryItem,
     onRename: (String) -> Unit,
+    onSyncToDrive: (() -> Unit)? = null,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -706,6 +708,37 @@ fun NotebookOptionsDialog(
                 Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Guardar nombre", fontWeight = FontWeight.Bold)
+            }
+            if (onSyncToDrive != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(palette.accentSoft)
+                        .border(1.dp, palette.accent.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                        .clickable {
+                            onSyncToDrive()
+                            dismissWithAnim()
+                        }
+                        .padding(vertical = 12.dp)
+                        .testTag("notebook_option_sync_drive"),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CloudUpload,
+                        contentDescription = null,
+                        tint = palette.accent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = "Sincronizar en Google Drive (.luma)",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.accent
+                    )
+                }
             }
             Row(
                 modifier = Modifier

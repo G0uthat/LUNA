@@ -208,9 +208,33 @@ object CoverManager {
                 reqWidth = COVER_W,
                 reqHeight = COVER_H
             ) ?: return@runCatching null
-            val scaled = Bitmap.createScaledBitmap(decoded, COVER_W, COVER_H, true)
-            if (scaled !== decoded) decoded.recycle()
-            scaled
+            if (decoded.width <= 0 || decoded.height <= 0) {
+                decoded.recycle()
+                return@runCatching null
+            }
+            val out = Bitmap.createBitmap(COVER_W, COVER_H, Bitmap.Config.RGB_565)
+            val canvas = Canvas(out)
+            val srcW = decoded.width.toFloat()
+            val srcH = decoded.height.toFloat()
+            val targetAspect = COVER_W.toFloat() / COVER_H.toFloat()
+            val srcAspect = srcW / srcH
+            val srcRect = if (srcAspect > targetAspect) {
+                val cropW = (srcH * targetAspect).toInt().coerceIn(1, decoded.width)
+                val left = ((decoded.width - cropW) / 2).coerceAtLeast(0)
+                android.graphics.Rect(left, 0, left + cropW, decoded.height)
+            } else {
+                val cropH = (srcW / targetAspect).toInt().coerceIn(1, decoded.height)
+                val top = ((decoded.height - cropH) / 2).coerceAtLeast(0)
+                android.graphics.Rect(0, top, decoded.width, top + cropH)
+            }
+            canvas.drawBitmap(
+                decoded,
+                srcRect,
+                RectF(0f, 0f, COVER_W.toFloat(), COVER_H.toFloat()),
+                Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+            )
+            decoded.recycle()
+            out
         }
     }.getOrNull()
 

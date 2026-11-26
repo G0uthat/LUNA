@@ -66,7 +66,7 @@ object PptxDocumentEngine {
         val toc = mutableListOf<TocEntry>()
         val mediaCacheDir = File(
             context.cacheDir,
-            "pptx_media/${abs(file.absolutePath.hashCode())}_${file.lastModified()}"
+            "pptx_media/${file.absolutePath.hashCode().toUInt()}_${file.lastModified()}"
         ).apply { mkdirs() }
 
         ZipFile(file).use { zip ->
@@ -852,9 +852,11 @@ object PptxDocumentEngine {
 
         var argb = if (srgbEl != null) {
             parseHexColor(srgbEl.attr("val")) ?: return null
-        } else {
-            val key = schemeEl!!.attr("val")
+        } else if (schemeEl != null) {
+            val key = schemeEl.attr("val")
             themeColors[key] ?: themeColors[key.lowercase()] ?: return null
+        } else {
+            return null
         }
 
         // Apply DrawingML color transforms (lumMod, lumOff, tint, shade, alpha)
@@ -928,8 +930,12 @@ object PptxDocumentEngine {
     }
 
     private fun resolveZipPath(baseDir: String, relative: String): String {
-        if (relative.startsWith("/")) return relative.removePrefix("/")
-        val parts = (baseDir + relative).split('/')
+        val cleaned = relative.substringBefore('#').substringBefore('?').replace('\\', '/')
+        val decoded = runCatching {
+            java.net.URLDecoder.decode(cleaned.replace("+", "%2B"), "UTF-8")
+        }.getOrDefault(cleaned)
+        val combined = if (decoded.startsWith("/")) decoded.removePrefix("/") else "$baseDir$decoded"
+        val parts = combined.split('/')
         val stack = ArrayDeque<String>()
         for (p in parts) {
             when (p) {

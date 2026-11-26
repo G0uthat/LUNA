@@ -113,6 +113,7 @@ object LumaDiskCacheManager {
         collectEvictableFiles(File(appCtx.filesDir, "pdf_page_cache"), candidates)
         collectEvictableFiles(File(appCtx.filesDir, "parsed_cache"), candidates)
         collectEvictableFiles(File(appCtx.filesDir, "exports"), candidates)
+        collectEvictableFiles(File(appCtx.cacheDir, "pptx_media"), candidates)
 
         var totalBytes = candidates.sumOf { it.length() }
         if (totalBytes <= limit) return 0L

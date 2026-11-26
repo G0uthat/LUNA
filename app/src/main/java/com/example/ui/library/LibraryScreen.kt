@@ -96,8 +96,36 @@ import com.example.ui.components.UserAvatarCircle
 import com.example.ui.theme.LocalFolioPalette
 import com.example.ui.theme.LocalLumaMotion
 import android.net.Uri
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudQueue
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.Draw
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.rememberCoroutineScope
+import com.example.drive.DriveBreadcrumb
+import com.example.drive.DriveBrowserHeaderBlock
+import com.example.drive.DriveConflictResolutionDialog
+import com.example.drive.DriveDestinationPickerDialog
+import com.example.drive.DriveDownloadConfirmDialog
+import com.example.drive.DriveEmptySetupCard
+import com.example.drive.DriveFileContextMenuDialog
+import com.example.drive.DriveFileEntity
+import com.example.drive.DriveFileGridTile
+import com.example.drive.DriveFileKind
+import com.example.drive.DriveFileListRow
+import com.example.drive.DriveFilterKind
+import com.example.drive.DriveOpenTarget
+import com.example.drive.DriveRepository
+import com.example.drive.DriveSortOrder
+import com.example.drive.DriveSourceEntity
+import com.example.drive.DriveSyncMode
 import com.example.notebook.data.NotebookPageTemplate
 import com.example.notebook.data.NotebookRepository
 import com.example.notebook.data.NotebookSummaryItem
@@ -105,6 +133,11 @@ import com.example.notebook.ui.CreateNotebookDialog
 import com.example.notebook.ui.EmptyNotebooksCard
 import com.example.notebook.ui.NotebookGridCard
 import com.example.notebook.ui.NotebookOptionsDialog
+import com.example.core.cloud.CloudAccountManager
+import com.example.core.cloud.CloudMyAccountDialog
+import com.example.core.cloud.CloudSyncButtonState
+import com.example.ui.components.SETTINGS_TAB_DRIVE_SOURCES
+import com.example.ui.components.SETTINGS_TAB_GENERAL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -117,7 +150,8 @@ import kotlin.math.roundToInt
 private enum class LibraryViewTab(val label: String) {
     BOOKS("Libros"),
     SERIES("Series"),
-    NOTEBOOKS("Cuadernos")
+    NOTEBOOKS("Cuadernos"),
+    DRIVE("Drive")
 }
 
 private val SwitcherOuterShape = RoundedCornerShape(14.dp)
@@ -161,14 +195,50 @@ fun LibraryScreen(
     var searchQuery by remember { mutableStateOf("") }
 
     var showProfileMenu by remember { mutableStateOf(false) }
+    var showCloudMyAccountDialog by remember { mutableStateOf(false) }
     var showAccountDialog by remember { mutableStateOf(false) }
     var showFriendsDialog by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+    var settingsInitialTab by remember { mutableIntStateOf(SETTINGS_TAB_GENERAL) }
     var showAppGuide by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var showCreateNotebookDialog by remember { mutableStateOf(false) }
     var optionsNotebook by remember { mutableStateOf<NotebookSummaryItem?>(null) }
     var isCreatingNotebook by remember { mutableStateOf(false) }
+
+    // Shared cloud account & sync state coordinator (/core/cloud)
+    val cloudAccountManager = remember(context) { CloudAccountManager.getInstance(context) }
+    val cloudUiState by cloudAccountManager.uiState.collectAsStateWithLifecycle()
+
+    // Lazy user-owned Google Drive v3 BYOC coordinator
+    val driveRepo = remember(context) { DriveRepository.getInstance(context) }
+    val driveSources by driveRepo.sources.collectAsStateWithLifecycle(initialValue = emptyList())
+    val allDriveFiles by driveRepo.allFiles.collectAsStateWithLifecycle(initialValue = emptyList())
+    val driveSyncQueue by driveRepo.syncQueue.collectAsStateWithLifecycle(initialValue = emptyList())
+    val driveConflict by driveRepo.activeConflict.collectAsStateWithLifecycle()
+    val driveHasMoreByFolder by driveRepo.hasMoreByFolder.collectAsStateWithLifecycle()
+
+    val enabledDriveSources = remember(driveSources) { driveSources.filter { it.enabled } }
+    var selectedDriveSourceId by remember { mutableStateOf<Long?>(null) }
+    var driveBreadcrumbs by remember { mutableStateOf<List<DriveBreadcrumb>>(emptyList()) }
+    var driveFilterKind by remember { mutableStateOf(DriveFilterKind.ALL) }
+    var driveSortOrder by remember { mutableStateOf(DriveSortOrder.DATE_DESC) }
+    var driveIsGridView by remember { mutableStateOf(true) }
+    var pendingDriveDownloadFile by remember { mutableStateOf<DriveFileEntity?>(null) }
+    var optionsDriveFile by remember { mutableStateOf<DriveFileEntity?>(null) }
+    var pendingUploadDocumentId by remember { mutableStateOf<Long?>(null) }
+    var pendingUploadNotebookId by remember { mutableStateOf<Long?>(null) }
+
+    fun openSettingsAt(tab: Int) {
+        settingsInitialTab = tab
+        showSettingsSheet = true
+    }
+
+    LaunchedEffect(activeTab, enabledDriveSources.size) {
+        if (activeTab == LibraryViewTab.DRIVE && enabledDriveSources.isNotEmpty() && allDriveFiles.isEmpty()) {
+            driveRepo.refreshAllEnabledSources()
+        }
+    }
 
     // Strictly lazy notebook list: NotebookRepository is NOT instantiated until user enters Cuadernos tab!
     var notebooksActivated by remember { mutableStateOf(false) }
@@ -221,9 +291,11 @@ fun LibraryScreen(
 
     val anyFloatingMenuOpen by remember {
         derivedStateOf {
-            showProfileMenu || filterMenuExpanded || showAccountDialog || showFriendsDialog ||
+            showProfileMenu || showCloudMyAccountDialog || filterMenuExpanded || showAccountDialog || showFriendsDialog ||
                 showSettingsSheet || showAppGuide || showPermissionsOnboarding ||
-                optionsBook != null || showCreateNotebookDialog || optionsNotebook != null
+                optionsBook != null || showCreateNotebookDialog || optionsNotebook != null ||
+                pendingDriveDownloadFile != null || optionsDriveFile != null ||
+                driveConflict != null || pendingUploadDocumentId != null || pendingUploadNotebookId != null
         }
     }
 
@@ -240,6 +312,12 @@ fun LibraryScreen(
             activeTab == LibraryViewTab.SERIES && openedSeriesId != null
     ) {
         openedSeriesId = null
+    }
+    BackHandler(
+        enabled = !showInteractiveTour && !showProfileMenu && !filterMenuExpanded &&
+            activeTab == LibraryViewTab.DRIVE && driveBreadcrumbs.size > 1
+    ) {
+        driveBreadcrumbs = driveBreadcrumbs.dropLast(1)
     }
 
     // Zero-permission SAF document picker (Play Policy compliant)
@@ -365,9 +443,8 @@ fun LibraryScreen(
             val seriesIds = docIdsInActiveSeries
             val filter = selectedFilter
             val query = searchQuery
-            val inSeriesTab = activeTab == LibraryViewTab.SERIES && seriesIds != null
             documents.filter { doc ->
-                val inSeries = if (inSeriesTab) doc.id in seriesIds!! else true
+                val inSeries = if (activeTab == LibraryViewTab.SERIES && seriesIds != null) doc.id in seriesIds else true
                 val matchesFilter = when (filter) {
                     "Todos" -> true
                     "Otros" -> doc.format == "TXT" || doc.format == "FB2"
@@ -398,24 +475,145 @@ fun LibraryScreen(
             else notebooks.filter { it.title.contains(query, ignoreCase = true) }
         }
     }
+    val activeDriveSource = remember(enabledDriveSources, selectedDriveSourceId) {
+        enabledDriveSources.firstOrNull { it.id == selectedDriveSourceId }
+    }
+    val currentDriveFolderId = remember(activeDriveSource, driveBreadcrumbs) {
+        driveBreadcrumbs.lastOrNull()?.folderId ?: activeDriveSource?.folderId
+    }
+    val currentDrivePageKey = remember(activeDriveSource, currentDriveFolderId) {
+        if (activeDriveSource != null && !currentDriveFolderId.isNullOrBlank()) {
+            "${activeDriveSource.id}:$currentDriveFolderId"
+        } else null
+    }
+    val hasMoreDriveFiles = remember(driveHasMoreByFolder, currentDrivePageKey) {
+        currentDrivePageKey != null && driveHasMoreByFolder[currentDrivePageKey] == true
+    }
+    val filteredDriveFiles by remember(
+        allDriveFiles,
+        enabledDriveSources,
+        selectedDriveSourceId,
+        currentDriveFolderId,
+        driveFilterKind,
+        driveSortOrder,
+        searchQuery
+    ) {
+        derivedStateOf {
+            val enabledIds = enabledDriveSources.map { it.id }.toSet()
+            val rootFolderBySource = enabledDriveSources.associate { it.id to it.folderId }
+            val query = searchQuery.trim()
+            val base = allDriveFiles.filter { file ->
+                if (file.sourceId !in enabledIds) return@filter false
+                val inScope = when {
+                    selectedDriveSourceId == null ->
+                        if (query.isNotBlank()) true else file.parentFolderId == rootFolderBySource[file.sourceId]
+                    currentDriveFolderId != null ->
+                        file.sourceId == selectedDriveSourceId && file.parentFolderId == currentDriveFolderId
+                    else -> file.sourceId == selectedDriveSourceId
+                }
+                if (!inScope) return@filter false
+                val matchesKind = when (driveFilterKind) {
+                    DriveFilterKind.ALL -> true
+                    DriveFilterKind.PDF -> file.isFolder || file.kind == DriveFileKind.PDF
+                    DriveFilterKind.DOCX -> file.isFolder || file.kind == DriveFileKind.DOCX
+                    DriveFilterKind.IMAGES -> file.isFolder || file.kind == DriveFileKind.IMAGE
+                    DriveFilterKind.NOTEBOOKS -> file.isFolder || file.kind == DriveFileKind.LUMA_NOTEBOOK
+                    DriveFilterKind.BOOKS -> file.isFolder || file.kind in setOf(
+                        DriveFileKind.EPUB,
+                        DriveFileKind.PPTX,
+                        DriveFileKind.TXT,
+                        DriveFileKind.FB2
+                    )
+                }
+                val matchesQuery = query.isBlank() || file.name.contains(query, ignoreCase = true)
+                matchesKind && matchesQuery
+            }
+            val comparator: Comparator<DriveFileEntity> = when (driveSortOrder) {
+                DriveSortOrder.DATE_DESC -> compareByDescending<DriveFileEntity> { it.isFolder }
+                    .thenByDescending { it.modifiedTimeMs }
+                DriveSortOrder.NAME_ASC -> compareByDescending<DriveFileEntity> { it.isFolder }
+                    .thenBy { it.name.lowercase() }
+                DriveSortOrder.SIZE_DESC -> compareByDescending<DriveFileEntity> { it.isFolder }
+                    .thenByDescending { it.sizeBytes }
+            }
+            base.sortedWith(comparator)
+        }
+    }
+
+    fun launchDownloadAndOpenDriveFile(file: DriveFileEntity) {
+        coroutineScope.launch {
+            driveRepo.downloadAndOpenFile(file).onSuccess { target ->
+                when (target) {
+                    is DriveOpenTarget.OpenDocument -> onOpenDocument(target.documentId)
+                    is DriveOpenTarget.OpenNotebook -> {
+                        notebooksActivated = true
+                        onOpenNotebook(target.notebookId)
+                    }
+                }
+            }
+        }
+    }
+
+    fun handleTapDriveFile(file: DriveFileEntity) {
+        if (file.isFolder) {
+            val source = enabledDriveSources.firstOrNull { it.id == file.sourceId }
+            if (selectedDriveSourceId != file.sourceId && source != null) {
+                selectedDriveSourceId = source.id
+                driveBreadcrumbs = listOf(
+                    DriveBreadcrumb(source.folderId, source.name),
+                    DriveBreadcrumb(file.driveFileId, file.name)
+                )
+            } else {
+                val baseCrumbs = if (driveBreadcrumbs.isEmpty() && source != null) {
+                    listOf(DriveBreadcrumb(source.folderId, source.name))
+                } else {
+                    driveBreadcrumbs
+                }
+                driveBreadcrumbs = baseCrumbs + DriveBreadcrumb(file.driveFileId, file.name)
+            }
+            coroutineScope.launch {
+                driveRepo.refreshFolder(file.sourceId, file.driveFileId, loadMore = false)
+            }
+        } else if (file.isDownloadedLocally) {
+            launchDownloadAndOpenDriveFile(file)
+        } else {
+            pendingDriveDownloadFile = file
+        }
+    }
+
     val continueDoc = remember(documents) { documents.firstOrNull() }
 
-    Scaffold(
-        containerColor = palette.background
-    ) { innerPadding ->
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .onGloballyPositioned { coords ->
-                    val pos = coords.positionInWindow()
-                    rootLeftWindowPx = pos.x
-                    rootTopWindowPx = pos.y
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val screenMaxWidth = maxWidth
+        val isTabletLayout = screenMaxWidth >= 720.dp
+        Scaffold(
+            containerColor = palette.background,
+            bottomBar = {
+                if (!isTabletLayout) {
+                    LibraryMobileBottomNavBar(
+                        activeTab = activeTab,
+                        pendingDriveCount = driveSyncQueue.size,
+                        onSelectTab = { tab ->
+                            activeTab = tab
+                            openedSeriesId = null
+                        },
+                        onOpenSettings = { openSettingsAt(SETTINGS_TAB_GENERAL) }
+                    )
                 }
-        ) {
-            val isTabletLayout = maxWidth >= 720.dp
-            if (isTabletLayout) {
-                val leftPaneWidth = (maxWidth * 0.36f).coerceIn(300.dp, 400.dp)
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .onGloballyPositioned { coords ->
+                        val pos = coords.positionInWindow()
+                        rootLeftWindowPx = pos.x
+                        rootTopWindowPx = pos.y
+                    }
+            ) {
+                if (isTabletLayout) {
+                val leftPaneWidth = (screenMaxWidth * 0.36f).coerceIn(300.dp, 400.dp)
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
@@ -553,6 +751,17 @@ fun LibraryScreen(
                                 notebooksActivated = true
                                 showCreateNotebookDialog = true
                             },
+                            onRefreshDrive = {
+                                coroutineScope.launch {
+                                    val src = activeDriveSource
+                                    val folder = currentDriveFolderId
+                                    if (src != null && !folder.isNullOrBlank()) {
+                                        driveRepo.refreshFolder(src.id, folder, loadMore = false)
+                                    } else {
+                                        driveRepo.refreshAllEnabledSources()
+                                    }
+                                }
+                            },
                             onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
                             onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
                             onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
@@ -568,7 +777,70 @@ fun LibraryScreen(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            if (activeTab == LibraryViewTab.NOTEBOOKS) {
+                            if (activeTab == LibraryViewTab.DRIVE) {
+                                driveBrowserGridItems(
+                                    driveRepo = driveRepo,
+                                    enabledSources = enabledDriveSources,
+                                    selectedSourceId = selectedDriveSourceId,
+                                    breadcrumbs = driveBreadcrumbs,
+                                    filterKind = driveFilterKind,
+                                    sortOrder = driveSortOrder,
+                                    isGridView = driveIsGridView,
+                                    pendingQueueCount = driveSyncQueue.size,
+                                    files = filteredDriveFiles,
+                                    hasMoreFiles = hasMoreDriveFiles,
+                                    onSelectSource = { src ->
+                                        selectedDriveSourceId = src?.id
+                                        driveBreadcrumbs = if (src != null) {
+                                            listOf(DriveBreadcrumb(src.folderId, src.name))
+                                        } else emptyList()
+                                        coroutineScope.launch {
+                                            if (src != null) {
+                                                driveRepo.refreshFolder(src.id, src.folderId, loadMore = false)
+                                            } else {
+                                                driveRepo.refreshAllEnabledSources()
+                                            }
+                                        }
+                                    },
+                                    onNavigateBreadcrumb = { idx ->
+                                        val nextCrumbs = driveBreadcrumbs.take(idx + 1)
+                                        driveBreadcrumbs = nextCrumbs
+                                        val srcId = selectedDriveSourceId
+                                        val targetFolder = nextCrumbs.lastOrNull()?.folderId
+                                        if (srcId != null && !targetFolder.isNullOrBlank()) {
+                                            coroutineScope.launch {
+                                                driveRepo.refreshFolder(srcId, targetFolder, loadMore = false)
+                                            }
+                                        }
+                                    },
+                                    onSelectFilter = { driveFilterKind = it },
+                                    onSelectSort = { driveSortOrder = it },
+                                    onToggleGridView = { driveIsGridView = !driveIsGridView },
+                                    onOpenDriveSettings = { openSettingsAt(SETTINGS_TAB_DRIVE_SOURCES) },
+                                    onTapFile = ::handleTapDriveFile,
+                                    onLongPressFile = { optionsDriveFile = it },
+                                    onLoadMore = {
+                                        val src = activeDriveSource
+                                        val folder = currentDriveFolderId
+                                        if (src != null && !folder.isNullOrBlank()) {
+                                            coroutineScope.launch {
+                                                driveRepo.refreshFolder(src.id, folder, loadMore = true)
+                                            }
+                                        }
+                                    },
+                                    onRefreshNow = {
+                                        coroutineScope.launch {
+                                            val src = activeDriveSource
+                                            val folder = currentDriveFolderId
+                                            if (src != null && !folder.isNullOrBlank()) {
+                                                driveRepo.refreshFolder(src.id, folder, loadMore = false)
+                                            } else {
+                                                driveRepo.refreshAllEnabledSources()
+                                            }
+                                        }
+                                    }
+                                )
+                            } else if (activeTab == LibraryViewTab.NOTEBOOKS) {
                                 if (filteredNotebooks.isEmpty()) {
                                     item(key = "lib_notebooks_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_notebooks") {
                                         EmptyNotebooksCard(
@@ -679,9 +951,8 @@ fun LibraryScreen(
                     columns = GridCells.Adaptive(minSize = 148.dp),
                     modifier = Modifier
                         .fillMaxSize()
-                        .displayCutoutPadding()
-                        .navigationBarsPadding(),
-                    contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 32.dp),
+                        .displayCutoutPadding(),
+                    contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 28.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
@@ -705,7 +976,7 @@ fun LibraryScreen(
                     }
 
                     // 2. Soft Continue Reading Banner
-                    if (continueDoc != null) {
+                    if (continueDoc != null && activeTab != LibraryViewTab.DRIVE) {
                         item(key = "lib_continue_reading", span = { GridItemSpan(maxLineSpan) }, contentType = "continue") {
                             Box(
                                 modifier = Modifier.onGloballyPositioned { coords ->
@@ -722,7 +993,7 @@ fun LibraryScreen(
                         }
                     }
 
-                    // 3. Three-Tab Switcher ("Libros" | "Series" | "Cuadernos") ABOVE Search Bar + Action Button
+                    // 3. Tab Switcher ("Libros" | "Series" | "Cuadernos" | "Drive") ABOVE Search Bar + Action Button
                     item(key = "lib_tabs_and_search", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
                         LibraryTabsAndSearchControls(
                             activeTab = activeTab,
@@ -739,6 +1010,17 @@ fun LibraryScreen(
                                 notebooksActivated = true
                                 showCreateNotebookDialog = true
                             },
+                            onRefreshDrive = {
+                                coroutineScope.launch {
+                                    val src = activeDriveSource
+                                    val folder = currentDriveFolderId
+                                    if (src != null && !folder.isNullOrBlank()) {
+                                        driveRepo.refreshFolder(src.id, folder, loadMore = false)
+                                    } else {
+                                        driveRepo.refreshAllEnabledSources()
+                                    }
+                                }
+                            },
                             onToggleFilterMenu = { filterMenuExpanded = !filterMenuExpanded },
                             onTabsRect = { rect -> tourTargets = tourTargets.copy(tabsRect = rect.toRootRelative()) },
                             onSearchFilterRect = { rect -> tourTargets = tourTargets.copy(searchFilterRect = rect.toRootRelative()) },
@@ -748,8 +1030,71 @@ fun LibraryScreen(
                         )
                     }
 
-                    // 4. Content Area: Cuadernos OR Series Overview OR Steam-Style Book Cover Grid
-                    if (activeTab == LibraryViewTab.NOTEBOOKS) {
+                    // 4. Content Area: Drive OR Cuadernos OR Series Overview OR Steam-Style Book Cover Grid
+                    if (activeTab == LibraryViewTab.DRIVE) {
+                        driveBrowserGridItems(
+                            driveRepo = driveRepo,
+                            enabledSources = enabledDriveSources,
+                            selectedSourceId = selectedDriveSourceId,
+                            breadcrumbs = driveBreadcrumbs,
+                            filterKind = driveFilterKind,
+                            sortOrder = driveSortOrder,
+                            isGridView = driveIsGridView,
+                            pendingQueueCount = driveSyncQueue.size,
+                            files = filteredDriveFiles,
+                            hasMoreFiles = hasMoreDriveFiles,
+                            onSelectSource = { src ->
+                                selectedDriveSourceId = src?.id
+                                driveBreadcrumbs = if (src != null) {
+                                    listOf(DriveBreadcrumb(src.folderId, src.name))
+                                } else emptyList()
+                                coroutineScope.launch {
+                                    if (src != null) {
+                                        driveRepo.refreshFolder(src.id, src.folderId, loadMore = false)
+                                    } else {
+                                        driveRepo.refreshAllEnabledSources()
+                                    }
+                                }
+                            },
+                            onNavigateBreadcrumb = { idx ->
+                                val nextCrumbs = driveBreadcrumbs.take(idx + 1)
+                                driveBreadcrumbs = nextCrumbs
+                                val srcId = selectedDriveSourceId
+                                val targetFolder = nextCrumbs.lastOrNull()?.folderId
+                                if (srcId != null && !targetFolder.isNullOrBlank()) {
+                                    coroutineScope.launch {
+                                        driveRepo.refreshFolder(srcId, targetFolder, loadMore = false)
+                                    }
+                                }
+                            },
+                            onSelectFilter = { driveFilterKind = it },
+                            onSelectSort = { driveSortOrder = it },
+                            onToggleGridView = { driveIsGridView = !driveIsGridView },
+                            onOpenDriveSettings = { openSettingsAt(SETTINGS_TAB_DRIVE_SOURCES) },
+                            onTapFile = ::handleTapDriveFile,
+                            onLongPressFile = { optionsDriveFile = it },
+                            onLoadMore = {
+                                val src = activeDriveSource
+                                val folder = currentDriveFolderId
+                                if (src != null && !folder.isNullOrBlank()) {
+                                    coroutineScope.launch {
+                                        driveRepo.refreshFolder(src.id, folder, loadMore = true)
+                                    }
+                                }
+                            },
+                            onRefreshNow = {
+                                coroutineScope.launch {
+                                    val src = activeDriveSource
+                                    val folder = currentDriveFolderId
+                                    if (src != null && !folder.isNullOrBlank()) {
+                                        driveRepo.refreshFolder(src.id, folder, loadMore = false)
+                                    } else {
+                                        driveRepo.refreshAllEnabledSources()
+                                    }
+                                }
+                            }
+                        )
+                    } else if (activeTab == LibraryViewTab.NOTEBOOKS) {
                         if (filteredNotebooks.isEmpty()) {
                             item(key = "lib_notebooks_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "empty_notebooks") {
                                 EmptyNotebooksCard(
@@ -864,11 +1209,14 @@ fun LibraryScreen(
                 anchorTopPx = profileSphereTopInRootPx,
                 anchorRightPx = profileSphereRightInRootPx,
                 socialRepo = socialRepo,
+                isCloudSignedIn = cloudUiState.isSignedIn,
+                cloudSyncButtonState = cloudUiState.syncButtonState,
                 isImporting = isImporting,
                 onDismiss = { showProfileMenu = false },
+                onOpenCloudAccount = { showCloudMyAccountDialog = true },
                 onOpenAccount = { showAccountDialog = true },
                 onOpenFriends = { showFriendsDialog = true },
-                onOpenSettings = { showSettingsSheet = true },
+                onOpenSettings = { openSettingsAt(SETTINGS_TAB_GENERAL) },
                 onOpenGuide = { showAppGuide = true },
                 onImportDocument = launchImport
             )
@@ -892,6 +1240,7 @@ fun LibraryScreen(
                     viewModel.updatePreferences { it.copy(hasCompletedOnboarding = true) }
                 }
             )
+            }
         }
     }
 
@@ -919,6 +1268,18 @@ fun LibraryScreen(
                 optionsBook = null
                 bookForMetadataModal = doc
             },
+            onSyncToDrive = {
+                optionsBook = null
+                when {
+                    enabledDriveSources.isEmpty() -> openSettingsAt(SETTINGS_TAB_DRIVE_SOURCES)
+                    enabledDriveSources.size == 1 -> {
+                        coroutineScope.launch {
+                            driveRepo.syncDocumentToDrive(doc.id, enabledDriveSources.first().id)
+                        }
+                    }
+                    else -> pendingUploadDocumentId = doc.id
+                }
+            },
             onDelete = {
                 optionsBook = null
                 viewModel.deleteDocument(doc)
@@ -936,6 +1297,14 @@ fun LibraryScreen(
                 bookForMetadataModal = null
             },
             onDismiss = { bookForMetadataModal = null }
+        )
+    }
+
+    if (showCloudMyAccountDialog) {
+        CloudMyAccountDialog(
+            accountManager = cloudAccountManager,
+            onOpenDriveSettings = { openSettingsAt(SETTINGS_TAB_DRIVE_SOURCES) },
+            onDismiss = { showCloudMyAccountDialog = false }
         )
     }
 
@@ -960,6 +1329,7 @@ fun LibraryScreen(
     if (showSettingsSheet) {
         LibrarySettingsSheetHost(
             viewModel = viewModel,
+            initialTab = settingsInitialTab,
             onReplayOnboarding = {
                 showSettingsSheet = false
                 showPermissionsOnboarding = true
@@ -1038,6 +1408,13 @@ fun LibraryScreen(
                         pageHeightPx = heightPx,
                         backgroundColor = bgColor
                     )
+                    if (enabledDriveSources.isNotEmpty() && driveRepo.vault.getSyncMode() != DriveSyncMode.MANUAL) {
+                        val defaultTarget = enabledDriveSources.firstOrNull { it.isDefaultSaveTarget }
+                            ?: enabledDriveSources.first()
+                        coroutineScope.launch {
+                            driveRepo.syncNotebookToDrive(newId, defaultTarget.id)
+                        }
+                    }
                     onOpenNotebook(newId)
                 }
             },
@@ -1055,12 +1432,116 @@ fun LibraryScreen(
                     notebookRepositoryProvider().renameNotebook(nb.id, newTitle)
                 }
             },
+            onSyncToDrive = {
+                when {
+                    enabledDriveSources.isEmpty() -> openSettingsAt(SETTINGS_TAB_DRIVE_SOURCES)
+                    enabledDriveSources.size == 1 -> {
+                        coroutineScope.launch {
+                            driveRepo.syncNotebookToDrive(nb.id, enabledDriveSources.first().id)
+                        }
+                    }
+                    else -> pendingUploadNotebookId = nb.id
+                }
+            },
             onDelete = {
                 coroutineScope.launch {
                     notebookRepositoryProvider().deleteNotebook(nb.id)
                 }
             },
             onDismiss = { optionsNotebook = null }
+        )
+    }
+
+    // Google Drive Download Confirmation Dialog ("¿Desea descargar [NOMBRE]? Tamaño: X MB")
+    pendingDriveDownloadFile?.let { targetFile ->
+        DriveDownloadConfirmDialog(
+            file = targetFile,
+            driveRepo = driveRepo,
+            onConfirmDownload = {
+                pendingDriveDownloadFile = null
+                launchDownloadAndOpenDriveFile(targetFile)
+            },
+            onDismiss = { pendingDriveDownloadFile = null }
+        )
+    }
+
+    // Google Drive Long-Press Context Menu
+    optionsDriveFile?.let { file ->
+        DriveFileContextMenuDialog(
+            file = file,
+            allSources = enabledDriveSources,
+            onOpen = {
+                optionsDriveFile = null
+                handleTapDriveFile(file)
+            },
+            onDownload = {
+                optionsDriveFile = null
+                launchDownloadAndOpenDriveFile(file)
+            },
+            onSync = {
+                optionsDriveFile = null
+                coroutineScope.launch { driveRepo.syncDriveFile(file) }
+            },
+            onRename = { newName ->
+                optionsDriveFile = null
+                coroutineScope.launch { driveRepo.renameRemoteFile(file, newName) }
+            },
+            onMoveToSource = { targetSource ->
+                optionsDriveFile = null
+                coroutineScope.launch { driveRepo.moveRemoteFile(file, targetSource) }
+            },
+            onFreeLocalCopy = {
+                optionsDriveFile = null
+                coroutineScope.launch { driveRepo.freeLocalSpace(file) }
+            },
+            onDeleteFromDrive = {
+                optionsDriveFile = null
+                coroutineScope.launch { driveRepo.deleteRemoteFile(file) }
+            },
+            onDismiss = { optionsDriveFile = null }
+        )
+    }
+
+    // Google Drive Version Conflict Resolution Dialog
+    driveConflict?.let { conflict ->
+        DriveConflictResolutionDialog(
+            conflict = conflict,
+            onResolve = { resolution ->
+                coroutineScope.launch { driveRepo.resolveConflict(conflict, resolution) }
+            },
+            onDismiss = { driveRepo.dismissConflictDialog() }
+        )
+    }
+
+    // Destination Picker for syncing a local Book to Google Drive
+    pendingUploadDocumentId?.let { docId ->
+        DriveDestinationPickerDialog(
+            title = "Subir libro a Google Drive",
+            sources = enabledDriveSources,
+            allowLocalOnly = false,
+            onSelectSource = { chosen ->
+                pendingUploadDocumentId = null
+                if (chosen != null) {
+                    coroutineScope.launch { driveRepo.syncDocumentToDrive(docId, chosen.id) }
+                }
+            },
+            onDismiss = { pendingUploadDocumentId = null }
+        )
+    }
+
+    // Destination Picker for syncing a local Study Notebook (.luma) to Google Drive
+    pendingUploadNotebookId?.let { nbId ->
+        DriveDestinationPickerDialog(
+            title = "Sincronizar cuaderno (.luma)",
+            sources = enabledDriveSources,
+            allowLocalOnly = false,
+            onSelectSource = { chosen ->
+                pendingUploadNotebookId = null
+                if (chosen != null) {
+                    coroutineScope.launch { driveRepo.syncNotebookToDrive(nbId, chosen.id) }
+                }
+            },
+            onDismiss = { pendingUploadNotebookId = null }
         )
     }
 
@@ -1219,6 +1700,7 @@ private fun LibraryTabsAndSearchControls(
     onSearchQueryChange: (String) -> Unit,
     onCreatePlaylist: () -> Unit,
     onCreateNotebook: () -> Unit,
+    onRefreshDrive: () -> Unit,
     onToggleFilterMenu: () -> Unit,
     onTabsRect: (Rect) -> Unit,
     onSearchFilterRect: (Rect) -> Unit,
@@ -1235,14 +1717,14 @@ private fun LibraryTabsAndSearchControls(
                 .border(1.dp, palette.border, SwitcherOuterShape)
                 .padding(4.dp)
                 .testTag("library_mode_switcher"),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             for (tab in LibraryViewTab.entries) {
                 val selected = activeTab == tab
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .height(34.dp)
+                        .height(36.dp)
                         .clip(SwitcherTabShape)
                         .background(if (selected) palette.accent else Color.Transparent)
                         .clickable { onSelectTab(tab) }
@@ -1251,10 +1733,11 @@ private fun LibraryTabsAndSearchControls(
                 ) {
                     Text(
                         text = tab.label,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = if (selected) palette.onAccent else palette.inkMuted,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -1273,6 +1756,7 @@ private fun LibraryTabsAndSearchControls(
                 placeholder = {
                     Text(
                         text = when {
+                            activeTab == LibraryViewTab.DRIVE -> "Buscar en Google Drive…"
                             activeTab == LibraryViewTab.NOTEBOOKS -> "Buscar cuaderno de estudio…"
                             isSeriesOverview -> "Buscar serie o saga…"
                             else -> "Buscar título o autor…"
@@ -1308,7 +1792,24 @@ private fun LibraryTabsAndSearchControls(
                     .testTag("library_search_input")
             )
 
-            if (activeTab == LibraryViewTab.NOTEBOOKS) {
+            if (activeTab == LibraryViewTab.DRIVE) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(SearchInputShape)
+                        .background(palette.accent)
+                        .clickable(onClick = onRefreshDrive)
+                        .testTag("drive_quick_refresh_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "Actualizar carpetas de Drive",
+                        tint = palette.onAccent,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            } else if (activeTab == LibraryViewTab.NOTEBOOKS) {
                 Box(
                     modifier = Modifier
                         .size(52.dp)
@@ -1521,8 +2022,11 @@ private fun LibraryProfileDropdownHost(
     anchorTopPx: Float,
     anchorRightPx: Float,
     socialRepo: SocialRepository,
+    isCloudSignedIn: Boolean,
+    cloudSyncButtonState: CloudSyncButtonState,
     isImporting: Boolean,
     onDismiss: () -> Unit,
+    onOpenCloudAccount: () -> Unit,
     onOpenAccount: () -> Unit,
     onOpenFriends: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -1542,6 +2046,9 @@ private fun LibraryProfileDropdownHost(
         unreadMessages = totalUnreadMessages,
         isImporting = isImporting,
         onDismiss = onDismiss,
+        onOpenCloudAccount = onOpenCloudAccount,
+        isCloudSignedIn = isCloudSignedIn,
+        cloudSyncButtonState = cloudSyncButtonState,
         onOpenAccount = onOpenAccount,
         onOpenFriends = onOpenFriends,
         onOpenSettings = onOpenSettings,
@@ -1562,6 +2069,7 @@ private fun LibraryFeedbackHost(viewModel: LibraryViewModel) {
 @Composable
 private fun LibrarySettingsSheetHost(
     viewModel: LibraryViewModel,
+    initialTab: Int = SETTINGS_TAB_GENERAL,
     onReplayOnboarding: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1570,6 +2078,7 @@ private fun LibrarySettingsSheetHost(
     AppSettingsSheet(
         prefs = prefs,
         sources = dictSources,
+        initialTab = initialTab,
         onUpdatePrefs = viewModel::updatePreferences,
         onAddSource = viewModel::addDictionarySource,
         onToggleSource = viewModel::toggleDictionarySource,
@@ -1578,6 +2087,211 @@ private fun LibrarySettingsSheetHost(
         onReplayOnboarding = onReplayOnboarding,
         onDismiss = onDismiss
     )
+}
+
+@Composable
+private fun LibraryMobileBottomNavBar(
+    activeTab: LibraryViewTab,
+    pendingDriveCount: Int,
+    onSelectTab: (LibraryViewTab) -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val palette = LocalFolioPalette.current
+    val itemColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = palette.accent,
+        selectedTextColor = palette.accent,
+        indicatorColor = palette.accentSoft,
+        unselectedIconColor = palette.inkMuted,
+        unselectedTextColor = palette.inkMuted
+    )
+    NavigationBar(
+        containerColor = palette.surface,
+        tonalElevation = 0.dp,
+        modifier = Modifier
+            .border(width = 1.dp, color = palette.border)
+            .testTag("library_mobile_bottom_bar")
+    ) {
+        NavigationBarItem(
+            selected = activeTab == LibraryViewTab.BOOKS || activeTab == LibraryViewTab.SERIES,
+            onClick = { onSelectTab(LibraryViewTab.BOOKS) },
+            icon = { Icon(Icons.Rounded.AutoStories, contentDescription = "Libros") },
+            label = { Text("Libros", maxLines = 1) },
+            colors = itemColors,
+            modifier = Modifier.testTag("bottom_nav_books")
+        )
+        NavigationBarItem(
+            selected = activeTab == LibraryViewTab.NOTEBOOKS,
+            onClick = { onSelectTab(LibraryViewTab.NOTEBOOKS) },
+            icon = { Icon(Icons.Rounded.Draw, contentDescription = "Cuadernos") },
+            label = { Text("Cuadernos", maxLines = 1) },
+            colors = itemColors,
+            modifier = Modifier.testTag("bottom_nav_notebooks")
+        )
+        NavigationBarItem(
+            selected = activeTab == LibraryViewTab.DRIVE,
+            onClick = { onSelectTab(LibraryViewTab.DRIVE) },
+            icon = {
+                if (pendingDriveCount > 0) {
+                    BadgedBox(badge = { Badge { Text(pendingDriveCount.toString()) } }) {
+                        Icon(Icons.Rounded.CloudQueue, contentDescription = "Google Drive")
+                    }
+                } else {
+                    Icon(Icons.Rounded.CloudQueue, contentDescription = "Google Drive")
+                }
+            },
+            label = { Text("Drive", maxLines = 1) },
+            colors = itemColors,
+            modifier = Modifier.testTag("bottom_nav_drive")
+        )
+        NavigationBarItem(
+            selected = false,
+            onClick = onOpenSettings,
+            icon = { Icon(Icons.Rounded.Settings, contentDescription = "Ajustes") },
+            label = { Text("Ajustes", maxLines = 1) },
+            colors = itemColors,
+            modifier = Modifier.testTag("bottom_nav_settings")
+        )
+    }
+}
+
+private fun androidx.compose.foundation.lazy.grid.LazyGridScope.driveBrowserGridItems(
+    driveRepo: DriveRepository,
+    enabledSources: List<DriveSourceEntity>,
+    selectedSourceId: Long?,
+    breadcrumbs: List<DriveBreadcrumb>,
+    filterKind: DriveFilterKind,
+    sortOrder: DriveSortOrder,
+    isGridView: Boolean,
+    pendingQueueCount: Int,
+    files: List<DriveFileEntity>,
+    hasMoreFiles: Boolean,
+    onSelectSource: (DriveSourceEntity?) -> Unit,
+    onNavigateBreadcrumb: (Int) -> Unit,
+    onSelectFilter: (DriveFilterKind) -> Unit,
+    onSelectSort: (DriveSortOrder) -> Unit,
+    onToggleGridView: () -> Unit,
+    onOpenDriveSettings: () -> Unit,
+    onTapFile: (DriveFileEntity) -> Unit,
+    onLongPressFile: (DriveFileEntity) -> Unit,
+    onLoadMore: () -> Unit,
+    onRefreshNow: () -> Unit
+) {
+    if (enabledSources.isEmpty()) {
+        item(key = "drive_empty_setup", span = { GridItemSpan(maxLineSpan) }, contentType = "drive_setup") {
+            DriveEmptySetupCard(onOpenSettings = onOpenDriveSettings)
+        }
+        return
+    }
+
+    item(key = "drive_header_controls", span = { GridItemSpan(maxLineSpan) }, contentType = "drive_header") {
+        DriveBrowserHeaderBlock(
+            driveRepo = driveRepo,
+            sources = enabledSources,
+            selectedSourceId = selectedSourceId,
+            breadcrumbs = breadcrumbs,
+            filterKind = filterKind,
+            sortOrder = sortOrder,
+            isGridView = isGridView,
+            pendingQueueCount = pendingQueueCount,
+            onSelectSource = onSelectSource,
+            onNavigateBreadcrumb = onNavigateBreadcrumb,
+            onSelectFilter = onSelectFilter,
+            onSelectSort = onSelectSort,
+            onToggleGridView = onToggleGridView,
+            onOpenDriveSettings = onOpenDriveSettings
+        )
+    }
+
+    if (files.isEmpty()) {
+        item(key = "drive_folder_empty", span = { GridItemSpan(maxLineSpan) }, contentType = "drive_empty_folder") {
+            val palette = LocalFolioPalette.current
+            TactileCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CloudDone,
+                        contentDescription = null,
+                        tint = palette.accent,
+                        modifier = Modifier.size(38.dp)
+                    )
+                    Text(
+                        text = "Sin archivos visibles en esta carpeta",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.ink
+                    )
+                    Text(
+                        text = "Pulsa Actualizar para cargar los archivos más recientes desde tu Google Drive o cambia el filtro.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                    TactileButton(
+                        onClick = onRefreshNow,
+                        cornerRadius = 14.dp,
+                        lipDepth = 2.dp
+                    ) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Actualizar carpeta", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    } else if (isGridView) {
+        items(
+            items = files,
+            key = { "drive_grid_${it.driveFileId}" },
+            contentType = { "drive_grid_tile" }
+        ) { file ->
+            DriveFileGridTile(
+                file = file,
+                driveRepo = driveRepo,
+                onTap = { onTapFile(file) },
+                onLongPress = { onLongPressFile(file) }
+            )
+        }
+    } else {
+        items(
+            items = files,
+            key = { "drive_list_${it.driveFileId}" },
+            span = { GridItemSpan(maxLineSpan) },
+            contentType = { "drive_list_row" }
+        ) { file ->
+            DriveFileListRow(
+                file = file,
+                driveRepo = driveRepo,
+                onTap = { onTapFile(file) },
+                onLongPress = { onLongPressFile(file) }
+            )
+        }
+    }
+
+    if (hasMoreFiles) {
+        item(key = "drive_load_more", span = { GridItemSpan(maxLineSpan) }, contentType = "drive_load_more") {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                TactileButton(
+                    onClick = onLoadMore,
+                    cornerRadius = 14.dp,
+                    lipDepth = 2.dp,
+                    modifier = Modifier.testTag("drive_load_more_button")
+                ) {
+                    Icon(Icons.Rounded.CloudSync, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Cargar más archivos", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
 }
 
 @Composable

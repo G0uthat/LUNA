@@ -23,6 +23,10 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.net.URLDecoder
+import java.nio.ByteBuffer
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 import java.util.zip.ZipFile
 import kotlin.coroutines.coroutineContext
 
@@ -32,6 +36,7 @@ object DocumentParser {
     private val BLANK_LINE_SPLIT = Regex("\\r?\\n\\s*\\r?\\n")
     private val MULTI_NEWLINE_REGEX = Regex("\\n{3,}")
     private val HORIZ_WS_REGEX = Regex("[ \\t]+")
+    private val HTML_ENTITY_REGEX = Regex("&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]{1,12});")
 
     suspend fun parse(context: Context, file: File, format: DocumentFormat): ParsedDocument =
         withContext(Dispatchers.IO) {
@@ -262,9 +267,11 @@ object DocumentParser {
                     val parser = factory.newPullParser()
                     parser.setInput(BufferedInputStream(rawStream, 16 * 1024), "UTF-8")
 
-                    var inParagraph = false
-                    var currentStyle = ""
-                    val paraBuilder = StringBuilder(256)
+                    class DocxParaState(
+                        var style: String = "",
+                        val buf: StringBuilder = StringBuilder(192)
+                    )
+                    val paraStack = ArrayDeque<DocxParaState>()
                     var eventCounter = 0
 
                     var event = parser.eventType
@@ -299,46 +306,59 @@ object DocumentParser {
                                             nativeHeightPt = hPt.coerceIn(240f, 2400f)
                                         }
                                     }
-                                    "p" -> {
-                                        inParagraph = true
-                                        currentStyle = ""
-                                        paraBuilder.clear()
-                                    }
+                                    "p" -> paraStack.addLast(DocxParaState())
                                     "pStyle" -> {
-                                        for (i in 0 until parser.attributeCount) {
-                                            if (parser.getAttributeName(i).endsWith("val")) {
-                                                currentStyle = parser.getAttributeValue(i)
+                                        val top = paraStack.lastOrNull()
+                                        if (top != null) {
+                                            for (i in 0 until parser.attributeCount) {
+                                                if (parser.getAttributeName(i).endsWith("val")) {
+                                                    top.style = parser.getAttributeValue(i)
+                                                }
                                             }
                                         }
                                     }
-                                    "br" -> if (inParagraph) paraBuilder.append('\n')
-                                    "tab" -> if (inParagraph) paraBuilder.append("  ")
+                                    "br" -> paraStack.lastOrNull()?.buf?.append('\n')
+                                    "tab" -> paraStack.lastOrNull()?.buf?.append("  ")
                                     "t" -> {
-                                        if (inParagraph) {
-                                            paraBuilder.append(parser.nextText())
+                                        val top = paraStack.lastOrNull()
+                                        if (top != null) {
+                                            top.buf.append(runCatching { parser.nextText() }.getOrDefault(""))
                                         }
                                     }
                                 }
                             }
                             XmlPullParser.END_TAG -> {
                                 val tag = parser.name.substringAfter(':')
-                                if (tag == "p" && inParagraph) {
-                                    val text = paraBuilder.toString().trim()
+                                if (tag == "p" && paraStack.isNotEmpty()) {
+                                    val finished = paraStack.removeLast()
+                                    val text = finished.buf.toString().trim()
                                     if (text.isNotEmpty()) {
+                                        val styleNorm = finished.style.replace(" ", "")
                                         val blockType = when {
-                                            currentStyle.contains("Heading1", true) ||
-                                                currentStyle.contains("Title", true) ||
-                                                currentStyle.equals("1", true) -> BlockType.HEADING_1
-                                            currentStyle.contains("Heading2", true) ||
-                                                currentStyle.contains("Heading3", true) ||
-                                                currentStyle.contains("Subtitle", true) -> BlockType.HEADING_2
-                                            currentStyle.contains("Quote", true) -> BlockType.QUOTE
-                                            currentStyle.contains("List", true) -> BlockType.LIST_ITEM
+                                            styleNorm.contains("Heading1", true) ||
+                                                styleNorm.contains("Titulo1", true) ||
+                                                styleNorm.contains("Título1", true) ||
+                                                styleNorm.contains("Ttulo1", true) ||
+                                                styleNorm.contains("Encabezado1", true) ||
+                                                styleNorm.equals("Title", true) ||
+                                                styleNorm.equals("Titulo", true) ||
+                                                styleNorm.equals("1", true) -> BlockType.HEADING_1
+                                            styleNorm.contains("Heading2", true) ||
+                                                styleNorm.contains("Heading3", true) ||
+                                                styleNorm.contains("Titulo2", true) ||
+                                                styleNorm.contains("Título2", true) ||
+                                                styleNorm.contains("Ttulo2", true) ||
+                                                styleNorm.contains("Encabezado2", true) ||
+                                                styleNorm.contains("Subtitle", true) ||
+                                                styleNorm.contains("Subtitulo", true) -> BlockType.HEADING_2
+                                            styleNorm.contains("Quote", true) ||
+                                                styleNorm.contains("Cita", true) -> BlockType.QUOTE
+                                            styleNorm.contains("List", true) ||
+                                                styleNorm.contains("Lista", true) -> BlockType.LIST_ITEM
                                             else -> BlockType.PARAGRAPH
                                         }
                                         allBlocks.add(ParsedBlock(allBlocks.size, blockType, text))
                                     }
-                                    inParagraph = false
                                 }
                             }
                         }
@@ -445,9 +465,11 @@ object DocumentParser {
         var pageCount = 1
         var nativeWidthPt = 595f
         var nativeHeightPt = 842f
+        var rendererOpened = false
         runCatching {
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                 PdfRenderer(pfd).use { renderer ->
+                    rendererOpened = true
                     pageCount = renderer.pageCount.coerceAtLeast(1)
                     if (renderer.pageCount > 0) {
                         renderer.openPage(0).use { firstPage ->
@@ -459,12 +481,12 @@ object DocumentParser {
             }
         }
 
-        val formatLabel = detectPageFormatLabel(nativeWidthPt, nativeHeightPt)
+        var formatLabel = detectPageFormatLabel(nativeWidthPt, nativeHeightPt)
         var docTitle = fallbackTitle
         var docAuthor = "Documento PDF"
 
         // Emit fast visual-ready shell immediately so PdfManhwaReader displays pages in <50ms!
-        if (onPartialReady != null) {
+        if (onPartialReady != null && rendererOpened) {
             val fastShell = buildPdfParsedDocument(
                 docTitle = docTitle,
                 docAuthor = docAuthor,
@@ -483,8 +505,21 @@ object DocumentParser {
             PDDocument.load(file).use { pdDoc ->
                 pdDoc.documentInformation?.title?.takeIf { it.isNotBlank() }?.let { docTitle = it }
                 pdDoc.documentInformation?.author?.takeIf { it.isNotBlank() }?.let { docAuthor = it }
+                val pdfBoxPages = pdDoc.numberOfPages.coerceAtLeast(0)
+                if (pdfBoxPages > pageCount) {
+                    repeat(pdfBoxPages - pageCount) { pageTexts.add("") }
+                    pageCount = pdfBoxPages
+                }
+                if (!rendererOpened && pdfBoxPages > 0) {
+                    val box = pdDoc.getPage(0).cropBox ?: pdDoc.getPage(0).mediaBox
+                    if (box != null && box.width > 0f && box.height > 0f) {
+                        nativeWidthPt = box.width.coerceIn(240f, 2400f)
+                        nativeHeightPt = box.height.coerceIn(240f, 2400f)
+                        formatLabel = detectPageFormatLabel(nativeWidthPt, nativeHeightPt)
+                    }
+                }
                 val stripper = PDFTextStripper()
-                val total = pdDoc.numberOfPages.coerceAtMost(pageCount)
+                val total = pdfBoxPages.coerceAtMost(pageCount)
                 for (p in 0 until total) {
                     coroutineContext.ensureActive()
                     stripper.startPage = p + 1
@@ -632,9 +667,17 @@ object DocumentParser {
             }
         }
 
-        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), 16 * 1024).use { reader ->
+        val detectedCharset = detectTextCharset(file)
+        BufferedReader(InputStreamReader(FileInputStream(file), detectedCharset), 16 * 1024).use { reader ->
+            var isFirstLine = true
             while (true) {
-                val line = reader.readLine() ?: break
+                var line = reader.readLine() ?: break
+                if (isFirstLine) {
+                    isFirstLine = false
+                    if (line.startsWith("\uFEFF")) {
+                        line = line.removePrefix("\uFEFF")
+                    }
+                }
                 if ((++lineCounter and 0xFF) == 0) coroutineContext.ensureActive()
                 if (line.isBlank()) {
                     flushParagraph()
@@ -673,11 +716,13 @@ object DocumentParser {
         FileInputStream(file).use { rawStream ->
             val factory = XmlPullParserFactory.newInstance().apply { isNamespaceAware = false }
             val parser = factory.newPullParser()
-            parser.setInput(BufferedInputStream(rawStream, 16 * 1024), "UTF-8")
+            // Pass null encoding so XmlPullParser auto-detects UTF-8, windows-1251, ISO-8859-1, or UTF-16 from XML header/BOM
+            parser.setInput(BufferedInputStream(rawStream, 16 * 1024), null)
 
             var inBody = false
             var inTitle = false
             var inAuthor = false
+            var quoteDepth = 0
             var eventCounter = 0
             var event = parser.eventType
             while (event != XmlPullParser.END_DOCUMENT) {
@@ -686,27 +731,39 @@ object DocumentParser {
                     XmlPullParser.START_TAG -> {
                         when (parser.name.substringAfter(':').lowercase()) {
                             "book-title" -> if (!inBody && bookTitle.isBlank()) {
-                                bookTitle = runCatching { parser.nextText().trim() }.getOrDefault("")
+                                bookTitle = readXmlElementInnerText(parser)
                             }
                             "author" -> if (!inBody) inAuthor = true
                             "first-name" -> if (inAuthor && firstName.isBlank()) {
-                                firstName = runCatching { parser.nextText().trim() }.getOrDefault("")
+                                firstName = readXmlElementInnerText(parser)
                             }
                             "last-name" -> if (inAuthor && lastName.isBlank()) {
-                                lastName = runCatching { parser.nextText().trim() }.getOrDefault("")
+                                lastName = readXmlElementInnerText(parser)
                             }
                             "body" -> inBody = true
                             "title" -> if (inBody) inTitle = true
-                            "p" -> if (inBody) {
-                                val txt = runCatching { parser.nextText().trim() }.getOrDefault("")
+                            "cite", "epigraph" -> if (inBody) quoteDepth++
+                            "subtitle" -> if (inBody) {
+                                val txt = readXmlElementInnerText(parser)
                                 if (txt.isNotEmpty()) {
-                                    blocks.add(
-                                        ParsedBlock(
-                                            blocks.size,
-                                            if (inTitle) BlockType.HEADING_1 else BlockType.PARAGRAPH,
-                                            txt
-                                        )
-                                    )
+                                    blocks.add(ParsedBlock(blocks.size, BlockType.HEADING_2, txt))
+                                }
+                            }
+                            "v" -> if (inBody) {
+                                val txt = readXmlElementInnerText(parser)
+                                if (txt.isNotEmpty()) {
+                                    blocks.add(ParsedBlock(blocks.size, BlockType.QUOTE, txt))
+                                }
+                            }
+                            "p" -> if (inBody) {
+                                val txt = readXmlElementInnerText(parser)
+                                if (txt.isNotEmpty()) {
+                                    val type = when {
+                                        inTitle -> BlockType.HEADING_1
+                                        quoteDepth > 0 -> BlockType.QUOTE
+                                        else -> BlockType.PARAGRAPH
+                                    }
+                                    blocks.add(ParsedBlock(blocks.size, type, txt))
                                 }
                             }
                         }
@@ -716,6 +773,7 @@ object DocumentParser {
                             "author" -> inAuthor = false
                             "body" -> inBody = false
                             "title" -> inTitle = false
+                            "cite", "epigraph" -> if (quoteDepth > 0) quoteDepth--
                         }
                     }
                 }
@@ -921,7 +979,7 @@ object DocumentParser {
 
             val blockTypeForTag = when (name) {
                 "h1" -> BlockType.HEADING_1
-                "h2", "h3" -> BlockType.HEADING_2
+                "h2", "h3", "h4", "h5", "h6" -> BlockType.HEADING_2
                 "blockquote" -> BlockType.QUOTE
                 "li" -> BlockType.LIST_ITEM
                 "p" -> BlockType.PARAGRAPH
@@ -997,32 +1055,143 @@ object DocumentParser {
     private fun decodeHtmlEntitiesAndClean(raw: String): String {
         if (raw.isBlank()) return ""
         val decoded = if ('&' in raw) {
-            raw.replace("&nbsp;", " ")
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&quot;", "\"")
-                .replace("&#39;", "'")
-                .replace("&apos;", "'")
-                .replace("&mdash;", "—")
-                .replace("&ndash;", "–")
-                .replace("&ldquo;", "“")
-                .replace("&rdquo;", "”")
-                .replace("&laquo;", "«")
-                .replace("&raquo;", "»")
+            HTML_ENTITY_REGEX.replace(raw) { match ->
+                val token = match.groupValues[1]
+                when {
+                    token.startsWith("#x", ignoreCase = true) -> {
+                        val cp = token.substring(2).toIntOrNull(16)
+                        if (cp != null && Character.isValidCodePoint(cp)) String(Character.toChars(cp)) else match.value
+                    }
+                    token.startsWith("#") -> {
+                        val cp = token.substring(1).toIntOrNull(10)
+                        if (cp != null && Character.isValidCodePoint(cp)) String(Character.toChars(cp)) else match.value
+                    }
+                    else -> NAMED_HTML_ENTITIES[token] ?: match.value
+                }
+            }
         } else {
             raw
         }
         return decoded
+            .replace('\u00A0', ' ')
             .replace(HORIZ_WS_REGEX, " ")
             .replace(MULTI_NEWLINE_REGEX, "\n\n")
             .trim()
     }
 
     private fun resolveZipPath(baseDir: String, href: String): String {
-        val cleanHref = href.substringBefore('#').removePrefix("./")
-        return if (baseDir.isEmpty()) cleanHref else "$baseDir$cleanHref"
+        val rawPath = href.substringBefore('#').substringBefore('?').replace('\\', '/')
+        val decoded = runCatching {
+            URLDecoder.decode(rawPath.replace("+", "%2B"), "UTF-8")
+        }.getOrDefault(rawPath)
+        val combined = if (decoded.startsWith("/")) decoded.removePrefix("/") else "$baseDir$decoded"
+        val stack = ArrayDeque<String>()
+        for (segment in combined.split('/')) {
+            when (segment) {
+                "", "." -> Unit
+                ".." -> if (stack.isNotEmpty()) stack.removeLast()
+                else -> stack.addLast(segment)
+            }
+        }
+        return stack.joinToString("/")
     }
+
+    /**
+     * Reads all text inside the current XML element including any nested inline markup
+     * (e.g. FB2 `<emphasis>`, `<strong>`, `<a>`, `<style>`, `<sub>`, `<sup>`) without throwing.
+     * Leaves the parser positioned at the matching END_TAG of the element.
+     */
+    private fun readXmlElementInnerText(parser: XmlPullParser): String {
+        val sb = StringBuilder(128)
+        var depth = 1
+        while (depth > 0) {
+            when (parser.next()) {
+                XmlPullParser.START_TAG -> depth++
+                XmlPullParser.END_TAG -> depth--
+                XmlPullParser.TEXT, XmlPullParser.CDSECT -> {
+                    val t = parser.text
+                    if (!t.isNullOrEmpty()) sb.append(t)
+                }
+                XmlPullParser.END_DOCUMENT -> break
+            }
+        }
+        return sb.toString().replace(WHITESPACE_REGEX, " ").trim()
+    }
+
+    private fun detectTextCharset(file: File): Charset {
+        val sample = ByteArray(32 * 1024)
+        val read = runCatching {
+            FileInputStream(file).use { it.read(sample) }
+        }.getOrDefault(0)
+        if (read <= 0) return Charsets.UTF_8
+
+        // BOM checks
+        if (read >= 3 && sample[0] == 0xEF.toByte() && sample[1] == 0xBB.toByte() && sample[2] == 0xBF.toByte()) {
+            return Charsets.UTF_8
+        }
+        if (read >= 2 && sample[0] == 0xFF.toByte() && sample[1] == 0xFE.toByte()) {
+            return Charsets.UTF_16LE
+        }
+        if (read >= 2 && sample[0] == 0xFE.toByte() && sample[1] == 0xFF.toByte()) {
+            return Charsets.UTF_16BE
+        }
+
+        // Strict UTF-8 validation on sample (excluding up to 3 trailing bytes in case a multi-byte char was split)
+        val safeLen = if (read == sample.size) (read - 3).coerceAtLeast(0) else read
+        val validUtf8 = runCatching {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(sample, 0, safeLen))
+            true
+        }.getOrDefault(false)
+        return if (validUtf8) Charsets.UTF_8 else runCatching { Charset.forName("windows-1252") }.getOrDefault(Charsets.ISO_8859_1)
+    }
+
+    private val NAMED_HTML_ENTITIES: Map<String, String> = mapOf(
+        "nbsp" to " ",
+        "amp" to "&",
+        "lt" to "<",
+        "gt" to ">",
+        "quot" to "\"",
+        "apos" to "'",
+        "mdash" to "—",
+        "ndash" to "–",
+        "hellip" to "…",
+        "ldquo" to "“",
+        "rdquo" to "”",
+        "lsquo" to "‘",
+        "rsquo" to "’",
+        "laquo" to "«",
+        "raquo" to "»",
+        "iquest" to "¿",
+        "iexcl" to "¡",
+        "aacute" to "á",
+        "eacute" to "é",
+        "iacute" to "í",
+        "oacute" to "ó",
+        "uacute" to "ú",
+        "ntilde" to "ñ",
+        "uuml" to "ü",
+        "Aacute" to "Á",
+        "Eacute" to "É",
+        "Iacute" to "Í",
+        "Oacute" to "Ó",
+        "Uacute" to "Ú",
+        "Ntilde" to "Ñ",
+        "Uuml" to "Ü",
+        "ccedil" to "ç",
+        "Ccedil" to "Ç",
+        "copy" to "©",
+        "reg" to "®",
+        "trade" to "™",
+        "deg" to "°",
+        "middot" to "·",
+        "bull" to "•",
+        "times" to "×",
+        "divide" to "÷",
+        "euro" to "€"
+    )
 
     private fun countWords(text: String): Int {
         if (text.isBlank()) return 0

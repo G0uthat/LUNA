@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 private val Context.readerDataStore: DataStore<Preferences> by preferencesDataStore(name = "luma_preferences")
 
@@ -94,6 +95,10 @@ class PreferencesRepository private constructor(private val appContext: Context)
         val AUTO_HIDE_CHROME_ENABLED = booleanPreferencesKey("auto_hide_chrome_enabled")
         val AUTO_HIDE_CHROME_DELAY_SEC = intPreferencesKey("auto_hide_chrome_delay_sec")
         val AUTO_HIDE_FADE_SPEED_MS = intPreferencesKey("auto_hide_fade_speed_ms")
+        val AUTO_HIDE_NOTEBOOK_CHROME_ENABLED = booleanPreferencesKey("auto_hide_notebook_chrome_enabled")
+        val AUTO_HIDE_NOTEBOOK_CHROME_LANDSCAPE_ONLY = booleanPreferencesKey("auto_hide_notebook_chrome_landscape_only")
+        val AUTO_HIDE_NOTEBOOK_CHROME_DELAY_SEC = intPreferencesKey("auto_hide_notebook_chrome_delay_sec")
+        val AUTO_HIDE_NOTEBOOK_FADE_SPEED_MS = intPreferencesKey("auto_hide_notebook_fade_speed_ms")
         val DISK_CACHE_LIMIT_MB = intPreferencesKey("disk_cache_limit_mb")
         val HAS_SEEN_GUIDE = booleanPreferencesKey("has_seen_guide")
         val HAS_COMPLETED_ONBOARDING = booleanPreferencesKey("has_completed_onboarding")
@@ -115,18 +120,21 @@ class PreferencesRepository private constructor(private val appContext: Context)
     @Volatile
     private var hasPendingDebouncedWrite: Boolean = false
 
+    private val pendingWrites = AtomicInteger(0)
+
     private var debounceFlushJob: Job? = null
 
     init {
         ioScope.launch {
             appContext.readerDataStore.data.collect { prefs ->
                 val mapped = mapFromDataStore(prefs)
-                lastPersisted = mapped
-                com.example.engine.LumaDiskCacheManager.setLimitMb(mapped.diskCacheLimitMb)
-                // Do not clobber in-flight optimistic slider drags before the debounced flush completes
-                if (!hasPendingDebouncedWrite) {
-                    _preferences.value = mapped
+                writeMutex.withLock {
+                    if (pendingWrites.get() == 0 && !hasPendingDebouncedWrite) {
+                        lastPersisted = mapped
+                        _preferences.value = mapped
+                    }
                 }
+                com.example.engine.LumaDiskCacheManager.setLimitMb(_preferences.value.diskCacheLimitMb)
                 if (!_isLoaded.value) {
                     _isLoaded.value = true
                 }
@@ -167,10 +175,15 @@ class PreferencesRepository private constructor(private val appContext: Context)
             if (limitChanged) {
                 com.example.engine.LumaDiskCacheManager.setLimitMb(updated.diskCacheLimitMb)
             }
+            pendingWrites.incrementAndGet()
             ioScope.launch {
-                persistDiff(updated)
-                if (limitChanged) {
-                    com.example.engine.LumaDiskCacheManager.enforceGlobalBudget(appContext)
+                try {
+                    persistLatestLocked()
+                    if (limitChanged) {
+                        com.example.engine.LumaDiskCacheManager.enforceGlobalBudget(appContext)
+                    }
+                } finally {
+                    pendingWrites.decrementAndGet()
                 }
             }
         }
@@ -180,10 +193,28 @@ class PreferencesRepository private constructor(private val appContext: Context)
     fun flushPendingWritesAsync() {
         if (!hasPendingDebouncedWrite) return
         debounceFlushJob?.cancel()
-        val snapshot = _preferences.value
+        hasPendingDebouncedWrite = false
+        pendingWrites.incrementAndGet()
         ioScope.launch {
+            try {
+                persistLatestLocked()
+            } finally {
+                pendingWrites.decrementAndGet()
+            }
+        }
+    }
+
+    /** Flushes any pending writes and waits for DataStore persistence to finish. */
+    suspend fun flushAndAwaitPersistence() {
+        if (hasPendingDebouncedWrite) {
+            debounceFlushJob?.cancel()
             hasPendingDebouncedWrite = false
-            persistDiff(snapshot)
+        }
+        pendingWrites.incrementAndGet()
+        try {
+            persistLatestLocked()
+        } finally {
+            pendingWrites.decrementAndGet()
         }
     }
 
@@ -192,14 +223,19 @@ class PreferencesRepository private constructor(private val appContext: Context)
         debounceFlushJob?.cancel()
         debounceFlushJob = ioScope.launch {
             delay(SLIDER_DEBOUNCE_MS)
-            val snapshot = _preferences.value
+            pendingWrites.incrementAndGet()
             hasPendingDebouncedWrite = false
-            persistDiff(snapshot)
+            try {
+                persistLatestLocked()
+            } finally {
+                pendingWrites.decrementAndGet()
+            }
         }
     }
 
-    private suspend fun persistDiff(target: ReaderPreferences) {
+    private suspend fun persistLatestLocked() {
         writeMutex.withLock {
+            val target = _preferences.value
             val base = lastPersisted
             if (target == base) return
             appContext.readerDataStore.edit { prefs ->
@@ -232,12 +268,15 @@ class PreferencesRepository private constructor(private val appContext: Context)
         horizontalMarginDp = raw.horizontalMarginDp.coerceIn(12f, 44f),
         dockYFraction = raw.dockYFraction.coerceIn(0.14f, 0.86f),
         dockScale = raw.dockScale.coerceIn(0.85f, 1.35f),
+        readerBrightness = if (raw.readerBrightness < 0f) -1f else raw.readerBrightness.coerceIn(0.02f, 1f),
         warmFilterStrength = raw.warmFilterStrength.coerceIn(0f, 0.45f),
         nightStartHour = raw.nightStartHour.coerceIn(0, 23),
         nightEndHour = raw.nightEndHour.coerceIn(0, 23),
         nightTextDimming = raw.nightTextDimming.coerceIn(0f, 0.38f),
         autoHideReaderChromeDelaySec = raw.autoHideReaderChromeDelaySec.coerceIn(3, 60),
         autoHideFadeSpeedMs = raw.autoHideFadeSpeedMs.coerceIn(80, 600),
+        autoHideNotebookChromeDelaySec = raw.autoHideNotebookChromeDelaySec.coerceIn(3, 30),
+        autoHideNotebookFadeSpeedMs = raw.autoHideNotebookFadeSpeedMs.coerceIn(80, 600),
         diskCacheLimitMb = raw.diskCacheLimitMb.coerceIn(
             com.example.engine.LumaDiskCacheManager.MIN_LIMIT_MB,
             com.example.engine.LumaDiskCacheManager.MAX_LIMIT_MB
@@ -246,6 +285,7 @@ class PreferencesRepository private constructor(private val appContext: Context)
 
     private fun mapFromDataStore(prefs: Preferences): ReaderPreferences {
         val provider = enumOrDefault(prefs[Keys.AI_PROVIDER], AiProviderType.GEMINI)
+        val rawBrightness = prefs[Keys.READER_BRIGHTNESS] ?: -1f
         return ReaderPreferences(
             theme = enumOrDefault(prefs[Keys.THEME], ReadingTheme.LIGHT),
             useSystemFont = prefs[Keys.USE_SYSTEM_FONT] ?: false,
@@ -259,7 +299,7 @@ class PreferencesRepository private constructor(private val appContext: Context)
             dockSide = enumOrDefault(prefs[Keys.DOCK_SIDE], BookmarkDockSide.RIGHT),
             dockYFraction = (prefs[Keys.DOCK_Y_FRACTION] ?: 0.48f).coerceIn(0.14f, 0.86f),
             dockScale = (prefs[Keys.DOCK_SCALE] ?: 1.0f).coerceIn(0.85f, 1.35f),
-            readerBrightness = prefs[Keys.READER_BRIGHTNESS] ?: -1f,
+            readerBrightness = if (rawBrightness < 0f) -1f else rawBrightness.coerceIn(0.02f, 1f),
             targetFps = enumOrDefault(prefs[Keys.TARGET_FPS], TargetFpsOption.AUTO),
             showFpsCounter = prefs[Keys.SHOW_FPS_COUNTER] ?: false,
             showMinimalFooter = prefs[Keys.SHOW_FOOTER] ?: true,
@@ -289,6 +329,10 @@ class PreferencesRepository private constructor(private val appContext: Context)
             autoHideReaderChromeEnabled = prefs[Keys.AUTO_HIDE_CHROME_ENABLED] ?: true,
             autoHideReaderChromeDelaySec = (prefs[Keys.AUTO_HIDE_CHROME_DELAY_SEC] ?: 8).coerceIn(3, 60),
             autoHideFadeSpeedMs = (prefs[Keys.AUTO_HIDE_FADE_SPEED_MS] ?: 220).coerceIn(80, 600),
+            autoHideNotebookChromeEnabled = prefs[Keys.AUTO_HIDE_NOTEBOOK_CHROME_ENABLED] ?: true,
+            autoHideNotebookChromeLandscapeOnly = prefs[Keys.AUTO_HIDE_NOTEBOOK_CHROME_LANDSCAPE_ONLY] ?: true,
+            autoHideNotebookChromeDelaySec = (prefs[Keys.AUTO_HIDE_NOTEBOOK_CHROME_DELAY_SEC] ?: 6).coerceIn(3, 30),
+            autoHideNotebookFadeSpeedMs = (prefs[Keys.AUTO_HIDE_NOTEBOOK_FADE_SPEED_MS] ?: 220).coerceIn(80, 600),
             diskCacheLimitMb = (prefs[Keys.DISK_CACHE_LIMIT_MB] ?: com.example.engine.LumaDiskCacheManager.DEFAULT_LIMIT_MB)
                 .coerceIn(
                     com.example.engine.LumaDiskCacheManager.MIN_LIMIT_MB,
@@ -351,6 +395,18 @@ class PreferencesRepository private constructor(private val appContext: Context)
         }
         if (next.autoHideFadeSpeedMs != prev.autoHideFadeSpeedMs) {
             prefs[Keys.AUTO_HIDE_FADE_SPEED_MS] = next.autoHideFadeSpeedMs
+        }
+        if (next.autoHideNotebookChromeEnabled != prev.autoHideNotebookChromeEnabled) {
+            prefs[Keys.AUTO_HIDE_NOTEBOOK_CHROME_ENABLED] = next.autoHideNotebookChromeEnabled
+        }
+        if (next.autoHideNotebookChromeLandscapeOnly != prev.autoHideNotebookChromeLandscapeOnly) {
+            prefs[Keys.AUTO_HIDE_NOTEBOOK_CHROME_LANDSCAPE_ONLY] = next.autoHideNotebookChromeLandscapeOnly
+        }
+        if (next.autoHideNotebookChromeDelaySec != prev.autoHideNotebookChromeDelaySec) {
+            prefs[Keys.AUTO_HIDE_NOTEBOOK_CHROME_DELAY_SEC] = next.autoHideNotebookChromeDelaySec
+        }
+        if (next.autoHideNotebookFadeSpeedMs != prev.autoHideNotebookFadeSpeedMs) {
+            prefs[Keys.AUTO_HIDE_NOTEBOOK_FADE_SPEED_MS] = next.autoHideNotebookFadeSpeedMs
         }
         if (next.diskCacheLimitMb != prev.diskCacheLimitMb) {
             prefs[Keys.DISK_CACHE_LIMIT_MB] = next.diskCacheLimitMb

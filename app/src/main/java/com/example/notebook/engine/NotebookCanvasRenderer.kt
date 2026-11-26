@@ -483,7 +483,7 @@ object NotebookCanvasRenderer {
                 rect.centerY()
             )
         }
-        if (bmp != null && !bmp.isRecycled) {
+        if (bmp != null && !bmp.isRecycled && bmp.width > 0 && bmp.height > 0) {
             val sx0 = (item.cropLeft * bmp.width).toInt().coerceIn(0, bmp.width - 1)
             val sy0 = (item.cropTop * bmp.height).toInt().coerceIn(0, bmp.height - 1)
             val sx1 = (item.cropRight * bmp.width).toInt().coerceIn(sx0 + 1, bmp.width)

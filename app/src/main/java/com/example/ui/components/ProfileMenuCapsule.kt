@@ -36,6 +36,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.CloudQueue
+import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Group
@@ -97,7 +102,8 @@ import com.example.ui.theme.LumaBrandFontFamily
 fun LumaCalligraphicLogo(
     modifier: Modifier = Modifier,
     tintOverride: Color? = null,
-    accentOverride: Color? = null
+    accentOverride: Color? = null,
+    horizontalBias: Float = 0.08f
 ) {
     val palette = LocalFolioPalette.current
     val primaryInk = tintOverride ?: if (palette.isDark) Color.White else palette.ink
@@ -120,7 +126,7 @@ fun LumaCalligraphicLogo(
         val vbW = 1000f
         val vbH = 340f
         val scale = minOf(w / vbW, h / vbH)
-        val dx = (w - vbW * scale) * 0.08f
+        val dx = (w - vbW * scale) * horizontalBias
         val dy = (h - vbH * scale) * 0.5f
 
         fun pt(x: Float, y: Float): Offset = Offset(dx + x * scale, dy + y * scale)
@@ -529,6 +535,9 @@ fun ProfileDropdownCapsuleOverlay(
     isImporting: Boolean,
     onDismiss: () -> Unit,
     onOpenAccount: () -> Unit,
+    onOpenCloudAccount: (() -> Unit)? = null,
+    isCloudSignedIn: Boolean = false,
+    cloudSyncButtonState: com.example.core.cloud.CloudSyncButtonState = com.example.core.cloud.CloudSyncButtonState.DISABLED_OFFLINE_ACCOUNT,
     onOpenFriends: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenGuide: () -> Unit,
@@ -688,6 +697,41 @@ fun ProfileDropdownCapsuleOverlay(
                     thickness = 1.dp,
                     color = palette.border.copy(alpha = 0.6f)
                 )
+
+                // 0b. MI CUENTA (Nube, sincronización y dispositivos)
+                if (onOpenCloudAccount != null) {
+                    val cloudRowSubtitle = when {
+                        !isCloudSignedIn -> "Sin sesión · Conectar"
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.SYNCING -> "Sincronizando…"
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.PENDING -> "Cambios pendientes"
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.NO_INTERNET -> "Sin internet · En cola"
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.ERROR -> "Error de sync · Revisar"
+                        else -> "Google Drive · Sincronizado"
+                    }
+                    val cloudRowIcon = when {
+                        !isCloudSignedIn -> Icons.Rounded.CloudQueue
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.SYNCING -> Icons.Rounded.Sync
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.PENDING -> Icons.Rounded.CloudUpload
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.NO_INTERNET -> Icons.Rounded.CloudOff
+                        cloudSyncButtonState == com.example.core.cloud.CloudSyncButtonState.ERROR -> Icons.Rounded.CloudQueue
+                        else -> Icons.Rounded.CloudDone
+                    }
+                    ProfileCapsuleActionRow(
+                        title = "MI CUENTA",
+                        subtitle = cloudRowSubtitle,
+                        subtitleHighlight = isCloudSignedIn,
+                        icon = cloudRowIcon,
+                        iconContentDescription = "Abrir Mi cuenta y sincronización",
+                        badgeCount = 0,
+                        isAccentPrimary = false,
+                        isLoading = false,
+                        onClick = {
+                            onDismiss()
+                            onOpenCloudAccount()
+                        },
+                        testTag = "profile_menu_cloud_account_item"
+                    )
+                }
 
                 // 1. AMIGOS (Solo amigos P2P y chat)
                 ProfileCapsuleActionRow(

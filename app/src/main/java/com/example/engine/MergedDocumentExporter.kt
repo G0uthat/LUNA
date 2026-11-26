@@ -21,6 +21,7 @@ import com.example.data.model.DrawingStroke
 import com.example.data.model.DrawingTool
 import com.example.data.model.ExportFormatOption
 import com.example.data.model.OcrPageResult
+import com.example.data.model.ParsedBlock
 import com.example.data.model.ParsedDocument
 import com.example.data.model.ParsedSlide
 import com.example.data.model.SlideElement
@@ -207,7 +208,7 @@ object MergedDocumentExporter {
             val totalPages = pdDoc.numberOfPages
             for (pageIndex in 0 until totalPages) {
                 val page = pdDoc.getPage(pageIndex)
-                val mediaBox = page.mediaBox
+                val mediaBox = page.cropBox ?: page.mediaBox
                 val pageWidth = mediaBox.width
                 val pageHeight = mediaBox.height
                 val strokes = drawingsByLocation["pdf-page-$pageIndex"].orEmpty()
@@ -330,19 +331,18 @@ object MergedDocumentExporter {
                     val entry = entries.nextElement()
                     if (entry.name == "mimetype") continue
 
-                    val chapter = chaptersByHref[entry.name]
+                    val chapter = chaptersByHref[entry.name] ?: chaptersByHref[entry.name.removePrefix("/")]
                     if (chapter != null) {
                         var xhtml = zip.getInputStream(entry).bufferedReader().use { it.readText() }
                         val chapterHighlights = highlightsByChapter[chapter.index].orEmpty()
                         val strokes = collectChapterStrokes(drawingsByLocation, chapter.cfiPrefix)
 
-                        // Inject non-destructive <mark> highlights preserving selectable text
+                        // Inject non-destructive <mark> highlights only inside <body> text nodes (never corrupting <head> or tag attributes!)
                         for (hl in chapterHighlights) {
                             val quote = hl.quotedText.trim()
-                            if (quote.length >= 2 && xhtml.contains(quote)) {
+                            if (quote.length >= 2) {
                                 val hexColor = String.format(Locale.US, "#%06X", hl.colorArgb.toInt() and 0xFFFFFF)
-                                val marked = "<mark style=\"background:${hexColor}66;border-radius:3px;\">$quote</mark>"
-                                xhtml = xhtml.replaceFirst(quote, marked)
+                                xhtml = injectMarkInBodyTextOnly(xhtml, quote, hexColor)
                             }
                         }
 
@@ -391,7 +391,7 @@ object MergedDocumentExporter {
                         val notesAndDrawingCount = drawingsByLocation.values.sumOf { it.size }
                         if (highlights.isNotEmpty() || notesAndDrawingCount > 0) {
                             val summaryXml = buildString {
-                                append("<w:p><w:pPr><w:pStyle w:val=\"Heading2\"/></w:pPr><w:r><w:t>Anotaciones y Dibujos Fusionados (Folio)</w:t></w:r></w:p>")
+                                append("<w:p><w:pPr><w:pStyle w:val=\"Heading2\"/></w:pPr><w:r><w:t>Anotaciones y Dibujos Fusionados (Luma)</w:t></w:r></w:p>")
                                 for (hl in highlights) {
                                     val safeQuote = escapeXml(hl.quotedText)
                                     val safeNote = escapeXml(hl.noteText)
@@ -435,22 +435,36 @@ object MergedDocumentExporter {
         outputStream: OutputStream
     ) {
         val pdfDoc = PdfDocument()
-        val (wPt, hPt) = standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
-        val pageWidth = wPt.toInt().coerceIn(320, 2400)
-        val pageHeight = hPt.toInt().coerceIn(240, 2400)
-        val marginX = (pageWidth * 0.065f).coerceIn(28f, 64f)
-        val marginY = (pageHeight * 0.075f).coerceIn(24f, 56f)
+        try {
+            val (wPt, hPt) = standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
+            val pageWidth = wPt.toInt().coerceIn(320, 2400)
+            val pageHeight = hPt.toInt().coerceIn(240, 2400)
+            val marginX = (pageWidth * 0.065f).coerceIn(28f, 64f)
+            val marginY = (pageHeight * 0.075f).coerceIn(24f, 56f)
 
-        val bgPaint = Paint().apply { color = Color.WHITE }
-        val accentBarPaint = Paint().apply { color = Color.parseColor("#1D5BFF") }
-        val footerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#6B7280")
-            textSize = (pageHeight * 0.022f).coerceIn(9f, 13f)
-        }
+            val bgPaint = Paint().apply { color = Color.WHITE }
+            val accentBarPaint = Paint().apply { color = Color.parseColor("#1D5BFF") }
+            val footerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#6B7280")
+                textSize = (pageHeight * 0.022f).coerceIn(9f, 13f)
+            }
 
-        parsed.slides.forEachIndexed { idx, slide ->
-            val page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, idx + 1).create())
-            val canvas = page.canvas
+            val slidesToExport = parsed.slides.ifEmpty {
+                listOf(
+                    ParsedSlide(
+                        index = 0,
+                        title = parsed.title,
+                        subtitle = "",
+                        bodyBlocks = listOf(ParsedBlock(0, BlockType.PARAGRAPH, "Presentación sin diapositivas.")),
+                        notes = "",
+                        imagePaths = emptyList()
+                    )
+                )
+            }
+
+            slidesToExport.forEachIndexed { idx, slide ->
+                val page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, idx + 1).create())
+                val canvas = page.canvas
 
             if (slide.elements.isNotEmpty()) {
                 drawAuthenticPptxSlideOnPdfCanvas(
@@ -567,10 +581,12 @@ object MergedDocumentExporter {
                 drawStrokesOnAndroidCanvas(canvas, slideStrokes, pageWidth.toFloat(), pageHeight.toFloat())
             }
             pdfDoc.finishPage(page)
-        }
+            }
 
-        pdfDoc.writeTo(outputStream)
-        pdfDoc.close()
+            pdfDoc.writeTo(outputStream)
+        } finally {
+            pdfDoc.close()
+        }
     }
 
     private fun drawAuthenticPptxSlideOnPdfCanvas(
@@ -815,87 +831,139 @@ object MergedDocumentExporter {
         outputStream: OutputStream
     ) {
         val pdfDoc = PdfDocument()
-        val (wPt, hPt) = standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
-        val pageWidth = wPt.toInt().coerceIn(320, 2400)
-        val pageHeight = hPt.toInt().coerceIn(320, 2400)
-        val marginX = (pageWidth * 0.08f).coerceIn(32f, 68f)
-        val marginY = (pageHeight * 0.07f).coerceIn(36f, 68f)
-        val contentWidth = (pageWidth - marginX * 2).toInt().coerceAtLeast(180)
-        val highlightsByChapter = highlights.groupBy { it.chapterIndex }
+        try {
+            val (wPt, hPt) = standardPageFormat.resolveSizePt(parsed.nativePageWidthPt, parsed.nativePageHeightPt)
+            val pageWidth = wPt.toInt().coerceIn(320, 2400)
+            val pageHeight = hPt.toInt().coerceIn(240, 2400)
+            val marginX = (pageWidth * 0.08f).coerceIn(32f, 68f)
+            val marginY = (pageHeight * 0.07f).coerceIn(36f, 68f)
+            val contentWidth = (pageWidth - marginX * 2).toInt().coerceAtLeast(180)
+            val highlightsByChapter = highlights.groupBy { it.chapterIndex }
 
-        var pageNumber = 1
-
-        for (chapter in parsed.chapters) {
-            val chapterStrokes = collectChapterStrokes(drawingsByLocation, chapter.cfiPrefix)
-            val chapterHighlights = highlightsByChapter[chapter.index].orEmpty()
-
-            var page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
-            var canvas = page.canvas
-            var y = marginY
-            var strokesDrawnOnChapter = false
-
-            fun finishCurrentPage(drawChapterStrokes: Boolean) {
-                val stdPageStrokes = drawingsByLocation["std-page-${pageNumber - 1}"].orEmpty()
-                val combined = buildList {
-                    if (drawChapterStrokes) addAll(chapterStrokes)
-                    addAll(stdPageStrokes)
-                }
-                if (combined.isNotEmpty()) {
-                    drawStrokesOnAndroidCanvas(canvas, combined, pageWidth.toFloat(), pageHeight.toFloat())
-                }
-                pdfDoc.finishPage(page)
+            var pageNumber = 1
+            val chaptersToExport = parsed.chapters.ifEmpty {
+                listOf(
+                    com.example.data.model.ParsedChapter(
+                        index = 0,
+                        title = parsed.title,
+                        cfiPrefix = "doc(/0)",
+                        href = "empty",
+                        blocks = listOf(ParsedBlock(0, BlockType.PARAGRAPH, parsed.title)),
+                        wordCount = 1
+                    )
+                )
             }
 
-            for (block in chapter.blocks) {
-                val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.parseColor("#151C2B")
-                    textSize = when (block.type) {
-                        BlockType.HEADING_1 -> 20f
-                        BlockType.HEADING_2 -> 16f
-                        BlockType.QUOTE -> 13.5f
-                        else -> 13f
+            for (chapter in chaptersToExport) {
+                val chapterStrokes = collectChapterStrokes(drawingsByLocation, chapter.cfiPrefix)
+                val chapterHighlights = highlightsByChapter[chapter.index].orEmpty()
+
+                var page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
+                var canvas = page.canvas
+                var y = marginY
+                var strokesDrawnOnChapter = false
+
+                fun finishCurrentPage(drawChapterStrokes: Boolean) {
+                    val stdPageStrokes = drawingsByLocation["std-page-${pageNumber - 1}"].orEmpty()
+                    val combined = buildList {
+                        if (drawChapterStrokes) addAll(chapterStrokes)
+                        addAll(stdPageStrokes)
                     }
-                    isFakeBoldText = block.type == BlockType.HEADING_1 || block.type == BlockType.HEADING_2
-                }
-
-                val layout = StaticLayout.Builder
-                    .obtain(block.text, 0, block.text.length, paint, contentWidth)
-                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-                    .setLineSpacing(4f, 1.25f)
-                    .build()
-
-                if (y + layout.height > pageHeight - marginY) {
-                    finishCurrentPage(!strokesDrawnOnChapter)
-                    strokesDrawnOnChapter = true
-                    pageNumber++
-                    page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
-                    canvas = page.canvas
-                    y = marginY
-                }
-
-                // Soft highlight tint behind block if highlighted
-                val matchingHl = chapterHighlights.firstOrNull { it.blockIndex == block.index }
-                if (matchingHl != null) {
-                    val hlPaint = Paint().apply {
-                        color = matchingHl.colorArgb.toInt()
-                        alpha = 65
+                    if (combined.isNotEmpty()) {
+                        drawStrokesOnAndroidCanvas(canvas, combined, pageWidth.toFloat(), pageHeight.toFloat())
                     }
-                    canvas.drawRect(marginX - 4f, y - 2f, marginX + contentWidth + 4f, y + layout.height + 2f, hlPaint)
+                    pdfDoc.finishPage(page)
                 }
 
-                canvas.save()
-                canvas.translate(marginX, y)
-                layout.draw(canvas)
-                canvas.restore()
-                y += layout.height + if (block.type == BlockType.HEADING_1) 18f else 12f
+                for (block in chapter.blocks) {
+                    val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = Color.parseColor("#151C2B")
+                        textSize = when (block.type) {
+                            BlockType.HEADING_1 -> 20f
+                            BlockType.HEADING_2 -> 16f
+                            BlockType.QUOTE -> 13.5f
+                            else -> 13f
+                        }
+                        isFakeBoldText = block.type == BlockType.HEADING_1 || block.type == BlockType.HEADING_2
+                    }
+
+                    val layout = StaticLayout.Builder
+                        .obtain(block.text, 0, block.text.length, paint, contentWidth)
+                        .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                        .setLineSpacing(4f, 1.25f)
+                        .build()
+
+                    if (y + layout.height > pageHeight - marginY) {
+                        finishCurrentPage(!strokesDrawnOnChapter)
+                        strokesDrawnOnChapter = true
+                        pageNumber++
+                        page = pdfDoc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
+                        canvas = page.canvas
+                        y = marginY
+                    }
+
+                    // Soft highlight tint behind block if highlighted
+                    val matchingHl = chapterHighlights.firstOrNull { it.blockIndex == block.index }
+                    if (matchingHl != null) {
+                        val hlPaint = Paint().apply {
+                            color = matchingHl.colorArgb.toInt()
+                            alpha = 65
+                        }
+                        canvas.drawRect(marginX - 4f, y - 2f, marginX + contentWidth + 4f, y + layout.height + 2f, hlPaint)
+                    }
+
+                    canvas.save()
+                    canvas.translate(marginX, y)
+                    layout.draw(canvas)
+                    canvas.restore()
+                    y += layout.height + if (block.type == BlockType.HEADING_1) 18f else 12f
+                }
+
+                finishCurrentPage(!strokesDrawnOnChapter)
+                pageNumber++
             }
 
-            finishCurrentPage(!strokesDrawnOnChapter)
-            pageNumber++
+            pdfDoc.writeTo(outputStream)
+        } finally {
+            pdfDoc.close()
         }
+    }
 
-        pdfDoc.writeTo(outputStream)
-        pdfDoc.close()
+    /**
+     * Safely wraps the first occurrence of [quote] inside `<body>...</body>` text nodes with `<mark>`,
+     * skipping `<head>`, tag names, and HTML attribute values so XHTML stays strictly well-formed.
+     */
+    private fun injectMarkInBodyTextOnly(xhtml: String, quote: String, hexColor: String): String {
+        val bodyTagIdx = xhtml.indexOf("<body", ignoreCase = true)
+        val searchStart = if (bodyTagIdx >= 0) {
+            val bodyOpenEnd = xhtml.indexOf('>', bodyTagIdx)
+            if (bodyOpenEnd >= 0) bodyOpenEnd + 1 else 0
+        } else {
+            0
+        }
+        var inTag = false
+        var textStart = searchStart
+        var i = searchStart
+        while (i <= xhtml.length) {
+            val c = if (i < xhtml.length) xhtml[i] else '<'
+            if (!inTag && (c == '<' || i == xhtml.length)) {
+                if (i > textStart) {
+                    val segment = xhtml.substring(textStart, i)
+                    val hit = segment.indexOf(quote)
+                    if (hit >= 0) {
+                        val absHit = textStart + hit
+                        val marked = "<mark style=\"background:${hexColor}66;border-radius:3px;\">$quote</mark>"
+                        return xhtml.substring(0, absHit) + marked + xhtml.substring(absHit + quote.length)
+                    }
+                }
+                inTag = true
+            } else if (inTag && c == '>') {
+                inTag = false
+                textStart = i + 1
+            }
+            i++
+        }
+        return xhtml
     }
 
     private fun drawStrokesOnAndroidCanvas(

@@ -211,6 +211,7 @@ object TranslationService {
 
                 val raw = translateWithCustomAi(prompt, prefs, pageBitmap)
                 val map = parseBatchJsonTranslations(raw)
+                require(map.isNotEmpty()) { "La respuesta de IA no contenía traducciones válidas." }
                 blocks.map { block ->
                     block.copy(translatedText = map[block.id] ?: block.translatedText ?: block.originalText)
                 }
@@ -298,7 +299,7 @@ object TranslationService {
     ): String {
         val parts = JSONArray()
         parts.put(JSONObject().put("text", prompt))
-        if (pageBitmap != null) {
+        if (pageBitmap != null && !pageBitmap.isRecycled && pageBitmap.width > 0 && pageBitmap.height > 0) {
             val base64 = bitmapToBase64Jpeg(pageBitmap)
             parts.put(
                 JSONObject().put(
@@ -314,7 +315,8 @@ object TranslationService {
             JSONArray().put(JSONObject().put("parts", parts))
         )
 
-        val url = "$baseUrl/v1beta/models/$model:generateContent?key=$apiKey"
+        val apiBase = if (baseUrl.endsWith("/v1beta") || baseUrl.endsWith("/v1")) baseUrl else "$baseUrl/v1beta"
+        val url = "$apiBase/models/$model:generateContent?key=$apiKey"
         val request = Request.Builder()
             .url(url)
             .post(payload.toString().toRequestBody(jsonMediaType))

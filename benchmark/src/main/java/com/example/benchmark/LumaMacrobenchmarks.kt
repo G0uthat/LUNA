@@ -113,6 +113,57 @@ class LumaMacrobenchmarks {
         }
     }
 
+    @Test
+    fun notebookStrokeLatencyFrameTiming() {
+        benchmarkRule.measureRepeated(
+            packageName = TARGET_PACKAGE,
+            metrics = listOf(FrameTimingMetric()),
+            compilationMode = CompilationMode.Partial(),
+            startupMode = StartupMode.WARM,
+            iterations = 5,
+            setupBlock = {
+                pressHome()
+                startActivityAndWait()
+                dismissOnboardingIfPresent()
+                // Open Study Notebook: switch to Cuadernos tab or tap tablet quick-create button
+                val notebooksTab = device.wait(Until.findObject(By.res("library_tab_NOTEBOOKS")), 2_500L)
+                if (notebooksTab != null) {
+                    notebooksTab.click()
+                    device.waitForIdle()
+                }
+                val existingNotebook = device.wait(
+                    Until.findObject(By.res(Regex("notebook_card_.*").toPattern())),
+                    1_500L
+                )
+                if (existingNotebook != null) {
+                    existingNotebook.click()
+                } else {
+                    val createBtn = device.wait(Until.findObject(By.res("create_notebook_button")), 2_000L)
+                        ?: device.wait(Until.findObject(By.res("empty_create_notebook_button")), 1_500L)
+                        ?: device.wait(Until.findObject(By.res("tablet_quick_new_notebook_button")), 1_500L)
+                    createBtn?.click()
+                    device.waitForIdle()
+                    val confirmBtn = device.wait(Until.findObject(By.res("confirm_create_notebook_button")), 2_500L)
+                    confirmBtn?.click()
+                }
+                device.wait(Until.hasObject(By.res("notebook_canvas_viewport")), 5_000L)
+                device.waitForIdle()
+            }
+        ) {
+            val w = device.displayWidth
+            val h = device.displayHeight
+            // Draw 6 continuous diagonal/horizontal freehand strokes across the canvas to measure ink latency & jank
+            val startX = (w * 0.22f).toInt()
+            val endX = (w * 0.78f).toInt()
+            for (i in 0 until 6) {
+                val y1 = (h * (0.30f + i * 0.06f)).toInt()
+                val y2 = (h * (0.34f + i * 0.06f)).toInt()
+                device.swipe(startX, y1, endX, y2, 18)
+                device.waitForIdle()
+            }
+        }
+    }
+
     private fun androidx.benchmark.macro.MacrobenchmarkScope.dismissOnboardingIfPresent() {
         val skipBtn = device.wait(Until.findObject(By.res("permissions_skip_all_btn")), 1_500L)
         if (skipBtn != null) {

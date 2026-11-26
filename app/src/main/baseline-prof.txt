@@ -65,10 +65,11 @@ Lcom/example/engine/LumaDiskCacheManager;
 Lcom/example/engine/CoverManager;
 
 # Study Notebook Hot Paths (AOT-compiled for smooth 60/120fps drawing while still lazy-loaded)
-HSPLcom/example/notebook/render/NotebookCanvasRenderer**;->**(**)**
+HSPLcom/example/notebook/engine/NotebookCanvasRenderer**;->**(**)**
+HSPLcom/example/notebook/engine/NotebookLayerCache**;->**(**)**
 HSPLcom/example/notebook/ui/NotebookScreenKt**;->**(**)**
 HSPLcom/example/notebook/ui/NotebookViewModel**;->**(**)**
 HSPLcom/example/notebook/data/NotebookRepository**;->**(**)**
-HSPLcom/example/notebook/data/NotebookJsonCodec**;->**(**)**
-Lcom/example/notebook/render/**;
+HSPLcom/example/notebook/model/NotebookJsonCodec**;->**(**)**
+Lcom/example/notebook/engine/**;
 Lcom/example/notebook/model/**;

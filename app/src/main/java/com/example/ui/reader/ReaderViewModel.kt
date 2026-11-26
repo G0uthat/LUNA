@@ -92,11 +92,7 @@ class ReaderViewModel(
     private val _uiState = MutableStateFlow(ReaderUiState())
     val uiState: StateFlow<ReaderUiState> = _uiState.asStateFlow()
 
-    val preferences: StateFlow<ReaderPreferences> = preferencesRepository.preferencesFlow.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = ReaderPreferences()
-    )
+    val preferences: StateFlow<ReaderPreferences> = preferencesRepository.preferencesFlow
 
     val highlights: StateFlow<List<HighlightNoteEntity>> = repository.observeHighlights(documentId).stateIn(
         scope = viewModelScope,
@@ -138,6 +134,7 @@ class ReaderViewModel(
     private val undoStacks = mutableMapOf<String, ArrayDeque<List<DrawingStroke>>>()
     private val redoStacks = mutableMapOf<String, ArrayDeque<List<DrawingStroke>>>()
     private var wordLookupJob: Job? = null
+    private var searchJob: Job? = null
 
     init {
         loadDocument()
@@ -147,6 +144,7 @@ class ReaderViewModel(
         super.onCleared()
         ocrTranslationJob?.cancel()
         wordLookupJob?.cancel()
+        searchJob?.cancel()
         pageBitmaps.evictAll()
     }
 
@@ -177,10 +175,11 @@ class ReaderViewModel(
                 if (!file.exists()) error("El archivo local ya no existe en el dispositivo.")
                 val format = DocumentFormat.fromExtension(doc.format) ?: DocumentFormat.EPUB
 
+                val initialPrefs = preferencesRepository.awaitInitialPreferences()
                 val initialOriginalView = when (format) {
                     DocumentFormat.EPUB -> false
                     DocumentFormat.PDF, DocumentFormat.PPTX -> true
-                    DocumentFormat.DOCX, DocumentFormat.TXT, DocumentFormat.FB2 -> preferences.value.useStandardPageView
+                    DocumentFormat.DOCX, DocumentFormat.TXT, DocumentFormat.FB2 -> initialPrefs.useStandardPageView
                 }
 
                 var hasDeliveredInitial = false
@@ -233,10 +232,11 @@ class ReaderViewModel(
     fun currentLocationKey(): String {
         val state = _uiState.value
         val parsed = state.parsed ?: return "unit-0"
-        return if (parsed.format == DocumentFormat.PDF && state.viewAsOriginalFormat) {
-            "pdf-page-${state.currentUnitIndex}"
-        } else {
-            state.activeSheetLocationKey
+        return when {
+            parsed.format == DocumentFormat.PDF && state.viewAsOriginalFormat -> "pdf-page-${state.currentUnitIndex}"
+            parsed.format == DocumentFormat.PPTX && state.viewAsOriginalFormat ->
+                state.activeSheetLocationKey ?: "pptx-slide-${state.currentUnitIndex}"
+            else -> state.activeSheetLocationKey
                 ?: parsed.chapters.getOrNull(state.currentUnitIndex)?.cfiPrefix
                 ?: "epubcfi(/6/2!)"
         }
@@ -263,7 +263,11 @@ class ReaderViewModel(
     fun onUnitChanged(newIndex: Int, isExplicitJump: Boolean = false) {
         val state = _uiState.value
         val parsed = state.parsed ?: return
-        val total = if (parsed.format == DocumentFormat.PDF) parsed.pdfPageCount else parsed.chapters.size
+        val total = when (parsed.format) {
+            DocumentFormat.PDF -> parsed.pdfPageCount
+            DocumentFormat.PPTX -> parsed.slides.size.coerceAtLeast(1)
+            else -> parsed.chapters.size
+        }
         val clamped = newIndex.coerceIn(0, (total - 1).coerceAtLeast(0))
         if (clamped == state.currentUnitIndex && !isExplicitJump) return
 
@@ -322,6 +326,7 @@ class ReaderViewModel(
         _uiState.update {
             it.copy(
                 viewAsOriginalFormat = original,
+                activeSheetLocationKey = null,
                 isPanZoomWhileDrawing = false,
                 selectedWord = null
             )
@@ -725,6 +730,7 @@ class ReaderViewModel(
 
     // In-Book Text Search (works across EPUB/DOCX/TXT/FB2 + PDF text + OCR cached pages!)
     fun updateSearchQuery(query: String) {
+        searchJob?.cancel()
         _uiState.update { it.copy(searchQuery = query) }
         val trimmed = query.trim()
         if (trimmed.length < 2) {
@@ -732,7 +738,7 @@ class ReaderViewModel(
             return
         }
         val parsed = _uiState.value.parsed ?: return
-        viewModelScope.launch {
+        searchJob = viewModelScope.launch {
             val matches = withContext(Dispatchers.Default) {
                 val found = mutableListOf<SearchMatch>()
                 if (parsed.format == DocumentFormat.PDF) {

@@ -51,7 +51,7 @@
 -keep class com.example.data.local.JsonConverters { *; }
 -keep class com.example.data.model.** { *; }
 -keep class com.example.notebook.model.** { *; }
--keep class com.example.notebook.data.NotebookJsonCodec { *; }
+-keep class com.example.notebook.model.NotebookJsonCodec { *; }
 -keepclassmembers enum com.example.** {
     public static **[] values();
     public static ** valueOf(java.lang.String);

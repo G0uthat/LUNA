@@ -172,6 +172,7 @@ fun NotebookStudioToolbar(
     onPickMyStickerPng: () -> Unit = {},
     onPlaceMySticker: (String) -> Unit = {},
     onOpenStarterTemplates: () -> Unit = {},
+    isCompactLandscape: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalFolioPalette.current
@@ -200,19 +201,26 @@ fun NotebookStudioToolbar(
     }
 
     if (widthClass.isWide) {
+        val railCorner = if (isCompactLandscape) 18.dp else 22.dp
+        val railHPadding = if (isCompactLandscape) 3.dp else 4.dp
+        val railVPadding = if (isCompactLandscape) 4.dp else 6.dp
+        val railSpacing = if (isCompactLandscape) 1.dp else 2.dp
         Row(
             modifier = modifier,
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(if (isCompactLandscape) 8.dp else 10.dp)
         ) {
             if (isDockCollapsed) {
-                // Collapsed floating studio pill (48dp touch target)
+                // Collapsed floating studio pill
                 Box(
                     modifier = Modifier
-                        .sizeIn(minWidth = 48.dp, minHeight = 56.dp)
-                        .clip(RoundedCornerShape(18.dp))
+                        .sizeIn(
+                            minWidth = if (isCompactLandscape) 42.dp else 48.dp,
+                            minHeight = if (isCompactLandscape) 48.dp else 56.dp
+                        )
+                        .clip(RoundedCornerShape(if (isCompactLandscape) 15.dp else 18.dp))
                         .background(surfaceColor)
-                        .border(1.dp, palette.border, RoundedCornerShape(18.dp))
+                        .border(1.dp, palette.border, RoundedCornerShape(if (isCompactLandscape) 15.dp else 18.dp))
                         .clickable(onClick = onToggleDockCollapsed)
                         .testTag("nb_expand_dock_btn"),
                     contentAlignment = Alignment.Center
@@ -221,26 +229,29 @@ fun NotebookStudioToolbar(
                         imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                         contentDescription = "Mostrar herramientas",
                         tint = palette.accent,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(if (isCompactLandscape) 20.dp else 24.dp)
                     )
                 }
             } else {
                 Column(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(22.dp))
+                        .clip(RoundedCornerShape(railCorner))
                         .background(surfaceColor)
-                        .border(1.dp, palette.border, RoundedCornerShape(22.dp))
+                        .border(1.dp, palette.border, RoundedCornerShape(railCorner))
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 4.dp, vertical = 6.dp)
+                        .padding(horizontal = railHPadding, vertical = railVPadding)
                         .testTag("notebook_wide_rail"),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    verticalArrangement = Arrangement.spacedBy(railSpacing)
                 ) {
-                    // Collapse handle (>= 48dp)
+                    // Collapse handle
                     Box(
                         modifier = Modifier
-                            .sizeIn(minWidth = 48.dp, minHeight = 40.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .sizeIn(
+                                minWidth = if (isCompactLandscape) 40.dp else 48.dp,
+                                minHeight = if (isCompactLandscape) 32.dp else 40.dp
+                            )
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable(onClick = onToggleDockCollapsed)
                             .testTag("nb_collapse_dock_btn"),
                         contentAlignment = Alignment.Center
@@ -249,7 +260,7 @@ fun NotebookStudioToolbar(
                             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
                             contentDescription = "Plegar barra lateral",
                             tint = palette.inkMuted,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(if (isCompactLandscape) 18.dp else 20.dp)
                         )
                     }
 
@@ -259,17 +270,21 @@ fun NotebookStudioToolbar(
                             icon = toolIcon(tool),
                             label = if (tool == NotebookTool.IMAGE) "Media" else tool.label,
                             selected = selected,
+                            compact = isCompactLandscape,
                             onClick = { handleDockToolTap(tool) },
                             testTag = "nb_tool_${tool.name}"
                         )
                     }
 
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(if (isCompactLandscape) 1.dp else 2.dp))
 
-                    // Color + Properties toggle (>= 48dp)
+                    // Color + Properties toggle
                     Box(
                         modifier = Modifier
-                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .sizeIn(
+                                minWidth = if (isCompactLandscape) 40.dp else 48.dp,
+                                minHeight = if (isCompactLandscape) 40.dp else 48.dp
+                            )
                             .clip(CircleShape)
                             .clickable(onClick = onTogglePropertiesPanel)
                             .testTag("nb_toggle_properties"),
@@ -277,7 +292,7 @@ fun NotebookStudioToolbar(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(34.dp)
+                                .size(if (isCompactLandscape) 28.dp else 34.dp)
                                 .clip(CircleShape)
                                 .background(Color(activeDisplayColor.toInt()))
                                 .border(2.dp, palette.ink.copy(alpha = 0.7f), CircleShape),
@@ -287,7 +302,7 @@ fun NotebookStudioToolbar(
                                 imageVector = Icons.Rounded.Tune,
                                 contentDescription = "Panel contextual de herramienta",
                                 tint = contrastTint(activeDisplayColor),
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(if (isCompactLandscape) 14.dp else 16.dp)
                             )
                         }
                     }
@@ -333,7 +348,7 @@ fun NotebookStudioToolbar(
                         onPickMyStickerPng = onPickMyStickerPng,
                         onPlaceMySticker = onPlaceMySticker,
                         onOpenStarterTemplates = onOpenStarterTemplates,
-                        modifier = Modifier.widthIn(max = 310.dp)
+                        modifier = Modifier.widthIn(max = if (isCompactLandscape) 276.dp else 310.dp)
                     )
                 }
             }
@@ -392,18 +407,21 @@ fun NotebookStudioToolbar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(if (isCompactLandscape) 18.dp else 22.dp))
                     .background(surfaceColor)
-                    .border(1.dp, palette.border, RoundedCornerShape(22.dp))
+                    .border(1.dp, palette.border, RoundedCornerShape(if (isCompactLandscape) 18.dp else 22.dp))
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .padding(horizontal = if (isCompactLandscape) 4.dp else 6.dp, vertical = if (isCompactLandscape) 2.dp else 4.dp)
                     .testTag("notebook_compact_dock"),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (isCompactLandscape) 1.dp else 2.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        .sizeIn(
+                            minWidth = if (isCompactLandscape) 40.dp else 48.dp,
+                            minHeight = if (isCompactLandscape) 40.dp else 48.dp
+                        )
                         .clip(CircleShape)
                         .clickable(onClick = onTogglePropertiesPanel)
                         .testTag("nb_toggle_properties"),
@@ -411,7 +429,7 @@ fun NotebookStudioToolbar(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(if (isCompactLandscape) 30.dp else 36.dp)
                             .clip(CircleShape)
                             .background(Color(activeDisplayColor.toInt()))
                             .border(2.dp, palette.ink.copy(alpha = 0.7f), CircleShape),
@@ -421,7 +439,7 @@ fun NotebookStudioToolbar(
                             imageVector = Icons.Rounded.Palette,
                             contentDescription = "Colores y ajustes",
                             tint = contrastTint(activeDisplayColor),
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(if (isCompactLandscape) 15.dp else 18.dp)
                         )
                     }
                 }
@@ -432,6 +450,7 @@ fun NotebookStudioToolbar(
                         icon = toolIcon(tool),
                         label = if (tool == NotebookTool.IMAGE) "Media" else tool.label,
                         selected = selected,
+                        compact = isCompactLandscape,
                         onClick = { handleDockToolTap(tool) },
                         testTag = "nb_tool_${tool.name}"
                     )
@@ -463,17 +482,24 @@ private fun ToolIconButton(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    testTag: String
+    testTag: String,
+    compact: Boolean = false
 ) {
     val palette = LocalFolioPalette.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(if (compact) 11.dp else 14.dp)
     Column(
         modifier = Modifier
-            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .sizeIn(
+                minWidth = if (compact) 40.dp else 48.dp,
+                minHeight = if (compact) 40.dp else 48.dp
+            )
             .clip(shape)
             .background(if (selected) palette.accent else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 5.dp)
+            .padding(
+                horizontal = if (compact) 4.dp else 6.dp,
+                vertical = if (compact) 4.dp else 5.dp
+            )
             .testTag(testTag),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -482,15 +508,17 @@ private fun ToolIconButton(
             imageVector = icon,
             contentDescription = label,
             tint = if (selected) palette.onAccent else palette.ink,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(if (compact) 18.dp else 20.dp)
         )
-        Text(
-            text = label,
-            fontSize = 9.5.sp,
-            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
-            color = if (selected) palette.onAccent else palette.inkMuted,
-            maxLines = 1
-        )
+        if (!compact) {
+            Text(
+                text = label,
+                fontSize = 9.5.sp,
+                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
+                color = if (selected) palette.onAccent else palette.inkMuted,
+                maxLines = 1
+            )
+        }
     }
 }
 
